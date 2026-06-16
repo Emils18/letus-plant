@@ -73,8 +73,11 @@ export default function ResetPasswordPage() {
     setIsSuccess(true);
     setMessage("Password updated successfully! Redirecting...");
 
+    // --- DEEP LINK REDIRECT IMPLEMENTED HERE ---
     setTimeout(() => {
-      router.push("/");
+      if (typeof window !== "undefined") {
+        window.location.href = "greenguard://login";
+      }
     }, 2000);
   }
 
