@@ -48,7 +48,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> with Single
       // to your Next.js web application instead of opening the mobile login screen.
       await Supabase.instance.client.auth.resetPasswordForEmail(
         _emailController.text.trim(),
-        redirectTo: 'http://localhost:3000/reset-password',
+        redirectTo: 'https://letus-plant.vercel.app/reset-password',
       );
       
       setState(() {
