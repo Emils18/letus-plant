@@ -2,24 +2,24 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../services/auth_service.dart';
-import 'forgot_password_screen.dart';
-import 'register_screen.dart';
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen>
+class _RegisterScreenState extends State<RegisterScreen>
     with SingleTickerProviderStateMixin {
+  final _fullNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _authService = AuthService();
 
   bool _isLoading = false;
   bool _obscurePassword = true;
+  String _selectedRole = 'buyer';
 
   late AnimationController _animController;
   late Animation<double> _fadeAnimation;
@@ -31,7 +31,7 @@ class _LoginScreenState extends State<LoginScreen>
 
     _animController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1400),
+      duration: const Duration(milliseconds: 1000),
     );
 
     _fadeAnimation = Tween<double>(
@@ -60,93 +60,80 @@ class _LoginScreenState extends State<LoginScreen>
   @override
   void dispose() {
     _animController.dispose();
+    _fullNameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
+  Future<void> _register() async {
+    final fullName = _fullNameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
 
-    if (email.isEmpty || password.isEmpty) {
-      _showError('Please enter your email and password.');
+    if (fullName.isEmpty || email.isEmpty || password.isEmpty) {
+      _showSnackBar('Please complete all fields.', isError: true);
       return;
     }
 
     if (!email.contains('@')) {
-      _showError('Please enter a valid email address.');
+      _showSnackBar('Please enter a valid email address.', isError: true);
+      return;
+    }
+
+    if (password.length < 6) {
+      _showSnackBar('Password must be at least 6 characters.', isError: true);
       return;
     }
 
     setState(() => _isLoading = true);
 
-    final result = await _authService.signIn(
-      email: email,
-      password: password,
-    );
+    final errorMessage = _selectedRole == 'buyer'
+        ? await _authService.registerBuyer(
+            fullName: fullName,
+            email: email,
+            password: password,
+          )
+        : await _authService.registerFarmer(
+            fullName: fullName,
+            email: email,
+            password: password,
+          );
 
     if (!mounted) return;
 
     setState(() => _isLoading = false);
 
-    if (!result.success) {
-      _showError(result.error ?? 'Login failed. Please try again.');
+    if (errorMessage != null) {
+      _showSnackBar(errorMessage, isError: true);
       return;
     }
 
-    if (result.role == 'admin') {
-      await _authService.signOut();
+    _showSnackBar(
+      _selectedRole == 'buyer'
+          ? 'Buyer account created successfully.'
+          : 'Farmer account created successfully.',
+    );
 
-      if (!mounted) return;
-
-      _showError('Admin accounts should use the web admin dashboard.');
-      return;
-    }
-
-    if (result.role != 'buyer' && result.role != 'farmer') {
-      await _authService.signOut();
-
-      if (!mounted) return;
-
-      _showError('Invalid account role. Please contact the administrator.');
-      return;
-    }
-
-    // No manual navigation here.
-    // AuthGate will route:
-    // buyer  -> BuyerHomeScreen
-    // farmer -> DashboardScreen
+    Navigator.pop(context);
   }
 
-  void _showError(String message) {
+  void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Row(
-          children: [
-            const Icon(
-              Icons.error_outline_rounded,
-              color: Colors.white,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
+        content: Text(
+          message,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        backgroundColor: Colors.redAccent.shade700,
+        backgroundColor: isError ? Colors.redAccent : const Color(0xFF5DBB63),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
-        margin: const EdgeInsets.all(20),
       ),
     );
   }
@@ -154,6 +141,18 @@ class _LoginScreenState extends State<LoginScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: Colors.white,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
       body: Container(
         width: double.infinity,
         height: double.infinity,
@@ -178,13 +177,11 @@ class _LoginScreenState extends State<LoginScreen>
               child: SlideTransition(
                 position: _slideAnimation,
                 child: Column(
-                  mainAxisSize: MainAxisSize.min,
                   children: [
                     const SizedBox(height: 40),
-
                     Container(
-                      height: 90,
-                      width: 90,
+                      height: 86,
+                      width: 86,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
                           colors: [
@@ -198,45 +195,39 @@ class _LoginScreenState extends State<LoginScreen>
                         boxShadow: [
                           BoxShadow(
                             color: const Color(0xFF5DBB63)
-                                .withValues(alpha: 0.4),
-                            blurRadius: 40,
-                            spreadRadius: 10,
+                                .withValues(alpha: 0.35),
+                            blurRadius: 35,
+                            spreadRadius: 8,
                           ),
                         ],
                       ),
                       child: const Icon(
-                        Icons.eco_rounded,
-                        size: 50,
+                        Icons.person_add_alt_1_rounded,
+                        size: 44,
                         color: Colors.white,
                       ),
                     ),
-
                     const SizedBox(height: 24),
-
                     const Text(
                       'GreenGuard AI',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: 36,
+                        fontSize: 34,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 1.2,
+                        letterSpacing: 1.1,
                       ),
                     ),
-
                     const SizedBox(height: 8),
-
                     const Text(
-                      'SMART FARMING PLATFORM',
+                      'CREATE ACCOUNT',
                       style: TextStyle(
                         color: Color(0xFF5DBB63),
-                        fontSize: 12,
+                        fontSize: 11,
                         fontWeight: FontWeight.w900,
-                        letterSpacing: 3,
+                        letterSpacing: 2.5,
                       ),
                     ),
-
-                    const SizedBox(height: 48),
-
+                    const SizedBox(height: 44),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(32),
                       child: BackdropFilter(
@@ -253,75 +244,42 @@ class _LoginScreenState extends State<LoginScreen>
                               color: Colors.white.withValues(alpha: 0.1),
                               width: 1.5,
                             ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.2),
-                                blurRadius: 30,
-                                offset: const Offset(0, 10),
-                              ),
-                            ],
                           ),
                           child: Column(
                             children: [
+                              _buildRoleSelector(),
+                              const SizedBox(height: 16),
+                              _buildTextField(
+                                controller: _fullNameController,
+                                icon: Icons.person_rounded,
+                                hint: 'Full Name',
+                              ),
+                              const SizedBox(height: 16),
                               _buildTextField(
                                 controller: _emailController,
                                 icon: Icons.email_rounded,
                                 hint: 'Email Address',
                                 isEmail: true,
                               ),
-
                               const SizedBox(height: 16),
-
                               _buildTextField(
                                 controller: _passwordController,
                                 icon: Icons.lock_rounded,
-                                hint: 'Secure Password',
+                                hint: 'Password',
                                 isPassword: true,
                               ),
-
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: TextButton(
-                                  onPressed: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) =>
-                                            const ForgotPasswordScreen(),
-                                      ),
-                                    );
-                                  },
-                                  child: const Text(
-                                    'Forgot Password?',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ),
-
-                              const SizedBox(height: 10),
-
+                              const SizedBox(height: 24),
                               SizedBox(
                                 width: double.infinity,
                                 height: 56,
                                 child: ElevatedButton(
-                                  onPressed: _isLoading ? null : _login,
+                                  onPressed: _isLoading ? null : _register,
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        const Color(0xFF5DBB63),
-                                    foregroundColor:
-                                        const Color(0xFF0A110D),
-                                    disabledBackgroundColor:
-                                        const Color(0xFF5DBB63)
-                                            .withValues(alpha: 0.5),
+                                    backgroundColor: const Color(0xFF5DBB63),
+                                    foregroundColor: const Color(0xFF0A110D),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(20),
                                     ),
-                                    elevation: 8,
-                                    shadowColor: const Color(0xFF5DBB63)
-                                        .withValues(alpha: 0.5),
                                   ),
                                   child: _isLoading
                                       ? const SizedBox(
@@ -332,9 +290,11 @@ class _LoginScreenState extends State<LoginScreen>
                                             strokeWidth: 3,
                                           ),
                                         )
-                                      : const Text(
-                                          'Sign In',
-                                          style: TextStyle(
+                                      : Text(
+                                          _selectedRole == 'buyer'
+                                              ? 'Create Buyer Account'
+                                              : 'Create Farmer Account',
+                                          style: const TextStyle(
                                             fontSize: 16,
                                             fontWeight: FontWeight.w900,
                                             letterSpacing: 1,
@@ -342,53 +302,97 @@ class _LoginScreenState extends State<LoginScreen>
                                         ),
                                 ),
                               ),
-
-                              const SizedBox(height: 16),
-
-                              TextButton(
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) =>
-                                          const RegisterScreen(),
-                                    ),
-                                  );
-                                },
-                                child: const Text(
-                                  'Create Account',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
                             ],
                           ),
                         ),
                       ),
                     ),
-
-                    const SizedBox(height: 40),
-
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 20),
-                      child: Text(
-                        'Marketplace • AI Disease Detection • Crop Management',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.3),
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.5,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
+                    const SizedBox(height: 32),
                   ],
                 ),
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRoleSelector() {
+    return Container(
+      padding: const EdgeInsets.all(6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.05),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildRoleButton(
+              label: 'Buyer',
+              icon: Icons.shopping_bag_rounded,
+              role: 'buyer',
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildRoleButton(
+              label: 'Farmer',
+              icon: Icons.agriculture_rounded,
+              role: 'farmer',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRoleButton({
+    required String label,
+    required IconData icon,
+    required String role,
+  }) {
+    final isSelected = _selectedRole == role;
+
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedRole = role;
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        height: 48,
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFF5DBB63)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: isSelected
+                  ? const Color(0xFF0A110D)
+                  : Colors.white54,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected
+                    ? const Color(0xFF0A110D)
+                    : Colors.white54,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -412,9 +416,7 @@ class _LoginScreenState extends State<LoginScreen>
       child: TextField(
         controller: controller,
         obscureText: isPassword && _obscurePassword,
-        keyboardType: isEmail
-            ? TextInputType.emailAddress
-            : TextInputType.text,
+        keyboardType: isEmail ? TextInputType.emailAddress : TextInputType.text,
         style: const TextStyle(
           color: Colors.white,
           fontWeight: FontWeight.w600,

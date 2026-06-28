@@ -1,31 +1,40 @@
 import 'package:flutter/material.dart';
+
 import '../screens/order_detail_screen.dart';
 
 class OrderCard extends StatelessWidget {
   final Map<String, dynamic> order;
 
-  const OrderCard({super.key, required this.order});
+  const OrderCard({
+    super.key,
+    required this.order,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final orderId = order['id']?.toString().substring(0, 8).toUpperCase() ?? 'UNKNOWN';
-    final customer = order['shipping_name'] ?? 'Guest';
-    final total = order['total_amount']?.toString() ?? '0.00';
-    final status = order['status'] ?? 'Pending';
-    final paymentStatus = order['payment_status'] ?? 'Unpaid';
+    final rawOrderId = order['id']?.toString() ?? 'UNKNOWN';
+    final orderId = rawOrderId.length >= 8
+        ? rawOrderId.substring(0, 8).toUpperCase()
+        : rawOrderId.toUpperCase();
 
-    Color statusColor;
-    switch (status) {
-      case 'Delivered':
-        statusColor = const Color(0xFF5DBB63);
-        break;
-      case 'Preparing':
-      case 'Shipped':
-        statusColor = Colors.orange;
-        break;
-      default:
-        statusColor = Colors.blueGrey;
-    }
+    final customer = order['shipping_name']?.toString().trim().isNotEmpty == true
+        ? order['shipping_name'].toString()
+        : 'Guest Buyer';
+
+    final total = order['total_amount']?.toString() ?? '0.00';
+    final status = order['status']?.toString() ?? 'Pending';
+    final paymentStatus = order['payment_status']?.toString() ?? 'Unpaid';
+    final deliveryMethod =
+        order['delivery_method']?.toString() ?? 'Delivery';
+
+    final orderItems = List<Map<String, dynamic>>.from(
+      order['order_items'] ?? [],
+    );
+
+    final itemCount = orderItems.length;
+
+    final statusColor = _getStatusColor(status);
+    final firstLetter = customer.isNotEmpty ? customer[0].toUpperCase() : 'B';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -34,7 +43,7 @@ class OrderCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 15,
             offset: const Offset(0, 8),
           ),
@@ -71,9 +80,12 @@ class OrderCard extends StatelessWidget {
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
                       decoration: BoxDecoration(
-                        color: statusColor.withOpacity(0.1),
+                        color: statusColor.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(20),
                       ),
                       child: Text(
@@ -87,43 +99,60 @@ class OrderCard extends StatelessWidget {
                     ),
                   ],
                 ),
+
                 const SizedBox(height: 16),
+
                 Row(
                   children: [
                     CircleAvatar(
-                      backgroundColor: const Color(0xFF2F6B3B).withOpacity(0.1),
+                      backgroundColor:
+                          const Color(0xFF2F6B3B).withValues(alpha: 0.1),
                       child: Text(
-                        customer[0].toUpperCase(),
+                        firstLetter,
                         style: const TextStyle(
                           color: Color(0xFF2F6B3B),
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
+
                     const SizedBox(width: 12),
+
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             customer,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
+                              color: Color(0xFF1E2A1F),
                             ),
                           ),
+
                           const SizedBox(height: 4),
+
                           Text(
-                            paymentStatus,
+                            '$deliveryMethod • $paymentStatus • $itemCount item${itemCount == 1 ? '' : 's'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: paymentStatus == 'Paid' ? Colors.green : Colors.grey,
+                              color: paymentStatus == 'Paid'
+                                  ? Colors.green
+                                  : Colors.grey.shade600,
                             ),
                           ),
                         ],
                       ),
                     ),
+
+                    const SizedBox(width: 12),
+
                     Text(
                       '₱$total',
                       style: const TextStyle(
@@ -140,5 +169,22 @@ class OrderCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'Delivered':
+        return const Color(0xFF5DBB63);
+      case 'Confirmed':
+        return Colors.blue;
+      case 'Preparing':
+        return Colors.orange;
+      case 'Shipped':
+        return Colors.purple;
+      case 'Cancelled':
+        return Colors.redAccent;
+      default:
+        return Colors.blueGrey;
+    }
   }
 }
