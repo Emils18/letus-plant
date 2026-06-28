@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 
 type AdminStats = {
   totalUsers: number;
@@ -31,614 +30,856 @@ type UserItem = {
   id: string;
   full_name: string | null;
   email: string;
-  role: "buyer" | "farmer" | "admin" | string;
+  role: string;
   created_at?: string | null;
 };
 
-const ORDER_STATUSES = ["Pending", "Confirmed", "Preparing", "Delivered"];
-const PAYMENT_STATUSES = ["Unpaid", "Paid"];
+const ORDER_STATUSES = [
+  "Pending",
+  "Confirmed",
+  "Preparing",
+  "Shipped",
+  "Delivered",
+  "Cancelled",
+];
+
+const PAYMENT_STATUSES = ["Unpaid", "Pending Verification", "Paid"];
 const USER_ROLES = ["admin", "farmer", "buyer"] as const;
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text || `Request failed with status ${response.status}`);
+  }
+}
+
+function GreenGuardIcon({ className = "h-10 w-10" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      className={className}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M50 6C61 16 73 20 87 22V47C87 70 72 86 50 94C28 86 13 70 13 47V22C27 20 39 16 50 6Z"
+        fill="white"
+        stroke="#5DBB3F"
+        strokeWidth="6"
+        strokeLinejoin="round"
+      />
+
+      <path
+        d="M50 22C59 31 67 43 64 57C61 68 55 74 50 80C45 74 39 68 36 57C33 43 41 31 50 22Z"
+        fill="#67C839"
+      />
+
+      <path
+        d="M36 39C27 39 20 47 20 56C20 67 31 74 47 81C42 70 38 58 36 39Z"
+        fill="#1FA33F"
+      />
+
+      <path
+        d="M64 39C73 39 80 47 80 56C80 67 69 74 53 81C58 70 62 58 64 39Z"
+        fill="#169A3A"
+      />
+
+      <path
+        d="M50 34V79"
+        stroke="white"
+        strokeWidth="5"
+        strokeLinecap="round"
+      />
+
+      <path
+        d="M35 46C40 59 46 70 50 79"
+        stroke="white"
+        strokeWidth="5"
+        strokeLinecap="round"
+      />
+
+      <path
+        d="M65 46C60 59 54 70 50 79"
+        stroke="white"
+        strokeWidth="5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export default function AdminDashboardPage() {
+  const router = useRouter();
+
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [users, setUsers] = useState<UserItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
-  const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
-  const [updatingPayment, setUpdatingPayment] = useState<string | null>(null);
   const [updatingRole, setUpdatingRole] = useState<string | null>(null);
-
+  const [deletingUser, setDeletingUser] = useState<string | null>(null);
+  const [updatingOrder, setUpdatingOrder] = useState<string | null>(null);
   const [adminName, setAdminName] = useState("Admin");
 
-  const router = useRouter();
+  const isVisibleUser = (user: UserItem) => {
+    const email = String(user.email || "").toLowerCase();
+    const role = String(user.role || "").toLowerCase();
+
+    return role !== "deleted" && !email.startsWith("deleted_");
+  };
+
+  const buildStats = (
+    visibleUsers: UserItem[],
+    currentOrders: Order[],
+    totalProducts: number
+  ): AdminStats => {
+    return {
+      totalUsers: visibleUsers.length,
+      totalFarmers: visibleUsers.filter(
+        (user) => String(user.role).toLowerCase() === "farmer"
+      ).length,
+      totalBuyers: visibleUsers.filter(
+        (user) => String(user.role).toLowerCase() === "buyer"
+      ).length,
+      totalProducts,
+      totalOrders: currentOrders.length,
+      pendingOrders: currentOrders.filter(
+        (order) => String(order.status).toLowerCase() === "pending"
+      ).length,
+    };
+  };
+
+  const loadUsers = async () => {
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "GET",
+      });
+
+      const result = await readJsonResponse(response);
+
+      if (!result.success) {
+        throw new Error(result.message || "Failed to fetch users.");
+      }
+
+      return (result.users as UserItem[]) || [];
+    } catch {
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, full_name, email, role, created_at")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      return (data as UserItem[]) || [];
+    }
+  };
+
+  const loadOrders = async () => {
+    try {
+      const response = await fetch("/api/admin/orders", {
+        method: "GET",
+      });
+
+      const result = await readJsonResponse(response);
+
+      if (!result.success) {
+        throw new Error(result.message || "Failed to fetch orders.");
+      }
+
+      return (result.orders as Order[]) || [];
+    } catch {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("*")
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      return (data as Order[]) || [];
+    }
+  };
 
   const fetchAdminData = useCallback(async () => {
     setLoading(true);
 
-    // Auth protection (enable in production)
-    /*
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
-    if (!session?.user) {
-      router.replace("/");
-      return;
+      if (session?.user) {
+        const { data: userData } = await supabase
+          .from("users")
+          .select("full_name")
+          .eq("id", session.user.id)
+          .maybeSingle();
+
+        setAdminName(userData?.full_name || "Admin");
+      }
+
+      const [{ count: totalProducts }, loadedUsers, loadedOrders] =
+        await Promise.all([
+          supabase.from("products").select("*", {
+            count: "exact",
+            head: true,
+          }),
+          loadUsers(),
+          loadOrders(),
+        ]);
+
+      const visibleUsers = loadedUsers.filter(isVisibleUser);
+
+      setUsers(visibleUsers);
+      setOrders(loadedOrders);
+      setStats(buildStats(visibleUsers, loadedOrders, totalProducts || 0));
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Failed to load admin dashboard."
+      );
+    } finally {
+      setLoading(false);
     }
-
-    const { data: userData } = await supabase
-      .from("users")
-      .select("full_name, role")
-      .eq("id", session.user.id)
-      .single();
-
-    if (!userData || userData.role !== "admin") {
-      router.replace("/");
-      return;
-    }
-
-    setAdminName(userData.full_name || "Admin");
-    */
-
-    const [
-      { count: totalUsers },
-      { count: totalFarmers },
-      { count: totalBuyers },
-      { count: totalProducts },
-      { count: totalOrders },
-      { count: pendingOrders },
-      { data: allOrders, error: ordersError },
-      { data: allUsers, error: usersError },
-    ] = await Promise.all([
-      supabase.from("users").select("*", { count: "exact", head: true }),
-      supabase
-        .from("users")
-        .select("*", { count: "exact", head: true })
-        .eq("role", "farmer"),
-      supabase
-        .from("users")
-        .select("*", { count: "exact", head: true })
-        .eq("role", "buyer"),
-      supabase.from("products").select("*", { count: "exact", head: true }),
-      supabase.from("orders").select("*", { count: "exact", head: true }),
-      supabase
-        .from("orders")
-        .select("*", { count: "exact", head: true })
-        .eq("status", "Pending"),
-      supabase.from("orders").select("*").order("created_at", { ascending: false }),
-      supabase
-        .from("users")
-        .select("id, full_name, email, role, created_at")
-        .order("created_at", { ascending: false }),
-    ]);
-
-    if (ordersError) {
-      console.error("Error fetching orders:", ordersError.message);
-    }
-
-    if (usersError) {
-      console.error("Error fetching users:", usersError.message);
-    }
-
-    setStats({
-      totalUsers: totalUsers || 0,
-      totalFarmers: totalFarmers || 0,
-      totalBuyers: totalBuyers || 0,
-      totalProducts: totalProducts || 0,
-      totalOrders: totalOrders || 0,
-      pendingOrders: pendingOrders || 0,
-    });
-
-    setOrders((allOrders as Order[]) || []);
-    setUsers((allUsers as UserItem[]) || []);
-    setLoading(false);
-  }, [router]);
+  }, []);
 
   useEffect(() => {
     fetchAdminData();
   }, [fetchAdminData]);
 
-  const handleStatusChange = async (orderId: string, newStatus: string) => {
-    setUpdatingStatus(orderId);
-
-    const previousOrder = orders.find((o) => o.id === orderId);
-
-    const { error } = await supabase
-      .from("orders")
-      .update({ status: newStatus })
-      .eq("id", orderId);
-
-    if (error) {
-      console.error("Error updating status:", error.message);
-      setUpdatingStatus(null);
-      return;
-    }
-
-    setOrders((prev) =>
-      prev.map((order) =>
-        order.id === orderId ? { ...order, status: newStatus } : order
-      )
-    );
-
-    if (stats && previousOrder) {
-      if (previousOrder.status === "Pending" && newStatus !== "Pending") {
-        setStats({
-          ...stats,
-          pendingOrders: Math.max(0, stats.pendingOrders - 1),
-        });
-      } else if (
-        previousOrder.status !== "Pending" &&
-        newStatus === "Pending"
-      ) {
-        setStats({
-          ...stats,
-          pendingOrders: stats.pendingOrders + 1,
-        });
-      }
-    }
-
-    setUpdatingStatus(null);
-  };
-
-  const handlePaymentChange = async (
-    orderId: string,
-    newPaymentStatus: string
-  ) => {
-    setUpdatingPayment(orderId);
-
-    const { error } = await supabase
-      .from("orders")
-      .update({ payment_status: newPaymentStatus })
-      .eq("id", orderId);
-
-    if (error) {
-      console.error("Error updating payment:", error.message);
-      setUpdatingPayment(null);
-      return;
-    }
-
-    setOrders((prev) =>
-      prev.map((order) =>
-        order.id === orderId
-          ? { ...order, payment_status: newPaymentStatus }
-          : order
-      )
-    );
-
-    setUpdatingPayment(null);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.replace("/");
   };
 
   const handleRoleChange = async (
     userId: string,
     newRole: "admin" | "farmer" | "buyer"
   ) => {
+    const targetUser = users.find((user) => user.id === userId);
+
+    const confirmed = window.confirm(
+      `Are you sure you want to make this user a ${newRole}?\n\n${
+        targetUser?.email || userId
+      }`
+    );
+
+    if (!confirmed) return;
+
     setUpdatingRole(userId);
 
-    const { error } = await supabase
-      .from("users")
-      .update({ role: newRole })
-      .eq("id", userId);
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId,
+          role: newRole,
+        }),
+      });
 
-    if (error) {
-      console.error("Error updating role:", error.message);
+      const result = await readJsonResponse(response);
+
+      if (!result.success) {
+        throw new Error(result.message || "Failed to update role.");
+      }
+
+      const updatedUser = result.user as UserItem | undefined;
+
+      const updatedUsers = users.map((user) =>
+        user.id === userId ? updatedUser || { ...user, role: newRole } : user
+      );
+
+      setUsers(updatedUsers);
+      setStats((prev) => {
+        if (!prev) return prev;
+
+        return buildStats(updatedUsers, orders, prev.totalProducts);
+      });
+
+      alert(result.message || `Role changed to ${newRole}.`);
+      await fetchAdminData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Role update failed.");
+    } finally {
       setUpdatingRole(null);
-      return;
     }
+  };
 
-    // Refresh everything so stats + users stay accurate
-    await fetchAdminData();
-    setUpdatingRole(null);
+  const handleDeleteUser = async (userId: string, email: string) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete this user?\n\n${email}\n\nIf full delete is blocked, the user will be hidden.`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingUser(userId);
+
+    try {
+      const response = await fetch(`/api/admin/users?userId=${userId}`, {
+        method: "DELETE",
+      });
+
+      const result = await readJsonResponse(response);
+
+      if (!result.success) {
+        throw new Error(result.message || "Delete failed.");
+      }
+
+      const remainingUsers = users.filter((user) => user.id !== userId);
+
+      setUsers(remainingUsers);
+      setStats((prev) => {
+        if (!prev) return prev;
+
+        return buildStats(remainingUsers, orders, prev.totalProducts);
+      });
+
+      alert(result.message || "User removed.");
+      await fetchAdminData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Delete failed.");
+    } finally {
+      setDeletingUser(null);
+    }
+  };
+
+  const handleOrderUpdate = async (
+    orderId: string,
+    field: "status" | "payment_status",
+    value: string
+  ) => {
+    const label = field === "status" ? "order status" : "payment status";
+
+    const confirmed = window.confirm(
+      `Are you sure you want to update ${label} to "${value}"?`
+    );
+
+    if (!confirmed) return;
+
+    const updateKey = `${orderId}-${field}`;
+    setUpdatingOrder(updateKey);
+
+    const previousOrders = orders;
+
+    try {
+      const optimisticOrders = orders.map((order) =>
+        order.id === orderId ? { ...order, [field]: value } : order
+      );
+
+      setOrders(optimisticOrders);
+
+      const response = await fetch("/api/admin/orders", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          orderId,
+          [field]: value,
+        }),
+      });
+
+      const result = await readJsonResponse(response);
+
+      if (!result.success) {
+        throw new Error(result.message || "Failed to update order.");
+      }
+
+      const updatedOrder = result.order as Order;
+
+      const finalOrders = optimisticOrders.map((order) =>
+        order.id === orderId ? { ...order, ...updatedOrder } : order
+      );
+
+      setOrders(finalOrders);
+      setStats((prev) => {
+        if (!prev) return prev;
+
+        return buildStats(users, finalOrders, prev.totalProducts);
+      });
+
+      alert(result.message || "Order updated successfully.");
+      await fetchAdminData();
+    } catch (error) {
+      setOrders(previousOrders);
+
+      alert(error instanceof Error ? error.message : "Order update failed.");
+    } finally {
+      setUpdatingOrder(null);
+    }
   };
 
   const filteredUsers = useMemo(() => {
     return users.filter((user) => {
-      const fullName = user.full_name?.toLowerCase() || "";
-      const email = user.email?.toLowerCase() || "";
       const query = search.toLowerCase();
 
-      return fullName.includes(query) || email.includes(query);
+      return (
+        (user.full_name || "").toLowerCase().includes(query) ||
+        user.email.toLowerCase().includes(query) ||
+        user.role.toLowerCase().includes(query)
+      );
     });
   }, [users, search]);
-
-  if (loading) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#0A110D]">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#5DBB63]/20 border-t-[#5DBB63]"></div>
-        <p className="animate-pulse text-xs font-bold uppercase tracking-widest text-[#5DBB63]">
-          Loading Command Center...
-        </p>
-      </div>
-    );
-  }
 
   const totalRevenue = orders.reduce(
     (sum, order) => sum + Number(order.total_amount || 0),
     0
   );
 
+  const statCards = [
+    {
+      label: "Total Users",
+      value: stats?.totalUsers || 0,
+      icon: "👥",
+      tone: "from-blue-500/20 to-blue-500/5 text-blue-300",
+    },
+    {
+      label: "Farmers",
+      value: stats?.totalFarmers || 0,
+      icon: "🧑‍🌾",
+      tone: "from-amber-500/20 to-amber-500/5 text-amber-300",
+    },
+    {
+      label: "Buyers",
+      value: stats?.totalBuyers || 0,
+      icon: "🛒",
+      tone: "from-indigo-500/20 to-indigo-500/5 text-indigo-300",
+    },
+    {
+      label: "Products",
+      value: stats?.totalProducts || 0,
+      icon: "🥬",
+      tone: "from-[#5DBB63]/25 to-[#5DBB63]/5 text-[#5DBB63]",
+    },
+    {
+      label: "Orders",
+      value: stats?.totalOrders || 0,
+      icon: "📦",
+      tone: "from-purple-500/20 to-purple-500/5 text-purple-300",
+    },
+    {
+      label: "Pending",
+      value: stats?.pendingOrders || 0,
+      icon: "⏳",
+      tone: "from-rose-500/20 to-rose-500/5 text-rose-300",
+    },
+  ];
+
+  if (loading) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-[#07100B] text-white">
+        <div className="relative">
+          <div className="h-20 w-20 animate-spin rounded-full border-4 border-[#5DBB63]/20 border-t-[#5DBB63]" />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <GreenGuardIcon className="h-12 w-12" />
+          </div>
+        </div>
+
+        <div className="text-center">
+          <p className="text-sm font-black uppercase tracking-[4px] text-[#5DBB63]">
+            Loading Admin Dashboard
+          </p>
+          <p className="mt-2 text-sm text-white/50">
+            Syncing users, products, and orders...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <main className="flex min-h-screen flex-col bg-[#0A110D] pb-24 font-sans text-white">
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0A110D]/90 px-6 py-5 backdrop-blur-2xl">
+    <main className="min-h-screen bg-[#07100B] pb-24 text-white">
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-[18%] top-[-18%] h-[720px] w-[720px] rounded-full bg-[#5DBB63]/15 blur-[140px]" />
+        <div className="absolute -right-[18%] bottom-[-22%] h-[820px] w-[820px] rounded-full bg-[#2F6B3B]/20 blur-[170px]" />
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:54px_54px]" />
+      </div>
+
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#07100B]/75 px-6 py-5 shadow-2xl shadow-black/20 backdrop-blur-2xl">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#2F6B3B] via-[#5DBB63] to-[#4CAF50] shadow-[0_0_30px_rgba(93,187,99,0.5)]">
-              🌱
+            <div className="group relative flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-[0_0_35px_rgba(93,187,99,0.35)] transition-all duration-500 hover:scale-110 hover:rotate-3">
+              <GreenGuardIcon className="h-10 w-10" />
             </div>
 
             <div>
-              <h1 className="text-2xl font-black tracking-tighter">
-                LetUs Plant
+              <h1 className="text-2xl font-black tracking-tighter text-white">
+                GreenGuard AI
               </h1>
-              <p className="text-[10px] font-bold uppercase tracking-[2px] text-[#5DBB63]">
+              <p className="text-[10px] font-bold uppercase tracking-[3px] text-[#5DBB63]">
                 Admin Command Center
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 text-xs">
-              <div className="h-2 w-2 animate-ping rounded-full bg-[#5DBB63]"></div>
-              <span className="font-medium text-[#5DBB63]">LIVE</span>
-            </div>
-
-            <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-5 py-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#5DBB63]/20 font-bold text-[#5DBB63]">
-                {adminName[0]}
+          <div className="flex items-center gap-4">
+            <div className="hidden items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-2 md:flex">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#5DBB63]/15 text-sm font-black text-[#5DBB63]">
+                {adminName[0] || "A"}
               </div>
               <div>
-                <p className="text-sm font-semibold">{adminName}</p>
-                <p className="-mt-0.5 text-[10px] text-gray-400">
+                <p className="text-sm font-bold text-white">{adminName}</p>
+                <p className="-mt-0.5 text-[10px] text-white/40">
                   Administrator
                 </p>
               </div>
             </div>
 
-            <Link
-              href="/"
-              className="flex items-center gap-2 rounded-2xl bg-white px-6 py-2.5 text-sm font-bold text-[#0A110D] transition-all hover:bg-[#5DBB63] hover:text-white active:scale-95"
+            <button
+              onClick={handleLogout}
+              className="rounded-2xl border border-red-500/30 bg-red-500/10 px-5 py-2.5 text-sm font-black text-red-300 shadow-lg shadow-red-950/20 transition-all duration-300 hover:-translate-y-0.5 hover:bg-red-500 hover:text-white active:scale-95"
             >
-              ← Back to Store
-            </Link>
+              Logout
+            </button>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto w-full max-w-[1400px] px-6 pt-10">
-        <div className="mb-10 rounded-3xl border border-[#5DBB63]/20 bg-gradient-to-br from-[#121D17] to-[#0A110D] p-10 shadow-2xl">
-          <h2 className="text-5xl font-black tracking-tighter">
-            Welcome back, Commander
-          </h2>
-          <p className="mt-3 text-xl text-gray-400">
-            You have{" "}
-            <span className="font-bold text-[#5DBB63]">
-              {stats?.pendingOrders}
-            </span>{" "}
-            orders awaiting fulfillment.
-          </p>
-        </div>
+      <div className="relative z-10 mx-auto w-full max-w-[1400px] px-6 pt-10">
+        <section className="relative mb-10 overflow-hidden rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 via-[#0D1711]/95 to-[#07100B]/95 p-10 shadow-2xl shadow-black/30">
+          <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-[#5DBB63]/10 blur-3xl" />
 
-        <div className="mb-12 grid grid-cols-2 gap-5 md:grid-cols-3 lg:grid-cols-6">
-          {[
-            { label: "Total Users", value: stats?.totalUsers, color: "text-blue-400" },
-            { label: "Farmers", value: stats?.totalFarmers, color: "text-amber-400" },
-            { label: "Buyers", value: stats?.totalBuyers, color: "text-indigo-400" },
-            { label: "Products", value: stats?.totalProducts, color: "text-[#5DBB63]" },
-            { label: "Total Orders", value: stats?.totalOrders, color: "text-purple-400" },
-            { label: "Pending", value: stats?.pendingOrders, color: "text-rose-400" },
-          ].map((stat, i) => (
+          <div className="relative z-10">
+            <div className="mb-5 inline-flex rounded-full border border-[#5DBB63]/20 bg-[#5DBB63]/10 px-4 py-2 text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">
+              Live System Overview
+            </div>
+
+            <h2 className="max-w-3xl text-5xl font-black tracking-tighter text-white md:text-6xl">
+              Welcome back, Admin
+            </h2>
+
+            <p className="mt-4 max-w-2xl text-lg text-white/55">
+              Manage users, monitor orders, verify payments, and supervise
+              marketplace activity.
+            </p>
+
+            <div className="mt-7 flex flex-wrap gap-3">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-3 text-sm text-white/70">
+                Pending Orders:{" "}
+                <span className="font-black text-[#5DBB63]">
+                  {stats?.pendingOrders || 0}
+                </span>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-3 text-sm text-white/70">
+                Revenue:{" "}
+                <span className="font-black text-[#5DBB63]">
+                  ₱{totalRevenue.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-12 grid grid-cols-2 gap-5 md:grid-cols-3 lg:grid-cols-6">
+          {statCards.map((stat, index) => (
             <div
-              key={i}
-              className="group rounded-3xl border border-white/10 bg-[#121D17] p-6 transition-all duration-300 hover:-translate-y-2 hover:border-[#5DBB63]/30 hover:shadow-2xl hover:shadow-[#5DBB63]/10"
+              key={stat.label}
+              className="group rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-5 shadow-xl shadow-black/10 backdrop-blur-xl transition-all duration-500 hover:-translate-y-2 hover:border-[#5DBB63]/40 hover:bg-white/[0.06] hover:shadow-[#5DBB63]/10"
+              style={{ transitionDelay: `${index * 25}ms` }}
             >
-              <p className={`text-5xl font-black tracking-tighter ${stat.color}`}>
+              <div
+                className={`mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br ${stat.tone}`}
+              >
+                <span className="text-xl">{stat.icon}</span>
+              </div>
+
+              <p className="text-4xl font-black tracking-tighter text-white">
                 {stat.value}
               </p>
-              <p className="mt-2 text-sm font-medium uppercase tracking-widest text-gray-400">
+
+              <p className="mt-1 text-xs font-bold uppercase tracking-[2px] text-white/40">
                 {stat.label}
               </p>
             </div>
           ))}
-        </div>
+        </section>
 
-        <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
-          <div className="overflow-hidden rounded-3xl border border-white/10 bg-[#121D17] shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 px-8 py-7">
-              <div>
-                <h3 className="text-2xl font-bold">Fulfillment Center</h3>
-                <p className="text-sm text-gray-400">
-                  Real-time order management
-                </p>
-              </div>
-              <div className="rounded-full bg-white/5 px-4 py-1.5 text-xs font-mono">
-                {orders.length} orders
-              </div>
+        <section className="mb-10 overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.035] shadow-2xl shadow-black/20 backdrop-blur-xl">
+          <div className="flex flex-col gap-4 border-b border-white/10 px-8 py-7 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="text-2xl font-black tracking-tight text-white">
+                Fulfillment Center
+              </h3>
+              <p className="mt-1 text-sm text-white/45">
+                Update delivery status, payment status, and view proof images.
+              </p>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-[#0A110D] text-xs uppercase tracking-widest text-gray-500">
-                  <tr>
-                    <th className="px-8 py-6 text-left">Customer</th>
-                    <th className="px-8 py-6 text-left">Amount & Payment</th>
-                    <th className="px-8 py-6 text-left">Proof</th>
-                    <th className="px-8 py-6 text-right">Status</th>
-                  </tr>
-                </thead>
+            <div className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-mono text-white/60">
+              {orders.length} orders
+            </div>
+          </div>
 
-                <tbody className="divide-y divide-white/10">
-                  {orders.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="py-20 text-center text-gray-400">
-                        No orders yet
-                      </td>
-                    </tr>
-                  ) : (
-                    orders.map((order, index) => (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1000px]">
+              <thead className="bg-black/20 text-xs uppercase tracking-[2px] text-white/35">
+                <tr>
+                  <th className="px-8 py-5 text-left">Customer</th>
+                  <th className="px-8 py-5 text-left">Amount</th>
+                  <th className="px-8 py-5 text-left">Payment</th>
+                  <th className="px-8 py-5 text-left">Order Status</th>
+                  <th className="px-8 py-5 text-left">Proof</th>
+                  <th className="px-8 py-5 text-right">Quick Actions</th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-white/10">
+                {orders.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="py-20 text-center text-sm text-white/45"
+                    >
+                      No orders yet.
+                    </td>
+                  </tr>
+                ) : (
+                  orders.map((order) => {
+                    const paymentUpdating =
+                      updatingOrder === `${order.id}-payment_status`;
+                    const statusUpdating =
+                      updatingOrder === `${order.id}-status`;
+
+                    return (
                       <tr
                         key={order.id}
-                        className="group animate-in fade-in transition-colors duration-200 hover:bg-white/5"
-                        style={{ animationDelay: `${index * 30}ms` }}
+                        className="transition-colors duration-300 hover:bg-white/[0.035]"
                       >
-                        <td className="px-8 py-7">
-                          <div className="flex items-center gap-4">
-                            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#2F6B3B] to-[#5DBB63] text-xl font-bold shadow-inner">
-                              {order.shipping_name?.charAt(0).toUpperCase() || "U"}
-                            </div>
-                            <div>
-                              <p className="font-semibold text-lg">
-                                {order.shipping_name}
-                              </p>
-                              <p className="mt-0.5 text-xs text-gray-500">
-                                {order.order_code ? `${order.order_code} • ` : ""}
-                                {new Date(order.created_at).toLocaleDateString(
-                                  undefined,
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                  }
-                                )}
-                              </p>
-                            </div>
-                          </div>
+                        <td className="px-8 py-6">
+                          <p className="font-bold text-white">
+                            {order.shipping_name || "Unknown Customer"}
+                          </p>
+                          <p className="mt-1 text-xs text-white/35">
+                            {new Date(order.created_at).toLocaleDateString()}
+                          </p>
+                          <p className="mt-1 text-xs text-white/25">
+                            {order.order_code || order.id}
+                          </p>
                         </td>
 
-                        <td className="px-8 py-7">
-                          <div className="font-mono text-2xl font-bold text-[#5DBB63]">
-                            ₱{Number(order.total_amount).toLocaleString()}
-                          </div>
-
-                          <div className="relative mt-4 w-40">
-                            <select
-                              value={order.payment_status || "Unpaid"}
-                              onChange={(e) =>
-                                handlePaymentChange(order.id, e.target.value)
-                              }
-                              disabled={updatingPayment === order.id}
-                              className="w-full appearance-none rounded-2xl border border-white/10 bg-[#1A2520] px-5 py-3 text-sm font-medium transition-all focus:border-[#5DBB63] focus:outline-none disabled:opacity-60"
-                            >
-                              {PAYMENT_STATUSES.map((s) => (
-                                <option key={s} value={s}>
-                                  {s}
-                                </option>
-                              ))}
-                            </select>
-
-                            {updatingPayment === order.id && (
-                              <div className="absolute right-4 top-4 h-4 w-4 animate-spin rounded-full border-2 border-[#5DBB63] border-t-transparent" />
-                            )}
-                          </div>
+                        <td className="px-8 py-6">
+                          <p className="font-mono text-xl font-black text-[#5DBB63]">
+                            ₱{Number(order.total_amount || 0).toLocaleString()}
+                          </p>
                         </td>
 
-                        <td className="px-8 py-7">
+                        <td className="px-8 py-6">
+                          <select
+                            value={order.payment_status || "Unpaid"}
+                            disabled={paymentUpdating}
+                            onChange={(event) =>
+                              handleOrderUpdate(
+                                order.id,
+                                "payment_status",
+                                event.target.value
+                              )
+                            }
+                            className="rounded-2xl border border-white/10 bg-[#07100B] px-4 py-2 text-sm font-bold text-white outline-none transition-all focus:border-[#5DBB63]/60 disabled:opacity-50"
+                          >
+                            {PAYMENT_STATUSES.map((status) => (
+                              <option key={status} value={status}>
+                                {status}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td className="px-8 py-6">
+                          <select
+                            value={order.status || "Pending"}
+                            disabled={statusUpdating}
+                            onChange={(event) =>
+                              handleOrderUpdate(
+                                order.id,
+                                "status",
+                                event.target.value
+                              )
+                            }
+                            className="rounded-2xl border border-[#5DBB63]/20 bg-[#07100B] px-4 py-2 text-sm font-bold text-[#5DBB63] outline-none transition-all focus:border-[#5DBB63]/60 disabled:opacity-50"
+                          >
+                            {ORDER_STATUSES.map((status) => (
+                              <option key={status} value={status}>
+                                {status}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td className="px-8 py-6">
                           {order.proof_image_url ? (
                             <a
                               href={order.proof_image_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-2 text-sm font-medium text-blue-400 transition-colors hover:text-blue-300"
+                              className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-4 py-2 text-sm font-black text-[#5DBB63] transition hover:bg-[#5DBB63] hover:text-[#07100B]"
                             >
-                              👁 View Proof
+                              View Proof
                             </a>
                           ) : (
-                            <span className="text-xs text-gray-500">—</span>
+                            <span className="text-sm text-white/35">
+                              No proof
+                            </span>
                           )}
                         </td>
 
-                        <td className="px-8 py-7 text-right">
-                          <div className="relative inline-block w-44">
-                            <select
-                              value={order.status}
-                              onChange={(e) =>
-                                handleStatusChange(order.id, e.target.value)
+                        <td className="px-8 py-6">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() =>
+                                handleOrderUpdate(
+                                  order.id,
+                                  "payment_status",
+                                  "Paid"
+                                )
                               }
-                              disabled={updatingStatus === order.id}
-                              className={`w-full appearance-none rounded-2xl border px-5 py-3 text-sm font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[#121D17] disabled:opacity-60
-                              ${
-                                order.status === "Delivered"
-                                  ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
-                                  : order.status === "Pending"
-                                  ? "border-rose-500 bg-rose-500/10 text-rose-400"
-                                  : "border-[#5DBB63] bg-[#5DBB63]/10 text-[#5DBB63]"
-                              }`}
+                              disabled={paymentUpdating}
+                              className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-4 py-2 text-xs font-black text-[#5DBB63] transition hover:bg-[#5DBB63] hover:text-[#07100B] disabled:opacity-40"
                             >
-                              {ORDER_STATUSES.map((s) => (
-                                <option key={s} value={s}>
-                                  {s}
-                                </option>
-                              ))}
-                            </select>
+                              Mark Paid
+                            </button>
 
-                            {updatingStatus === order.id && (
-                              <div className="absolute right-5 top-4 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                            )}
+                            <button
+                              onClick={() =>
+                                handleOrderUpdate(
+                                  order.id,
+                                  "status",
+                                  "Delivered"
+                                )
+                              }
+                              disabled={statusUpdating}
+                              className="rounded-2xl border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-xs font-black text-blue-300 transition hover:bg-blue-500 hover:text-white disabled:opacity-40"
+                            >
+                              Delivered
+                            </button>
+
+                            <button
+                              onClick={() =>
+                                handleOrderUpdate(
+                                  order.id,
+                                  "status",
+                                  "Cancelled"
+                                )
+                              }
+                              disabled={statusUpdating}
+                              className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-xs font-black text-red-300 transition hover:bg-red-500 hover:text-white disabled:opacity-40"
+                            >
+                              Cancel
+                            </button>
                           </div>
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
+        </section>
 
-          <div className="space-y-8">
-            <div className="rounded-3xl border border-white/10 bg-[#121D17] p-8">
-              <h4 className="mb-6 flex items-center gap-3 text-lg font-bold">
-                <span>🌱</span> Quick Insights
-              </h4>
-
-              <div className="space-y-6 text-sm">
-                <div className="flex justify-between border-b border-white/10 pb-4">
-                  <span className="text-gray-400">Active Buyers</span>
-                  <span className="font-semibold">{stats?.totalBuyers}</span>
-                </div>
-
-                <div className="flex justify-between border-b border-white/10 pb-4">
-                  <span className="text-gray-400">Active Farmers</span>
-                  <span className="font-semibold">{stats?.totalFarmers}</span>
-                </div>
-
-                <div className="flex justify-between border-b border-white/10 pb-4">
-                  <span className="text-gray-400">Total Revenue</span>
-                  <span className="font-semibold text-[#5DBB63]">
-                    ₱{totalRevenue.toLocaleString()}
-                  </span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Total Products</span>
-                  <span className="font-semibold">{stats?.totalProducts}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-[#5DBB63]/30 bg-gradient-to-br from-[#1F2F24] to-[#0A110D] p-8 text-center">
-              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#5DBB63]/10 text-4xl">
-                ✅
-              </div>
-              <h4 className="text-xl font-bold">System Healthy</h4>
-              <p className="mt-3 text-sm text-gray-400">
-                All connections stable. Ready for mobile sync.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* USER MANAGEMENT */}
-        <section className="mt-10 overflow-hidden rounded-3xl border border-white/10 bg-[#121D17] shadow-2xl">
+        <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.035] shadow-2xl shadow-black/20 backdrop-blur-xl">
           <div className="border-b border-white/10 px-8 py-7">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <h3 className="text-2xl font-bold">User Management</h3>
-                <p className="text-sm text-gray-400">
-                  View all users, search instantly, and control roles live
+                <h3 className="text-2xl font-black tracking-tight text-white">
+                  User Management
+                </h3>
+                <p className="mt-1 text-sm text-white/45">
+                  Change roles and remove test or invalid accounts.
                 </p>
               </div>
 
-              <div className="w-full lg:w-[360px]">
-                <input
-                  type="text"
-                  placeholder="Search by full name or email..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="w-full rounded-2xl border border-white/10 bg-[#0A110D] px-5 py-3 text-sm text-white placeholder:text-gray-500 outline-none transition-all focus:border-[#5DBB63] focus:ring-2 focus:ring-[#5DBB63]/20"
-                />
-              </div>
+              <input
+                type="text"
+                placeholder="Search users..."
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="w-full rounded-2xl border border-white/10 bg-black/20 px-5 py-3 text-sm text-white outline-none transition-all duration-300 placeholder:text-white/30 focus:border-[#5DBB63]/50 focus:ring-4 focus:ring-[#5DBB63]/10 lg:w-[360px]"
+              />
             </div>
           </div>
 
           <div className="max-h-[650px] overflow-y-auto px-6 py-6">
             {filteredUsers.length === 0 ? (
-              <div className="flex min-h-[220px] items-center justify-center rounded-3xl border border-dashed border-white/10 bg-[#0A110D]/40 text-center text-gray-400">
-                No users found for your search.
+              <div className="flex min-h-[220px] items-center justify-center rounded-3xl border border-dashed border-white/10 bg-black/10 text-sm text-white/40">
+                No users found.
               </div>
             ) : (
               <div className="grid gap-4">
                 {filteredUsers.map((user) => {
-                  const normalizedRole = String(user.role || "buyer").toLowerCase();
-                  const isAdmin = normalizedRole === "admin";
-                  const isFarmer = normalizedRole === "farmer";
+                  const normalizedRole = String(
+                    user.role || "buyer"
+                  ).toLowerCase();
 
                   return (
                     <div
                       key={user.id}
-                      className={`group rounded-3xl border p-5 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl
-                        ${
-                          isAdmin
-                            ? "border-[#5DBB63]/40 bg-gradient-to-r from-[#17301F] to-[#121D17] shadow-[0_0_20px_rgba(93,187,99,0.08)]"
-                            : "border-white/10 bg-[#0F1813] hover:border-white/20"
-                        }`}
+                      className="group rounded-[1.5rem] border border-white/10 bg-black/10 p-5 transition-all duration-500 hover:-translate-y-1 hover:border-[#5DBB63]/30 hover:bg-white/[0.04]"
                     >
                       <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
                         <div className="flex items-center gap-4">
-                          <div
-                            className={`flex h-14 w-14 items-center justify-center rounded-2xl text-lg font-black uppercase
-                              ${
-                                isAdmin
-                                  ? "bg-[#5DBB63]/20 text-[#5DBB63]"
-                                  : isFarmer
-                                  ? "bg-amber-500/15 text-amber-400"
-                                  : "bg-blue-500/15 text-blue-400"
-                              }`}
-                          >
+                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#5DBB63]/20 to-[#2F6B3B]/10 text-lg font-black uppercase text-[#5DBB63]">
                             {(user.full_name || user.email || "U").charAt(0)}
                           </div>
 
                           <div>
                             <div className="flex flex-wrap items-center gap-3">
-                              <h4 className="text-lg font-bold text-white">
+                              <h4 className="text-lg font-black text-white">
                                 {user.full_name || "Unnamed User"}
                               </h4>
 
-                              <span
-                                className={`rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wider
-                                  ${
-                                    isAdmin
-                                      ? "bg-[#5DBB63]/15 text-[#5DBB63] ring-1 ring-[#5DBB63]/30"
-                                      : isFarmer
-                                      ? "bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/30"
-                                      : "bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/30"
-                                  }`}
-                              >
+                              <span className="rounded-full border border-[#5DBB63]/20 bg-[#5DBB63]/10 px-3 py-1 text-[11px] font-black uppercase tracking-[2px] text-[#5DBB63]">
                                 {normalizedRole}
                               </span>
                             </div>
 
-                            <p className="mt-1 text-sm text-gray-400">{user.email}</p>
-                            <p className="mt-1 text-xs text-gray-500">
+                            <p className="mt-1 text-sm text-white/45">
+                              {user.email}
+                            </p>
+                            <p className="mt-1 text-xs text-white/25">
                               ID: {user.id}
-                              {user.created_at
-                                ? ` • Joined ${new Date(user.created_at).toLocaleDateString()}`
-                                : ""}
                             </p>
                           </div>
                         </div>
 
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => handleRoleChange(user.id, "admin")}
-                            disabled={updatingRole === user.id || normalizedRole === "admin"}
-                            className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-4 py-2 text-sm font-semibold text-[#5DBB63] transition-all hover:bg-[#5DBB63] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {updatingRole === user.id ? "Updating..." : "Make Admin"}
-                          </button>
+                          {USER_ROLES.map((role) => (
+                            <button
+                              key={role}
+                              onClick={() => handleRoleChange(user.id, role)}
+                              disabled={
+                                updatingRole === user.id ||
+                                normalizedRole === role
+                              }
+                              className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-4 py-2 text-sm font-black text-[#5DBB63] transition-all duration-300 hover:-translate-y-0.5 hover:bg-[#5DBB63] hover:text-[#07100B] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {updatingRole === user.id
+                                ? "Updating..."
+                                : `Make ${role}`}
+                            </button>
+                          ))}
 
                           <button
-                            onClick={() => handleRoleChange(user.id, "farmer")}
-                            disabled={updatingRole === user.id || normalizedRole === "farmer"}
-                            className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-400 transition-all hover:bg-amber-500 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+                            onClick={() =>
+                              handleDeleteUser(user.id, user.email)
+                            }
+                            disabled={deletingUser === user.id}
+                            className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-black text-red-300 transition-all duration-300 hover:-translate-y-0.5 hover:bg-red-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            {updatingRole === user.id ? "Updating..." : "Make Farmer"}
-                          </button>
-
-                          <button
-                            onClick={() => handleRoleChange(user.id, "buyer")}
-                            disabled={updatingRole === user.id || normalizedRole === "buyer"}
-                            className="rounded-2xl border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm font-semibold text-blue-400 transition-all hover:bg-blue-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {updatingRole === user.id ? "Updating..." : "Make Buyer"}
+                            {deletingUser === user.id
+                              ? "Deleting..."
+                              : "Delete"}
                           </button>
                         </div>
                       </div>
