@@ -257,48 +257,53 @@ export default function HomePage() {
     if (savedCart) setCart(JSON.parse(savedCart));
 
     async function checkSession() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) return;
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) return;
 
-      const { data: profile, error: profileError } = await supabase
-        .from("users")
-        .select("full_name, email, role")
-        .eq("id", session.user.id)
-        .maybeSingle();
+  // IMPORTANT: Skip redirect on reset password page
+  if (window.location.pathname === '/reset-password') {
+    return;
+  }
 
-      if (profileError) {
-        await supabase.auth.signOut();
-        setAccount(null);
-        showNotification("Unable to verify your account profile.");
-        return;
-      }
+  const { data: profile, error: profileError } = await supabase
+    .from("users")
+    .select("full_name, email, role")
+    .eq("id", session.user.id)
+    .maybeSingle();
 
-      const role = String(profile?.role || session.user.user_metadata?.role || "buyer").toLowerCase();
+  if (profileError) {
+    await supabase.auth.signOut();
+    setAccount(null);
+    showNotification("Unable to verify your account profile.");
+    return;
+  }
 
-      if (role === "admin") {
-        router.push("/admin");
-        return;
-      }
-      if (role !== "buyer" && role !== "farmer") {
-        await supabase.auth.signOut();
-        setAccount(null);
-        showNotification("Invalid account role.");
-        return;
-      }
+  const role = String(profile?.role || session.user.user_metadata?.role || "buyer").toLowerCase();
 
-      setAccount({
-        id: session.user.id,
-        name: profile?.full_name || session.user.user_metadata?.full_name || (role === "farmer" ? "Farmer" : "Buyer"),
-        email: profile?.email || session.user.email || "",
-        role: role as UserRole,
-      });
+  if (role === "admin") {
+    router.push("/admin");
+    return;
+  }
+  if (role !== "buyer" && role !== "farmer") {
+    await supabase.auth.signOut();
+    setAccount(null);
+    showNotification("Invalid account role.");
+    return;
+  }
 
-      if (role === "farmer") {
-        setFarmerToolsOpen(true);
-        setCart([]);
-        localStorage.removeItem("letusplant-cart");
-      }
-    }
+  setAccount({
+    id: session.user.id,
+    name: profile?.full_name || session.user.user_metadata?.full_name || (role === "farmer" ? "Farmer" : "Buyer"),
+    email: profile?.email || session.user.email || "",
+    role: role as UserRole,
+  });
+
+  if (role === "farmer") {
+    setFarmerToolsOpen(true);
+    setCart([]);
+    localStorage.removeItem("letusplant-cart");
+  }
+}
     checkSession();
   }, [router]);
 
