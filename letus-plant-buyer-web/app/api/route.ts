@@ -7,10 +7,28 @@ function json(data: unknown, status = 200) {
 
 type CheckoutItem = {
   productId: number;
-  productName: string;
-  price: number;
+  productName?: string;
+  price?: number;
   quantity: number;
 };
+
+type ProductRow = {
+  id: number;
+  name: string;
+  price: number | string | null;
+  stock: number | string | null;
+  farmer_id: string | null;
+};
+
+function getBearerToken(request: NextRequest) {
+  const authorization = request.headers.get("authorization") || "";
+
+  if (!authorization.startsWith("Bearer ")) {
+    return "";
+  }
+
+  return authorization.slice(7).trim();
+}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -29,17 +47,21 @@ export async function GET(request: NextRequest) {
       const products = (data || []).map((product) => ({
         id: product.id,
         name: product.name,
-        farmer: product.farmer || "Local Farmer",
+        farmer: product.farmer || product.farmer_name || "Local Farmer",
+        farmerId: product.farmer_id || null,
+        location: product.location || null,
         category: product.category,
         price: Number(product.price || 0),
         stock: Number(product.stock || 0),
         badge: product.badge || "AI Verified",
         image:
           product.image ||
+          product.image_url ||
           "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200",
         freshnessInfo:
           product.freshnessInfo ||
           product.freshness_info ||
+          product.description ||
           "AI verified lettuce crop.",
         createdAt: product.created_at,
       }));
@@ -108,7 +130,6 @@ export async function POST(request: NextRequest) {
 
     if (type === "create-order") {
       const {
-        userId,
         fullName,
         email,
         phone,
@@ -120,7 +141,9 @@ export async function POST(request: NextRequest) {
         items,
       } = body;
 
-      if (!userId) {
+      const accessToken = getBearerToken(request);
+
+      if (!accessToken) {
         return json(
           {
             success: false,
@@ -130,13 +153,51 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Verify the signed-in user from the access token. Do not trust user IDs from the frontend.
+      const {
+        data: { user: authenticatedUser },
+        error: authError,
+      } = await supabase.auth.getUser(accessToken);
+
+      if (authError || !authenticatedUser) {
+        return json(
+          {
+            success: false,
+            message: "Your session is invalid or expired. Please log in again.",
+          },
+          401
+        );
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("users")
+        .select("role")
+        .eq("id", authenticatedUser.id)
+        .maybeSingle();
+
+      if (profileError) throw profileError;
+
+      const role = String(
+        profile?.role || authenticatedUser.user_metadata?.role || ""
+      ).toLowerCase();
+
+      if (role !== "buyer") {
+        return json(
+          {
+            success: false,
+            message: "Only buyer accounts can place marketplace orders.",
+          },
+          403
+        );
+      }
+
       if (
         !fullName ||
         !email ||
         !phone ||
         !paymentMethod ||
         !deliveryMethod ||
-        !items ||
+        !Array.isArray(items) ||
         items.length === 0
       ) {
         return json(
@@ -148,16 +209,60 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const normalizedItems = items.map((item: CheckoutItem) => ({
-        product_id: item.productId,
-        product_name: item.productName,
-        price: Number(item.price || 0),
-        quantity: Number(item.quantity || 0),
-        subtotal: Number(item.price || 0) * Number(item.quantity || 0),
-      }));
+      if (deliveryMethod !== "Delivery" && deliveryMethod !== "Pickup") {
+        return json(
+          {
+            success: false,
+            message: "Invalid delivery method.",
+          },
+          400
+        );
+      }
 
-      for (const item of normalizedItems) {
-        if (!item.product_id || item.price <= 0 || item.quantity <= 0) {
+      const allowedPaymentMethods =
+        deliveryMethod === "Pickup"
+          ? ["Cash", "GCash", "Card"]
+          : ["Cash on Delivery", "GCash", "Card"];
+
+      if (!allowedPaymentMethods.includes(paymentMethod)) {
+        return json(
+          {
+            success: false,
+            message:
+              deliveryMethod === "Pickup"
+                ? "Pickup orders can only use Cash, GCash, or Card."
+                : "Delivery orders can only use Cash on Delivery, GCash, or Card.",
+          },
+          400
+        );
+      }
+
+      if (
+        deliveryMethod === "Delivery" &&
+        (!address || !city || !postalCode)
+      ) {
+        return json(
+          {
+            success: false,
+            message: "Please provide your full delivery address.",
+          },
+          400
+        );
+      }
+
+      // Combine duplicate product entries before checking stock.
+      const requestedQuantities = new Map<number, number>();
+
+      for (const item of items as CheckoutItem[]) {
+        const productId = Number(item.productId);
+        const quantity = Number(item.quantity);
+
+        if (
+          !Number.isInteger(productId) ||
+          productId <= 0 ||
+          !Number.isInteger(quantity) ||
+          quantity <= 0
+        ) {
           return json(
             {
               success: false,
@@ -167,23 +272,80 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        const { data: product, error: productError } = await supabase
-          .from("products")
-          .select("id, stock")
-          .eq("id", item.product_id)
-          .single();
+        requestedQuantities.set(
+          productId,
+          (requestedQuantities.get(productId) || 0) + quantity
+        );
+      }
 
-        if (productError || !product) {
+      const productIds = Array.from(requestedQuantities.keys());
+
+      // Read the real product owner, price, name, and stock from the database.
+      const { data: productRows, error: productsError } = await supabase
+        .from("products")
+        .select("id, name, price, stock, farmer_id")
+        .in("id", productIds);
+
+      if (productsError) throw productsError;
+
+      const databaseProducts = (productRows || []) as ProductRow[];
+
+      if (databaseProducts.length !== productIds.length) {
+        return json(
+          {
+            success: false,
+            message: "One or more products could not be found.",
+          },
+          404
+        );
+      }
+
+      const farmerIds = new Set(
+        databaseProducts.map((product) => product.farmer_id).filter(Boolean)
+      );
+
+      if (
+        farmerIds.size !== 1 ||
+        databaseProducts.some((product) => !product.farmer_id)
+      ) {
+        return json(
+          {
+            success: false,
+            message: "Please checkout products from one farmer at a time.",
+          },
+          400
+        );
+      }
+
+      const farmerId = Array.from(farmerIds)[0] as string;
+
+      const normalizedItems = databaseProducts.map((product) => {
+        const quantity = requestedQuantities.get(Number(product.id)) || 0;
+        const price = Number(product.price || 0);
+        const stock = Number(product.stock || 0);
+
+        return {
+          product_id: Number(product.id),
+          product_name: product.name,
+          price,
+          quantity,
+          subtotal: price * quantity,
+          current_stock: stock,
+        };
+      });
+
+      for (const item of normalizedItems) {
+        if (item.price <= 0 || item.quantity <= 0) {
           return json(
             {
               success: false,
-              message: `Product not found: ${item.product_name}`,
+              message: `Invalid product data for ${item.product_name}.`,
             },
-            404
+            400
           );
         }
 
-        if (Number(product.stock || 0) < item.quantity) {
+        if (item.current_stock < item.quantity) {
           return json(
             {
               success: false,
@@ -195,15 +357,13 @@ export async function POST(request: NextRequest) {
       }
 
       const subtotal = normalizedItems.reduce(
-        (sum: number, item: any) => sum + item.subtotal,
+        (sum, item) => sum + item.subtotal,
         0
       );
-
       const shipping = deliveryMethod === "Delivery" ? 50 : 0;
       const totalAmount = subtotal + shipping;
-
       const paymentStatus =
-        paymentMethod === "Cash on Delivery"
+        paymentMethod === "Cash on Delivery" || paymentMethod === "Cash"
           ? "Unpaid"
           : "Pending Verification";
 
@@ -211,14 +371,16 @@ export async function POST(request: NextRequest) {
         .from("orders")
         .insert([
           {
-            user_id: userId,
+            user_id: authenticatedUser.id,
+            farmer_id: farmerId,
             email,
             status: "Pending",
             shipping_name: fullName,
             shipping_phone: phone,
-            shipping_address: address || "Farm Pickup",
-            city: city || "Farm Pickup",
-            postal_code: postalCode || "0000",
+            shipping_address:
+              deliveryMethod === "Pickup" ? "Farm Pickup" : address,
+            city: deliveryMethod === "Pickup" ? "Farm Pickup" : city,
+            postal_code: deliveryMethod === "Pickup" ? "0000" : postalCode,
             payment_method: paymentMethod,
             delivery_method: deliveryMethod,
             payment_status: paymentStatus,
@@ -230,7 +392,7 @@ export async function POST(request: NextRequest) {
 
       if (orderError) throw orderError;
 
-      const orderItemsPayload = normalizedItems.map((item: any) => ({
+      const orderItemsPayload = normalizedItems.map((item) => ({
         order_id: orderData.id,
         product_id: item.product_id,
         product_name: item.product_name,
@@ -245,22 +407,16 @@ export async function POST(request: NextRequest) {
 
       if (itemsError) throw itemsError;
 
+      // Reduce stock only after the order and order items are saved.
       for (const item of normalizedItems) {
-        const { data: product } = await supabase
-          .from("products")
-          .select("stock")
-          .eq("id", item.product_id)
-          .single();
+        const newStock = Math.max(item.current_stock - item.quantity, 0);
 
-        const newStock = Math.max(
-          Number(product?.stock || 0) - item.quantity,
-          0
-        );
-
-        await supabase
+        const { error: stockError } = await supabase
           .from("products")
           .update({ stock: newStock })
           .eq("id", item.product_id);
+
+        if (stockError) throw stockError;
       }
 
       return json({

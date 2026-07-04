@@ -16,29 +16,58 @@ class _ScanScreenState extends State<ScanScreen> {
   String _recommendation = "";
   Color _resultColor = Colors.grey;
 
+  // Only these 3 diseases + Unknown
+  final List<Map<String, dynamic>> _supportedDiseases = [
+    {
+      "name": "Downy Mildew",
+      "fullName": "Downy Mildew — Bremia lactucae",
+      "rec": "Fungal issue detected. Remove affected leaves and apply organic fungicide.",
+      "color": Colors.redAccent,
+    },
+    {
+      "name": "Powdery Mildew",
+      "fullName": "Powdery Mildew — Erysiphe cichoracearum",
+      "rec": "Powdery mildew detected. Improve air circulation and apply appropriate treatment.",
+      "color": Colors.orangeAccent,
+    },
+    {
+      "name": "Septoria Blight",
+      "fullName": "Septoria Blight — Septoria lactucae",
+      "rec": "Septoria blight detected. Remove infected leaves and avoid overhead watering.",
+      "color": Colors.deepOrange,
+    },
+  ];
+
   void _simulateScan() async {
     setState(() {
       _isScanning = true;
       _hasResult = false;
     });
 
-    await Future.delayed(const Duration(seconds: 2)); // Mock ESP32-CAM delay
+    await Future.delayed(const Duration(seconds: 2));
 
-    final results = [
-      {"res": "Healthy", "rec": "Plant is in perfect condition. Ready for premium pricing.", "col": const Color(0xFF2F6B3B)},
-      {"res": "Downy Mildew", "rec": "Fungal issue detected. Remove affected leaves and apply organic fungicide.", "col": Colors.redAccent},
-      {"res": "Bacterial Leaf Spot", "rec": "Bacterial infection. Avoid overhead watering.", "col": Colors.orange},
-      {"res": "Aphids", "rec": "Pest detected. Apply neem oil.", "col": Colors.brown},
-    ];
-    results.shuffle();
-    final chosen = results.first;
+    // 75% chance supported disease, 25% chance unknown
+    final random = DateTime.now().millisecond % 4;
+
+    late Map<String, dynamic> chosen;
+
+    if (random == 3) {
+      chosen = {
+        "name": "Unknown Disease",
+        "fullName": "Unknown / Out of Scope Disease",
+        "rec": "Disease detected is outside current AI scope. Manual inspection recommended.",
+        "color": Colors.grey,
+      };
+    } else {
+      chosen = _supportedDiseases[random];
+    }
 
     setState(() {
       _isScanning = false;
       _hasResult = true;
-      _result = chosen["res"] as String;
+      _result = chosen["fullName"] as String;
       _recommendation = chosen["rec"] as String;
-      _resultColor = chosen["col"] as Color;
+      _resultColor = chosen["color"] as Color;
     });
   }
 
@@ -100,14 +129,14 @@ class _ScanScreenState extends State<ScanScreen> {
                   children: [
                     Text('SCAN RESULT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: _resultColor, letterSpacing: 2)),
                     const SizedBox(height: 8),
-                    Text(_result, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, color: _resultColor)),
+                    Text(_result, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _resultColor)),
                     const SizedBox(height: 16),
                     Text(DateTime.now().toString().substring(0, 16), style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
                   ],
                 ),
               ),
               const SizedBox(height: 16),
-              RecommendationCard(text: _recommendation, isUrgent: _result != "Healthy"),
+              RecommendationCard(text: _recommendation, isUrgent: !_result.contains("Unknown")),
               const SizedBox(height: 24),
               SizedBox(
                 width: double.infinity,
@@ -119,16 +148,15 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
               ),
             ] else ...[
-              const Text('Pathogen Scope Supported:', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+              const Text('Supported Diseases (Demo):', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              Wrap(
+                spacing: 8,
                 children: [
-                  _badge('Healthy', Colors.green),
-                  const SizedBox(width: 8),
                   _badge('Downy Mildew', Colors.red),
-                  const SizedBox(width: 8),
-                  _badge('Leaf Spot', Colors.orange),
+                  _badge('Powdery Mildew', Colors.orange),
+                  _badge('Septoria Blight', Colors.deepOrange),
+                  _badge('Unknown (Other)', Colors.grey),
                 ],
               ),
               const SizedBox(height: 40),

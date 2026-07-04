@@ -30,6 +30,14 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
     setState(() => data = result);
   }
 
+  // Helper function to safely get string values
+  String _getValue(String key, {String fallback = 'N/A'}) {
+    if (data == null) return fallback;
+    final value = data![key];
+    if (value == null) return fallback;
+    return value.toString();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -73,7 +81,7 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Device Status Horiz Scroll
+                    // Device Status
                     SizedBox(
                       height: 90,
                       child: ListView(
@@ -97,6 +105,7 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                         children: [
                           const Text('Sensor Readings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
                           const SizedBox(height: 16),
+
                           GridView.count(
                             shrinkWrap: true,
                             physics: const NeverScrollableScrollPhysics(),
@@ -105,12 +114,37 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                             crossAxisSpacing: 16,
                             childAspectRatio: 0.85,
                             children: [
-                              SensorCard(title: 'Soil Moisture', status: data!['soil_status'], subtitle: data!['soil_value'], icon: Icons.water_drop_rounded, color: Colors.blue),
-                              SensorCard(title: 'Light Level', status: data!['light_status'], subtitle: data!['light_value'], icon: Icons.light_mode_rounded, color: Colors.orange),
-                              SensorCard(title: 'Plant Health', status: data!['plant_health'], subtitle: 'Scan Result', icon: Icons.biotech_rounded, color: const Color(0xFF2F6B3B)),
-                              SensorCard(title: 'Crop Stage', status: data!['crop_stage'], subtitle: 'Growth Track', icon: Icons.grass_rounded, color: Colors.teal),
+                              SensorCard(
+                                title: 'Soil Moisture',
+                                status: _getValue('soil_status'),
+                                subtitle: _getValue('soil_value'),
+                                icon: Icons.water_drop_rounded,
+                                color: Colors.blue,
+                              ),
+                              SensorCard(
+                                title: 'Light Level',
+                                status: _getValue('light_status'),
+                                subtitle: _getValue('light_value'),
+                                icon: Icons.light_mode_rounded,
+                                color: Colors.orange,
+                              ),
+                              SensorCard(
+                                title: 'Plant Health',
+                                status: _getValue('plant_health'),
+                                subtitle: 'Scan Result',
+                                icon: Icons.biotech_rounded,
+                                color: const Color(0xFF2F6B3B),
+                              ),
+                              SensorCard(
+                                title: 'Crop Stage',
+                                status: _getValue('crop_stage'),
+                                subtitle: 'Growth Track',
+                                icon: Icons.grass_rounded,
+                                color: Colors.teal,
+                              ),
                             ],
                           ),
+
                           const SizedBox(height: 32),
 
                           const Text('Smart Recommendations', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
@@ -119,9 +153,10 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                           const RecommendationCard(text: 'Crop is Harvest Ready. Quality is Grade A based on AI scan.', isUrgent: true),
 
                           const SizedBox(height: 32),
+
                           const Text('Quick Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
                           const SizedBox(height: 16),
-                          
+
                           Row(
                             children: [
                               Expanded(
@@ -129,7 +164,14 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                                   onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanScreen())),
                                   icon: const Icon(Icons.document_scanner),
                                   label: const Text('Scan Disease'),
-                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.indigo, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 0, side: BorderSide(color: Colors.indigo.withValues(alpha: 0.2))),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white,
+                                    foregroundColor: Colors.indigo,
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    elevation: 0,
+                                    side: BorderSide(color: Colors.indigo.withValues(alpha: 0.2)),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -138,12 +180,20 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
                                   onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SellCropScreen())),
                                   icon: const Icon(Icons.storefront),
                                   label: const Text('Sell Crop'),
-                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF5DBB63), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)), elevation: 4),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF5DBB63),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    elevation: 4,
+                                  ),
                                 ),
                               ),
                             ],
                           ),
+
                           const SizedBox(height: 12),
+
                           SizedBox(
                             width: double.infinity,
                             child: TextButton(
