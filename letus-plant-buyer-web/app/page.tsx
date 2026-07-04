@@ -385,31 +385,32 @@ export default function HomePage() {
     }
   }
 
-  async function loadFarmerWeather(location = farmerWeatherLocation, showError = true) {
-    if (!isFarmer) return;
-    setWeatherLoading(true);
-    setWeatherError("");
+ async function loadFarmerWeather(location = farmerWeatherLocation, showError = true) {
+  if (!isFarmer) return;
+  setWeatherLoading(true);
+  setWeatherError("");
 
-    try {
-      const response = await fetch(`/api/weather?location=${encodeURIComponent(location)}`, { 
-        cache: "no-store" 
-      });
-      
-      const result = await response.json();
+  try {
+    const response = await fetch(`/api/weather?location=${encodeURIComponent(location || "Lapu-Lapu City, Cebu, PH")}`, { 
+      cache: "no-store" 
+    });
+    
+    const result = await response.json();
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.message || "Unable to load live weather.");
-      }
-
-      setWeather(result.data as WeatherData);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unable to load live weather.";
-      setWeatherError(errorMessage);
-      if (showError) showNotification(errorMessage);
-    } finally {
-      setWeatherLoading(false);
+    if (!response.ok || !result.success) {
+      throw new Error(result.message || "Unable to load live weather.");
     }
+
+    setWeather(result.data as WeatherData);
+    setWeatherError("");
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unable to load live weather.";
+    setWeatherError(errorMessage);
+    if (showError) showNotification(errorMessage);
+  } finally {
+    setWeatherLoading(false);
   }
+}
 
   async function loadFarmerToolsData(farmerId = account?.id) {
     if (!farmerId) return;
@@ -773,73 +774,74 @@ export default function HomePage() {
   }
 
   // ==================== RENDER FUNCTIONS ====================
-  const renderFarmerTools = () => {
-    if (!isFarmer) return null;
+ const renderFarmerTools = () => {
+  if (!isFarmer || !farmerToolsOpen) return null;
 
-    if (!farmerToolsOpen) {
-      return (
-        <div className="mx-auto mb-8 max-w-7xl px-4 sm:px-6 lg:px-8">
-          <button onClick={() => setFarmerToolsOpen(true)} className="flex w-full items-center justify-between rounded-[28px] border border-green-200 bg-white px-6 py-4 text-left shadow-sm transition-all hover:-translate-y-1 hover:shadow-xl">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Account Detected</p>
-              <h3 className="mt-1 text-xl font-black text-[#1E2A1F]">Open Farmer Tools</h3>
-              <p className="mt-1 text-sm text-[#5C6B5D]">Sell crops, monitor health logs, and manage buyer orders.</p>
-            </div>
-            <div className="rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">Open</div>
-          </button>
-        </div>
-      );
-    }
-
+  if (!farmerToolsOpen) {
     return (
-      <div className="mx-auto mb-10 max-w-7xl px-4 sm:px-6 lg:px-8">
-        <section className="overflow-hidden rounded-[36px] border border-green-200 bg-white shadow-xl shadow-green-900/10">
-          <div className="border-b border-green-100 bg-gradient-to-br from-[#EFFAF1] to-white p-6">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Tools</p>
-                <h2 className="mt-2 text-3xl font-black tracking-tight text-[#1E2A1F]">Sell crops and monitor your farm</h2>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5C6B5D]">This panel is visible only to farmer accounts.</p>
-              </div>
-              <div className="flex flex-wrap gap-3">
-                <button onClick={() => { loadFarmerToolsData(); loadFarmerWeather(farmerWeatherLocation); }} disabled={farmerLoading || weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
-                  {farmerLoading || weatherLoading ? "Refreshing..." : "Refresh"}
-                </button>
-                <button onClick={() => setFarmerToolsOpen(false)} className="rounded-full bg-[#1E2A1F] px-5 py-2.5 text-sm font-black text-white transition hover:bg-[#2F6B3B]">Minimize</button>
-              </div>
-            </div>
-
-            <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-              <FarmerStat label="My Listings" value={farmerProducts.length} />
-              <FarmerStat label="Health Logs" value={healthLogs.length} />
-              <FarmerStat label="Buyer Orders" value={farmerOrders.length} />
-              <FarmerStat label="Pending Orders" value={farmerPendingOrders} />
-            </div>
+      <div className="mx-auto mb-8 max-w-7xl px-4 sm:px-6 lg:px-8">
+        <button onClick={() => setFarmerToolsOpen(true)} className="flex w-full items-center justify-between rounded-[28px] border border-green-200 bg-white px-6 py-4 text-left shadow-sm transition-all hover:-translate-y-1 hover:shadow-xl">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Account Detected</p>
+            <h3 className="mt-1 text-xl font-black text-[#1E2A1F]">Open Farmer Tools</h3>
+            <p className="mt-1 text-sm text-[#5C6B5D]">Sell crops, monitor health logs, and manage buyer orders.</p>
           </div>
-
-          <div className="flex flex-wrap gap-2 border-b border-green-100 p-4">
-            {[
-              { id: "sell", label: "Sell Product" },
-              { id: "listings", label: "Manage Listings" },
-              { id: "health", label: "Health Logs / Monitoring" },
-              { id: "orders", label: "Farmer Orders" },
-            ].map((tab) => (
-              <button key={tab.id} onClick={() => setFarmerTab(tab.id as FarmerToolTab)} className={`rounded-full px-5 py-2.5 text-sm font-black transition ${farmerTab === tab.id ? "bg-[#2F6B3B] text-white shadow-lg shadow-green-900/20" : "bg-[#F7FBF6] text-[#5C6B5D] hover:bg-green-100 hover:text-[#2F6B3B]"}`}>
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-6">
-            {farmerTab === "sell" && renderFarmerSellForm()}
-            {farmerTab === "listings" && renderFarmerListings()}
-            {farmerTab === "health" && renderFarmerHealth()}
-            {farmerTab === "orders" && renderFarmerOrders()}
-          </div>
-        </section>
+          <div className="rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">Open</div>
+        </button>
       </div>
     );
-  };
+  }
+
+  return (
+    <div className="mx-auto mb-10 max-w-7xl px-4 sm:px-6 lg:px-8">
+      <section className="overflow-hidden rounded-[36px] border border-green-200 bg-white shadow-xl shadow-green-900/10">
+        <div className="border-b border-green-100 bg-gradient-to-br from-[#EFFAF1] to-white p-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Tools</p>
+              <h2 className="mt-2 text-3xl font-black tracking-tight text-[#1E2A1F]">Sell crops and monitor your farm</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5C6B5D]">This panel is visible only to farmer accounts.</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button onClick={() => { loadFarmerToolsData(); loadFarmerWeather(farmerWeatherLocation); }} disabled={farmerLoading || weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
+                {farmerLoading || weatherLoading ? "Refreshing..." : "Refresh"}
+              </button>
+              <button onClick={() => setFarmerToolsOpen(false)} className="rounded-full bg-[#1E2A1F] px-5 py-2.5 text-sm font-black text-white transition hover:bg-[#2F6B3B]">Minimize</button>
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+            <FarmerStat label="My Listings" value={farmerProducts.length} />
+            <FarmerStat label="Health Logs" value={healthLogs.length} />
+            <FarmerStat label="Buyer Orders" value={farmerOrders.length} />
+            <FarmerStat label="Pending Orders" value={farmerPendingOrders} />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 border-b border-green-100 p-4">
+          {[
+            { id: "sell", label: "Sell Product" },
+            { id: "listings", label: "Manage Listings" },
+            { id: "health", label: "Health Logs / Monitoring" },
+            { id: "orders", label: "Farmer Orders" },
+          ].map((tab) => (
+            <button key={tab.id} onClick={() => setFarmerTab(tab.id as FarmerToolTab)} className={`rounded-full px-5 py-2.5 text-sm font-black transition ${farmerTab === tab.id ? "bg-[#2F6B3B] text-white shadow-lg shadow-green-900/20" : "bg-[#F7FBF6] text-[#5C6B5D] hover:bg-green-100 hover:text-[#2F6B3B]"}`}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-6">
+          {farmerTab === "sell" && renderFarmerSellForm()}
+          {farmerTab === "listings" && renderFarmerListings()}
+          {farmerTab === "health" && renderFarmerHealth()}
+          {farmerTab === "orders" && renderFarmerOrders()}
+        </div>
+      </section>
+    </div>
+  );
+};
+
 
   const renderFarmerSellForm = () => (
     <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
@@ -885,20 +887,26 @@ export default function HomePage() {
         </button>
       </form>
 
-      <div className="rounded-[28px] border border-green-100 bg-white p-6">
-        <h3 className="text-2xl font-black text-[#1E2A1F]">Product Preview</h3>
-        <div className="mt-6 overflow-hidden rounded-[28px] border border-green-100 bg-white shadow-sm">
-          <div className="h-56 bg-cover bg-center" style={{ backgroundImage: `url(${sellForm.imageUrl.trim() || defaultProductImage})` }} />
-          <div className="p-5">
-            <p className="text-xs font-black uppercase tracking-wider text-[#2F6B3B]">{sellForm.category || "Fresh Lettuce"}</p>
-            <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">{sellForm.name || "Product name"}</h4>
-            <p className="mt-2 text-sm text-[#5C6B5D]">Farmer: {account?.name || "Farmer"}</p>
-            <p className="mt-4 text-3xl font-black text-[#2F6B3B]">₱{sellForm.price || "0"}</p>
-            <p className="mt-2 text-sm font-bold text-[#5C6B5D]">Stock: {sellForm.stock || "0"}</p>
-            <p className="mt-4 text-sm leading-6 text-[#5C6B5D]">{sellForm.description || "Fresh lettuce crop from local farmer."}</p>
-          </div>
-        </div>
-      </div>
+     <div className="rounded-[28px] border border-green-100 bg-white p-6">
+  <h3 className="text-2xl font-black text-[#1E2A1F]">Product Preview</h3>
+  <div className="mt-6 overflow-hidden rounded-[28px] border border-green-100 bg-white shadow-sm">
+    <div className="h-56 bg-cover bg-center" style={{ backgroundImage: `url(${sellForm.imageUrl.trim() || defaultProductImage})` }} />
+    <div className="p-5">
+      <p className="text-xs font-black uppercase tracking-wider text-[#2F6B3B]">{sellForm.category || "Fresh Lettuce"}</p>
+      <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">{sellForm.name || "Product name"}</h4>
+      <p className="mt-2 text-sm text-[#5C6B5D]">Farmer: {account?.name || "Farmer"}</p>
+      
+      {/* Added Location */}
+      <p className="mt-3 text-sm text-gray-600">📍 {sellForm.location || "Cebu, Philippines"}</p>
+
+      <p className="mt-4 text-3xl font-black text-[#2F6B3B]">₱{sellForm.price || "0"}</p>
+      <p className="mt-2 text-sm font-bold text-[#5C6B5D]">Stock: {sellForm.stock || "0"}</p>
+      
+      {/* Added Description */}
+      <p className="mt-4 text-sm leading-6 text-[#5C6B5D] line-clamp-4">{sellForm.description || "Fresh lettuce crop from local farmer."}</p>
+    </div>
+  </div>
+</div>
     </div>
   );
 

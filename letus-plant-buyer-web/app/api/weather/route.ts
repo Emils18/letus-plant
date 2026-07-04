@@ -16,11 +16,14 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("location") || ""
   ).trim();
 
+  // Priority locations for Lapu-Lapu / Cebu
   const locationsToTry = [
     requestedLocation,
-    "Lapu-Lapu City, Cebu, PH",
-    "Cebu City, PH",
-    "Mandaue City, PH",
+    "Lapu-Lapu City, Cebu, Philippines",
+    "Lapu-Lapu City",
+    "Cebu City, Philippines",
+    "Mandaue City, Cebu",
+    "Cebu, Philippines",
   ].filter(Boolean);
 
   let lastError = "Unable to load weather data.";
@@ -32,9 +35,7 @@ export async function GET(request: NextRequest) {
       url.searchParams.set("q", location);
       url.searchParams.set("aqi", "no");
 
-      const response = await fetch(url.toString(), {
-        cache: "no-store",
-      });
+      const response = await fetch(url.toString(), { cache: "no-store" });
 
       const data = await response.json();
 
@@ -45,22 +46,16 @@ export async function GET(request: NextRequest) {
 
       const fullText = data.current?.condition?.text || "Unknown";
 
-      // Separate Condition and Description
-      const condition = fullText.split(" ")[0]; // e.g. "Patchy", "Light", "Cloudy"
-      const description = fullText;             // Full detailed text
-
       return json({
         success: true,
         data: {
-          location: `${data.location?.name || location}, ${data.location?.country || "PH"}`,
+          location: `${data.location?.name || "Lapu-Lapu City"}, Cebu`,
           temperature: Number(data.current?.temp_c || 0),
-          condition: condition,
-          description: description,
+          condition: fullText.split(",")[0].trim(), // e.g. "Clear", "Cloudy"
+          description: fullText,
           humidity: Number(data.current?.humidity || 0),
-          windSpeed: Number(data.current?.wind_kph || 0) / 3.6,
-          updatedAt: data.current?.last_updated 
-            ? new Date(data.current.last_updated).toISOString() 
-            : new Date().toISOString(),
+          windSpeed: Number(data.current?.wind_kph || 0) / 3.6, // to m/s
+          updatedAt: new Date().toISOString(),
         },
       });
     } catch (error) {
@@ -68,11 +63,8 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return json(
-    {
-      success: false,
-      message: lastError,
-    },
-    502
-  );
+  return json({
+    success: false,
+    message: lastError,
+  }, 502);
 }
