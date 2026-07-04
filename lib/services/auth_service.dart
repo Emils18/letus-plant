@@ -46,6 +46,21 @@ class AuthService {
     }
   }
 
+ Future<String?> updatePassword(String newPassword) async {
+  try {
+    await supabase.auth.updateUser(
+      UserAttributes(password: newPassword.trim()),
+    );
+    return null;
+  } on AuthException catch (e) {
+    return _friendlyAuthError(e.message);
+  } catch (e) {
+    return 'Unexpected error updating password.';
+  }
+}
+
+
+
   Future<String?> registerBuyer({
     required String fullName,
     required String email,

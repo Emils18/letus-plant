@@ -41,14 +41,13 @@ class ProductService {
       final name = productData['name']?.toString().trim() ?? '';
       final category = productData['category']?.toString().trim() ?? 'Fresh Lettuce';
       final badge = productData['badge']?.toString().trim() ?? 'AI Verified';
-      final description = productData['description']?.toString().trim() ??
-          'Fresh lettuce crop.';
+      final description = productData['description']?.toString().trim() ?? 'Fresh lettuce crop.';
       final location = productData['location']?.toString().trim() ?? 'Cebu Farm';
 
       final price = _toDouble(productData['price']);
       final stock = _toInt(productData['stock']);
 
-      if (name.isEmpty || category.isEmpty || price <= 0 || stock <= 0) {
+      if (name.isEmpty || price <= 0 || stock <= 0) {
         debugPrint('ProductService error: Invalid product form data.');
         return false;
       }

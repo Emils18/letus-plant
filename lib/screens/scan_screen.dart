@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import '../widgets/recommendation_card.dart';
-import 'sell_crop_screen.dart';
+
+import '../services/monitoring_service.dart';
+import 'plant_tracking_screen.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
@@ -14,9 +15,9 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _hasResult = false;
   String _result = "";
   String _recommendation = "";
+  double _confidence = 0.0;
   Color _resultColor = Colors.grey;
 
-  // Only these 3 diseases + Unknown
   final List<Map<String, dynamic>> _supportedDiseases = [
     {
       "name": "Downy Mildew",
@@ -38,6 +39,8 @@ class _ScanScreenState extends State<ScanScreen> {
     },
   ];
 
+  final MonitoringService _monitoringService = MonitoringService();
+
   void _simulateScan() async {
     setState(() {
       _isScanning = true;
@@ -46,9 +49,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
     await Future.delayed(const Duration(seconds: 2));
 
-    // 75% chance supported disease, 25% chance unknown
     final random = DateTime.now().millisecond % 4;
-
     late Map<String, dynamic> chosen;
 
     if (random == 3) {
@@ -58,9 +59,17 @@ class _ScanScreenState extends State<ScanScreen> {
         "rec": "Disease detected is outside current AI scope. Manual inspection recommended.",
         "color": Colors.grey,
       };
+      _confidence = 0.45;
     } else {
       chosen = _supportedDiseases[random];
+      _confidence = 0.82 + (random * 0.04);
     }
+
+    // Save to Health Logs
+    final success = await _monitoringService.saveHealthLogDemo(
+      diseaseName: chosen["fullName"],
+      confidence: _confidence,
+    );
 
     setState(() {
       _isScanning = false;
@@ -105,7 +114,7 @@ class _ScanScreenState extends State<ScanScreen> {
                       ],
                     )
                   : _hasResult
-                      ? Center(child: Icon(Icons.image_rounded, size: 80, color: Colors.grey.shade300))
+                      ? Center(child: Icon(Icons.check_circle, size: 80, color: _resultColor))
                       : Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -127,24 +136,40 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
                 child: Column(
                   children: [
-                    Text('SCAN RESULT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: _resultColor, letterSpacing: 2)),
+                    const Text('SCAN RESULT', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey, letterSpacing: 2)),
                     const SizedBox(height: 8),
                     Text(_result, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _resultColor)),
+                    const SizedBox(height: 8),
+                    Text("Confidence: ${(_confidence * 100).toStringAsFixed(1)}%", style: const TextStyle(fontSize: 14, color: Colors.orange, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    const Text("Demo Mode", style: TextStyle(fontSize: 12, color: Colors.orange, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 16),
                     Text(DateTime.now().toString().substring(0, 16), style: TextStyle(fontSize: 12, color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
                   ],
                 ),
               ),
               const SizedBox(height: 16),
-              RecommendationCard(text: _recommendation, isUrgent: !_result.contains("Unknown")),
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.grey.shade200),
+                ),
+                child: Text(_recommendation, style: const TextStyle(fontSize: 14, height: 1.5)),
+              ),
               const SizedBox(height: 24),
+
+              // Button to go to Crop Tracking
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton.icon(
-                  onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SellCropScreen())),
-                  icon: const Icon(Icons.storefront),
-                  label: const Text('Use Result for Sell Crop Quality'),
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E2A1F), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const PlantTrackingScreen()));
+                  },
+                  icon: const Icon(Icons.track_changes),
+                  label: const Text('Go to Crop Tracking'),
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2F6B3B), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
                 ),
               ),
             ] else ...[

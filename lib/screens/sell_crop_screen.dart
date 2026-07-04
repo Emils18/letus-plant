@@ -41,22 +41,8 @@ class _SellCropScreenState extends State<SellCropScreen> {
     final location = _locationController.text.trim();
     final description = _descController.text.trim();
 
-    if (name.isEmpty ||
-        location.isEmpty ||
-        description.isEmpty ||
-        _priceController.text.trim().isEmpty ||
-        _stockController.text.trim().isEmpty) {
-      _showMessage('Please complete all product fields.', isError: true);
-      return;
-    }
-
-    if (price <= 0) {
-      _showMessage('Please enter a valid product price.', isError: true);
-      return;
-    }
-
-    if (stock <= 0) {
-      _showMessage('Please enter a valid stock quantity.', isError: true);
+    if (name.isEmpty || location.isEmpty || description.isEmpty || price <= 0 || stock <= 0) {
+      _showMessage('Please complete all fields correctly.', isError: true);
       return;
     }
 
@@ -77,29 +63,21 @@ class _SellCropScreenState extends State<SellCropScreen> {
     setState(() => _isLoading = false);
 
     if (success) {
-      _showMessage('Product published successfully.');
-      Navigator.pop(context);
+      _showMessage('Product published successfully!');
+      Navigator.pop(context); // Go back to previous screen
     } else {
-      _showMessage('Failed to publish product.', isError: true);
+      _showMessage('Failed to publish product. Try again.', isError: true);
     }
   }
 
   void _showMessage(String message, {bool isError = false}) {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          message,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: isError ? Colors.redAccent : const Color(0xFF2F6B3B),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
@@ -112,17 +90,8 @@ class _SellCropScreenState extends State<SellCropScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        title: const Text(
-          'Sell Crop',
-          style: TextStyle(
-            fontWeight: FontWeight.w900,
-            fontSize: 18,
-            color: Color(0xFF1E2A1F),
-          ),
-        ),
-        iconTheme: const IconThemeData(
-          color: Color(0xFF1E2A1F),
-        ),
+        title: const Text('Sell Crop', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: Color(0xFF1E2A1F))),
+        iconTheme: const IconThemeData(color: Color(0xFF1E2A1F)),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -138,21 +107,12 @@ class _SellCropScreenState extends State<SellCropScreen> {
               ),
               child: const Row(
                 children: [
-                  Icon(
-                    Icons.verified_rounded,
-                    color: Color(0xFF5DBB63),
-                    size: 30,
-                  ),
+                  Icon(Icons.verified_rounded, color: Color(0xFF5DBB63), size: 30),
                   SizedBox(width: 16),
                   Expanded(
                     child: Text(
                       'Publish your lettuce crop to the shared GreenGuard AI marketplace.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        height: 1.4,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: TextStyle(color: Colors.white, fontSize: 13, height: 1.4, fontWeight: FontWeight.w700),
                     ),
                   ),
                 ],
@@ -161,21 +121,11 @@ class _SellCropScreenState extends State<SellCropScreen> {
 
             const SizedBox(height: 24),
 
-            const Text(
-              'Product Info',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
+            const Text('Product Info', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
 
             const SizedBox(height: 16),
 
-            _buildTextField(
-              controller: _nameController,
-              label: 'Product Name',
-              icon: Icons.grass_rounded,
-            ),
+            _buildTextField(controller: _nameController, label: 'Product Name', icon: Icons.grass_rounded),
 
             const SizedBox(height: 16),
 
@@ -186,41 +136,22 @@ class _SellCropScreenState extends State<SellCropScreen> {
             Row(
               children: [
                 Expanded(
-                  child: _buildTextField(
-                    controller: _priceController,
-                    label: 'Price (₱)',
-                    icon: Icons.payments_rounded,
-                    isNumber: true,
-                  ),
+                  child: _buildTextField(controller: _priceController, label: 'Price (₱)', icon: Icons.payments_rounded, isNumber: true),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
-                  child: _buildTextField(
-                    controller: _stockController,
-                    label: 'Stock Qty',
-                    icon: Icons.inventory_2_rounded,
-                    isNumber: true,
-                  ),
+                  child: _buildTextField(controller: _stockController, label: 'Stock Qty', icon: Icons.inventory_2_rounded, isNumber: true),
                 ),
               ],
             ),
 
             const SizedBox(height: 16),
 
-            _buildTextField(
-              controller: _locationController,
-              label: 'Farm Location',
-              icon: Icons.location_on_rounded,
-            ),
+            _buildTextField(controller: _locationController, label: 'Farm Location', icon: Icons.location_on_rounded),
 
             const SizedBox(height: 16),
 
-            _buildTextField(
-              controller: _descController,
-              label: 'Description',
-              icon: Icons.description_rounded,
-              maxLines: 3,
-            ),
+            _buildTextField(controller: _descController, label: 'Description', icon: Icons.description_rounded, maxLines: 3),
 
             const SizedBox(height: 16),
 
@@ -235,32 +166,15 @@ class _SellCropScreenState extends State<SellCropScreen> {
                 onPressed: _isLoading ? null : _publishProduct,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF5DBB63),
-                  foregroundColor: const Color(0xFF0A110D),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                  ),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                   elevation: 4,
                 ),
                 child: _isLoading
-                    ? const SizedBox(
-                        height: 24,
-                        width: 24,
-                        child: CircularProgressIndicator(
-                          color: Color(0xFF0A110D),
-                          strokeWidth: 3,
-                        ),
-                      )
-                    : const Text(
-                        'Publish Product',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
+                    ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 3)
+                    : const Text('Publish Product', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
               ),
             ),
-
-            const SizedBox(height: 20),
           ],
         ),
       ),
