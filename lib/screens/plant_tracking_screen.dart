@@ -72,9 +72,6 @@ class _PlantTrackingScreenState extends State<PlantTrackingScreen> {
       }
     }
 
-    final currentStageIndex = _latestProduct != null ? 3 : 0;
-    final stages = ['Planted', 'Seedling', 'Growing', 'Harvest Ready', 'Harvested'];
-
     return Scaffold(
       backgroundColor: const Color(0xFFF6FBF7),
       appBar: AppBar(
@@ -141,97 +138,19 @@ class _PlantTrackingScreenState extends State<PlantTrackingScreen> {
                   ),
                   const SizedBox(height: 32),
 
-                  const Text('Growth Timeline', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1E2A1F))),
-                  const SizedBox(height: 24),
-
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(32),
-                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 20, offset: const Offset(0, 10))],
-                    ),
-                    child: Column(
-                      children: List.generate(stages.length, (index) {
-                        final isCompleted = index <= currentStageIndex;
-                        final isCurrent = index == currentStageIndex;
-                        final isLast = index == stages.length - 1;
-
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Column(
-                              children: [
-                                Container(
-                                  height: 28,
-                                  width: 28,
-                                  decoration: BoxDecoration(
-                                    color: isCurrent
-                                        ? const Color(0xFF5DBB63)
-                                        : isCompleted
-                                            ? const Color(0xFF2F6B3B)
-                                            : Colors.grey.shade200,
-                                    shape: BoxShape.circle,
-                                    border: isCurrent
-                                        ? Border.all(color: const Color(0xFF5DBB63).withValues(alpha: 0.3), width: 4)
-                                        : null,
-                                  ),
-                                  child: isCompleted && !isCurrent
-                                      ? const Icon(Icons.check_rounded, color: Colors.white, size: 16)
-                                      : isCurrent
-                                          ? const Icon(Icons.grass_rounded, color: Colors.white, size: 14)
-                                          : null,
-                                ),
-                                if (!isLast)
-                                  Container(
-                                    height: 40,
-                                    width: 2,
-                                    color: isCompleted ? const Color(0xFF2F6B3B) : Colors.grey.shade200,
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.only(top: 4, bottom: 20),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      stages[index],
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: isCurrent ? FontWeight.w900 : FontWeight.bold,
-                                        color: isCurrent
-                                            ? const Color(0xFF5DBB63)
-                                            : isCompleted
-                                                ? const Color(0xFF1E2A1F)
-                                                : Colors.grey.shade400,
-                                      ),
-                                    ),
-                                    if (isCurrent && stages[index] == 'Harvest Ready')
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 8),
-                                        child: ElevatedButton.icon(
-                                          onPressed: () => Navigator.push(
-                                            context,
-                                            MaterialPageRoute(builder: (_) => const SellCropScreen()),
-                                          ),
-                                          icon: const Icon(Icons.storefront),
-                                          label: const Text('Ready to Sell'),
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: const Color(0xFF5DBB63),
-                                            foregroundColor: Colors.white,
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                      }),
+                  // Removed Growth Timeline as requested
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SellCropScreen())),
+                      icon: const Icon(Icons.storefront),
+                      label: const Text('Ready to Sell'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF5DBB63),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
                     ),
                   ),
                 ],

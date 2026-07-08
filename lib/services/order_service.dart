@@ -56,11 +56,9 @@ class OrderService {
 
       return List<Map<String, dynamic>>.from(data);
     } on PostgrestException catch (e) {
-      // ignore: avoid_print
       print('getBuyerOrders database error: ${e.message}');
       return [];
     } catch (e) {
-      // ignore: avoid_print
       print('getBuyerOrders error: $e');
       return [];
     }
@@ -94,11 +92,9 @@ class OrderService {
 
       return List<Map<String, dynamic>>.from(data);
     } on PostgrestException catch (e) {
-      // ignore: avoid_print
       print('getFarmerOrders database error: ${e.message}');
       return [];
     } catch (e) {
-      // ignore: avoid_print
       print('getFarmerOrders error: $e');
       return [];
     }
@@ -199,18 +195,24 @@ class OrderService {
 
         final orderId = insertedOrder['id'];
 
-        final orderItems = items.map((item) {
-          final price = _toDouble(item['price']);
-          final quantity = _toInt(item['quantity']);
+   final orderItems = items.map((item) {
+  final price = _toDouble(item['price']);
+  final quantity = _toInt(item['quantity']);
+  final productName =
+      item['name']?.toString().trim().isNotEmpty == true
+          ? item['name'].toString().trim()
+          : 'Lettuce Product';
 
-          return {
-            'order_id': orderId,
-            'product_id': item['id'],
-            'quantity': quantity,
-            'price_at_time': price,
-            'subtotal': price * quantity,
-          };
-        }).toList();
+  return {
+    'order_id': orderId,
+    'product_id': item['id'],
+    'product_name': productName,
+    'quantity': quantity,
+    'price': price,
+    'price_at_time': price,
+    'subtotal': price * quantity,
+  };
+}).toList();
 
         await supabase.from('order_items').insert(orderItems);
 
@@ -259,15 +261,6 @@ class OrderService {
     } catch (e) {
       return 'Confirm received error: $e';
     }
-  }
-
-  Future<bool> updateOrderStatus(String orderId, String status) async {
-    final error = await updateFarmerOrderStatus(
-      orderId: orderId,
-      status: status,
-    );
-
-    return error == null;
   }
 
   Future<String?> updateFarmerOrderStatus({

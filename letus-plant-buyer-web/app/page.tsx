@@ -139,7 +139,10 @@ const defaultProductImage =
   "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop";
 
 function formatMoney(value: number | string | null | undefined) {
-  return Number(value || 0).toLocaleString();
+  return Number(value || 0).toLocaleString("en-PH", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function formatDate(value?: string | null) {
@@ -220,19 +223,48 @@ export default function HomePage() {
   const [message, setMessage] = useState("");
   const [loadingOrder, setLoadingOrder] = useState(false);
 
-  const [farmerToolsOpen, setFarmerToolsOpen] = useState(false);
-  const [farmerTab, setFarmerTab] = useState<FarmerToolTab>("sell");
-  const [farmerProducts, setFarmerProducts] = useState<FarmerProduct[]>([]);
-  const [farmerOrders, setFarmerOrders] = useState<FarmerOrder[]>([]);
-  const [healthLogs, setHealthLogs] = useState<HealthLog[]>([]);
-  const [farmerLoading, setFarmerLoading] = useState(false);
-  const [savingProduct, setSavingProduct] = useState(false);
-  const [weather, setWeather] = useState<WeatherData | null>(null);
-  const [weatherLoading, setWeatherLoading] = useState(false);
-  const [weatherError, setWeatherError] = useState("");
-  const [sellForm, setSellForm] = useState({
-    name: "", category: "Fresh Lettuce", price: "", stock: "", description: "", imageUrl: "", location: "",
-  });
+ const [farmerToolsOpen, setFarmerToolsOpen] = useState(false);
+
+const [farmerTab, setFarmerTab] =
+  useState<FarmerToolTab>("sell");
+
+const [farmerProducts, setFarmerProducts] =
+  useState<FarmerProduct[]>([]);
+
+const [farmerOrders, setFarmerOrders] =
+  useState<FarmerOrder[]>([]);
+
+const [healthLogs, setHealthLogs] =
+  useState<HealthLog[]>([]);
+
+const [farmerLoading, setFarmerLoading] =
+  useState(false);
+
+const [savingProduct, setSavingProduct] =
+  useState(false);
+
+/* PRODUCT IMAGE SELECTED FROM PC */
+const [selectedProductImage, setSelectedProductImage] =
+  useState<File | null>(null);
+
+const [weather, setWeather] =
+  useState<WeatherData | null>(null);
+
+const [weatherLoading, setWeatherLoading] =
+  useState(false);
+
+const [weatherError, setWeatherError] =
+  useState("");
+
+const [sellForm, setSellForm] = useState({
+  name: "",
+  category: "Fresh Lettuce",
+  price: "",
+  stock: "",
+  description: "",
+  imageUrl: "",
+  location: "",
+});
 
   const isFarmer = account?.role === "farmer";
 
@@ -660,44 +692,161 @@ export default function HomePage() {
     setAuthLoading(false);
   }
 
-  async function handlePublishProduct(e: React.FormEvent) {
-    e.preventDefault();
-    if (!account || account.role !== "farmer") {
-      showNotification("Only farmer accounts can sell products.");
-      return;
-    }
-    const name = sellForm.name.trim();
-    const categoryValue = sellForm.category.trim() || "Fresh Lettuce";
-    const price = Number(sellForm.price);
-    const stock = Number(sellForm.stock);
-    const description = sellForm.description.trim() || "Fresh lettuce crop from local farmer.";
-    const imageValue = sellForm.imageUrl.trim() || defaultProductImage;
+  function handleProductImageChange(
+  event: React.ChangeEvent<HTMLInputElement>
+) {
+  const file = event.target.files?.[0];
 
-    if (!name) { showNotification("Product name is required."); return; }
-    if (!price || price <= 0) { showNotification("Valid price is required."); return; }
-    if (!stock || stock <= 0) { showNotification("Valid stock is required."); return; }
+  if (!file) return;
 
-    setSavingProduct(true);
-    try {
-      const payload = {
-        name, category: categoryValue, price, stock, farmer_id: account.id, farmer: account.name,
-        farmer_name: account.name, badge: "Farmer Listed", description, freshness_info: description,
-        image: imageValue, image_url: imageValue, location: sellForm.location.trim() || "Local Farm",
-        status: "Available", updated_at: new Date().toISOString(),
-      };
-      const { error } = await supabase.from("products").insert([payload]);
-      if (error) throw new Error(error.message);
-
-      setSellForm({ name: "", category: "Fresh Lettuce", price: "", stock: "", description: "", imageUrl: "", location: "" });
-      await Promise.all([loadProducts(), loadFarmerToolsData(account.id)]);
-      setFarmerTab("listings");
-      showNotification("Product published successfully.");
-    } catch (error) {
-      showNotification(error instanceof Error ? error.message : "Failed to publish product.");
-    } finally {
-      setSavingProduct(false);
-    }
+  if (!file.type.startsWith("image/")) {
+    showNotification("Please select a valid image file.");
+    return;
   }
+
+  if (file.size > 5 * 1024 * 1024) {
+    showNotification("Image must be smaller than 5MB.");
+    return;
+  }
+
+  setSelectedProductImage(file);
+}
+
+  async function handlePublishProduct(
+  e: React.FormEvent
+) {
+  e.preventDefault();
+
+  if (!account || account.role !== "farmer") {
+    showNotification(
+      "Only farmer accounts can sell products."
+    );
+    return;
+  }
+
+  const name = sellForm.name.trim();
+  const categoryValue =
+    sellForm.category.trim() || "Fresh Lettuce";
+
+  const price = Number(sellForm.price);
+  const stock = Number(sellForm.stock);
+
+  const description =
+    sellForm.description.trim() ||
+    "Fresh lettuce crop from local farmer.";
+
+  if (!name) {
+    showNotification("Product name is required.");
+    return;
+  }
+
+  if (!price || price <= 0) {
+    showNotification("Valid price is required.");
+    return;
+  }
+
+  if (!stock || stock <= 0) {
+    showNotification("Valid stock is required.");
+    return;
+  }
+
+  if (!selectedProductImage) {
+    showNotification("Please select a product image.");
+    return;
+  }
+
+  setSavingProduct(true);
+
+  try {
+    const fileExtension =
+      selectedProductImage.name
+        .split(".")
+        .pop() || "jpg";
+
+    const fileName =
+      `${account.id}/${Date.now()}.${fileExtension}`;
+
+    const { error: uploadError } =
+      await supabase.storage
+        .from("products")
+        .upload(
+          fileName,
+          selectedProductImage,
+          {
+            cacheControl: "3600",
+            upsert: false,
+          }
+        );
+
+    if (uploadError) {
+      throw new Error(uploadError.message);
+    }
+
+    const {
+      data: { publicUrl },
+    } = supabase.storage
+      .from("products")
+      .getPublicUrl(fileName);
+
+    const payload = {
+      name,
+      category: categoryValue,
+      price,
+      stock,
+      farmer_id: account.id,
+      farmer: account.name,
+      farmer_name: account.name,
+      badge: "Farmer Listed",
+      description,
+      freshness_info: description,
+      image: publicUrl,
+      image_url: publicUrl,
+      location:
+        sellForm.location.trim() || "Local Farm",
+      status: "Available",
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase
+      .from("products")
+      .insert([payload]);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    setSellForm({
+      name: "",
+      category: "Fresh Lettuce",
+      price: "",
+      stock: "",
+      description: "",
+      imageUrl: "",
+      location: "",
+    });
+
+    setSelectedProductImage(null);
+
+    await Promise.all([
+      loadProducts(),
+      loadFarmerToolsData(account.id),
+    ]);
+
+    setFarmerTab("listings");
+
+    showNotification(
+      "Product published successfully."
+    );
+  } catch (error) {
+    showNotification(
+      error instanceof Error
+        ? error.message
+        : "Failed to publish product."
+    );
+  } finally {
+    setSavingProduct(false);
+  }
+}
 
   function handleDeliveryMethodChange(method: "Delivery" | "Pickup") {
     setCheckoutForm((previous) => ({
@@ -775,18 +924,32 @@ export default function HomePage() {
 
   // ==================== RENDER FUNCTIONS ====================
  const renderFarmerTools = () => {
-  if (!isFarmer || !farmerToolsOpen) return null;
+  if (!isFarmer) return null;
 
   if (!farmerToolsOpen) {
     return (
       <div className="mx-auto mb-8 max-w-7xl px-4 sm:px-6 lg:px-8">
-        <button onClick={() => setFarmerToolsOpen(true)} className="flex w-full items-center justify-between rounded-[28px] border border-green-200 bg-white px-6 py-4 text-left shadow-sm transition-all hover:-translate-y-1 hover:shadow-xl">
+        <button
+          onClick={() => setFarmerToolsOpen(true)}
+          className="flex w-full items-center justify-between gap-4 rounded-[28px] border border-green-200 bg-white px-6 py-4 text-left shadow-sm transition-all hover:-translate-y-1 hover:shadow-xl"
+        >
           <div>
-            <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Account Detected</p>
-            <h3 className="mt-1 text-xl font-black text-[#1E2A1F]">Open Farmer Tools</h3>
-            <p className="mt-1 text-sm text-[#5C6B5D]">Sell crops, monitor health logs, and manage buyer orders.</p>
+            <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">
+              Farmer Account
+            </p>
+
+            <h3 className="mt-1 text-xl font-black text-[#1E2A1F]">
+              Open Farmer Tools
+            </h3>
+
+            <p className="mt-1 text-sm text-[#5C6B5D]">
+              Sell products, monitor health logs, and manage buyer orders.
+            </p>
           </div>
-          <div className="rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">Open</div>
+
+          <div className="shrink-0 rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">
+            Open
+          </div>
         </button>
       </div>
     );
@@ -798,23 +961,62 @@ export default function HomePage() {
         <div className="border-b border-green-100 bg-gradient-to-br from-[#EFFAF1] to-white p-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Farmer Tools</p>
-              <h2 className="mt-2 text-3xl font-black tracking-tight text-[#1E2A1F]">Sell crops and monitor your farm</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5C6B5D]">This panel is visible only to farmer accounts.</p>
+              <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">
+                Farmer Tools
+              </p>
+
+              <h2 className="mt-2 text-3xl font-black tracking-tight text-[#1E2A1F]">
+                Sell crops and monitor your farm
+              </h2>
+
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#5C6B5D]">
+                This panel is visible only to farmer accounts.
+              </p>
             </div>
+
             <div className="flex flex-wrap gap-3">
-              <button onClick={() => { loadFarmerToolsData(); loadFarmerWeather(farmerWeatherLocation); }} disabled={farmerLoading || weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
-                {farmerLoading || weatherLoading ? "Refreshing..." : "Refresh"}
+              <button
+                onClick={() => {
+                  loadFarmerToolsData();
+                  loadFarmerWeather(farmerWeatherLocation);
+                }}
+                disabled={farmerLoading || weatherLoading}
+                className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60"
+              >
+                {farmerLoading || weatherLoading
+                  ? "Refreshing..."
+                  : "Refresh"}
               </button>
-              <button onClick={() => setFarmerToolsOpen(false)} className="rounded-full bg-[#1E2A1F] px-5 py-2.5 text-sm font-black text-white transition hover:bg-[#2F6B3B]">Minimize</button>
+
+              <button
+                onClick={() => setFarmerToolsOpen(false)}
+                className="rounded-full bg-[#1E2A1F] px-5 py-2.5 text-sm font-black text-white transition hover:bg-[#2F6B3B]"
+              >
+                Minimize
+              </button>
             </div>
           </div>
 
           <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-            <FarmerStat label="My Listings" value={farmerProducts.length} />
-            <FarmerStat label="Health Logs" value={healthLogs.length} />
-            <FarmerStat label="Buyer Orders" value={farmerOrders.length} />
-            <FarmerStat label="Pending Orders" value={farmerPendingOrders} />
+            <FarmerStat
+              label="My Listings"
+              value={farmerProducts.length}
+            />
+
+            <FarmerStat
+              label="Health Logs"
+              value={healthLogs.length}
+            />
+
+            <FarmerStat
+              label="Buyer Orders"
+              value={farmerOrders.length}
+            />
+
+            <FarmerStat
+              label="Pending Orders"
+              value={farmerPendingOrders}
+            />
           </div>
         </div>
 
@@ -822,20 +1024,40 @@ export default function HomePage() {
           {[
             { id: "sell", label: "Sell Product" },
             { id: "listings", label: "Manage Listings" },
-            { id: "health", label: "Health Logs / Monitoring" },
+            {
+              id: "health",
+              label: "Health Logs / Monitoring",
+            },
             { id: "orders", label: "Farmer Orders" },
           ].map((tab) => (
-            <button key={tab.id} onClick={() => setFarmerTab(tab.id as FarmerToolTab)} className={`rounded-full px-5 py-2.5 text-sm font-black transition ${farmerTab === tab.id ? "bg-[#2F6B3B] text-white shadow-lg shadow-green-900/20" : "bg-[#F7FBF6] text-[#5C6B5D] hover:bg-green-100 hover:text-[#2F6B3B]"}`}>
+            <button
+              key={tab.id}
+              onClick={() =>
+                setFarmerTab(tab.id as FarmerToolTab)
+              }
+              className={`rounded-full px-5 py-2.5 text-sm font-black transition ${
+                farmerTab === tab.id
+                  ? "bg-[#2F6B3B] text-white shadow-lg shadow-green-900/20"
+                  : "bg-[#F7FBF6] text-[#5C6B5D] hover:bg-green-100 hover:text-[#2F6B3B]"
+              }`}
+            >
               {tab.label}
             </button>
           ))}
         </div>
 
         <div className="p-6">
-          {farmerTab === "sell" && renderFarmerSellForm()}
-          {farmerTab === "listings" && renderFarmerListings()}
-          {farmerTab === "health" && renderFarmerHealth()}
-          {farmerTab === "orders" && renderFarmerOrders()}
+          {farmerTab === "sell" &&
+            renderFarmerSellForm()}
+
+          {farmerTab === "listings" &&
+            renderFarmerListings()}
+
+          {farmerTab === "health" &&
+            renderFarmerHealth()}
+
+          {farmerTab === "orders" &&
+            renderFarmerOrders()}
         </div>
       </section>
     </div>
@@ -843,73 +1065,235 @@ export default function HomePage() {
 };
 
 
-  const renderFarmerSellForm = () => (
+const renderFarmerSellForm = () => {
+  const previewImage = selectedProductImage
+    ? URL.createObjectURL(selectedProductImage)
+    : defaultProductImage;
+
+  return (
     <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-      <form onSubmit={handlePublishProduct} className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6">
-        <h3 className="text-2xl font-black text-[#1E2A1F]">Sell Product</h3>
-        <p className="mt-2 text-sm text-[#5C6B5D]">Publish a lettuce product.</p>
+      <form
+        onSubmit={handlePublishProduct}
+        className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6"
+      >
+        <h3 className="text-2xl font-black text-[#1E2A1F]">
+          Sell Product
+        </h3>
+
+        <p className="mt-2 text-sm text-[#5C6B5D]">
+          Publish a product to the marketplace.
+        </p>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Product Name</label>
-            <input value={sellForm.name} onChange={(e) => setSellForm({ ...sellForm, name: e.target.value })} placeholder="Example: Fresh Romaine Lettuce" className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Product Name
+            </label>
+
+            <input
+              value={sellForm.name}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  name: e.target.value,
+                })
+              }
+              placeholder="Example: Fresh Romaine Lettuce"
+              className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            />
           </div>
+
           <div>
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Category</label>
-            <select value={sellForm.category} onChange={(e) => setSellForm({ ...sellForm, category: e.target.value })} className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]">
-              <option>Fresh Lettuce</option><option>Premium Lettuce</option><option>Seeds</option><option>Bundles</option><option>Bulk Orders</option>
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Category
+            </label>
+
+            <select
+              value={sellForm.category}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  category: e.target.value,
+                })
+              }
+              className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            >
+              <option>Fresh Lettuce</option>
+              <option>Seeds</option>
+              <option>Bundles</option>
             </select>
           </div>
+
           <div>
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Location</label>
-            <input value={sellForm.location} onChange={(e) => setSellForm({ ...sellForm, location: e.target.value })} placeholder="Example: Lamac, Consolacion" className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Location
+            </label>
+
+            <input
+              value={sellForm.location}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  location: e.target.value,
+                })
+              }
+              placeholder="Example: Busay, Cebu"
+              className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            />
           </div>
+
           <div>
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Price</label>
-            <input type="number" min="1" value={sellForm.price} onChange={(e) => setSellForm({ ...sellForm, price: e.target.value })} placeholder="₱" className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Price
+            </label>
+
+            <input
+              type="number"
+              min="1"
+              value={sellForm.price}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  price: e.target.value,
+                })
+              }
+              placeholder="₱"
+              className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            />
           </div>
+
           <div>
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Stock</label>
-            <input type="number" min="1" value={sellForm.stock} onChange={(e) => setSellForm({ ...sellForm, stock: e.target.value })} placeholder="Quantity" className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Stock
+            </label>
+
+            <input
+              type="number"
+              min="1"
+              value={sellForm.stock}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  stock: e.target.value,
+                })
+              }
+              placeholder="Quantity"
+              className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            />
           </div>
+
           <div className="md:col-span-2">
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Image URL</label>
-            <input value={sellForm.imageUrl} onChange={(e) => setSellForm({ ...sellForm, imageUrl: e.target.value })} placeholder="Paste image URL" className="w-full rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-2 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Product Picture
+            </label>
+
+            <label className="flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-green-200 bg-white px-6 py-8 text-center transition hover:border-[#2F6B3B] hover:bg-green-50">
+              <div>
+                <p className="text-base font-black text-[#1E2A1F]">
+                  Choose Product Picture
+                </p>
+
+                <p className="mt-1 text-xs text-[#5C6B5D]">
+                  JPG, PNG or WEBP • Maximum 5MB
+                </p>
+
+                {selectedProductImage && (
+                  <p className="mt-3 text-sm font-black text-[#2F6B3B]">
+                    {selectedProductImage.name}
+                  </p>
+                )}
+              </div>
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleProductImageChange}
+                className="hidden"
+              />
+            </label>
           </div>
+
           <div className="md:col-span-2">
-            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">Description</label>
-            <textarea value={sellForm.description} onChange={(e) => setSellForm({ ...sellForm, description: e.target.value })} placeholder="Describe freshness..." rows={4} className="w-full resize-none rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]" />
+            <label className="mb-1 block text-xs font-black uppercase tracking-wider text-[#5C6B5D]">
+              Description
+            </label>
+
+            <textarea
+              value={sellForm.description}
+              onChange={(e) =>
+                setSellForm({
+                  ...sellForm,
+                  description: e.target.value,
+                })
+              }
+              placeholder="Describe freshness..."
+              rows={4}
+              className="w-full resize-none rounded-2xl border border-green-100 bg-white px-5 py-3.5 text-sm font-bold outline-none focus:border-[#2F6B3B]"
+            />
           </div>
         </div>
 
-        <button type="submit" disabled={savingProduct} className="mt-6 w-full rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-black text-white shadow-lg shadow-green-900/20 transition hover:-translate-y-1 hover:bg-[#1E2A1F] disabled:opacity-60">
-          {savingProduct ? "Publishing..." : "Publish Product"}
+        <button
+          type="submit"
+          disabled={savingProduct}
+          className="mt-6 w-full rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-black text-white shadow-lg shadow-green-900/20 transition hover:-translate-y-1 hover:bg-[#1E2A1F] disabled:opacity-60"
+        >
+          {savingProduct
+            ? "Uploading & Publishing..."
+            : "Publish Product"}
         </button>
       </form>
 
-     <div className="rounded-[28px] border border-green-100 bg-white p-6">
-  <h3 className="text-2xl font-black text-[#1E2A1F]">Product Preview</h3>
-  <div className="mt-6 overflow-hidden rounded-[28px] border border-green-100 bg-white shadow-sm">
-    <div className="h-56 bg-cover bg-center" style={{ backgroundImage: `url(${sellForm.imageUrl.trim() || defaultProductImage})` }} />
-    <div className="p-5">
-      <p className="text-xs font-black uppercase tracking-wider text-[#2F6B3B]">{sellForm.category || "Fresh Lettuce"}</p>
-      <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">{sellForm.name || "Product name"}</h4>
-      <p className="mt-2 text-sm text-[#5C6B5D]">Farmer: {account?.name || "Farmer"}</p>
-      
-      {/* Added Location */}
-      <p className="mt-3 text-sm text-gray-600">📍 {sellForm.location || "Cebu, Philippines"}</p>
+      <div className="rounded-[28px] border border-green-100 bg-white p-6">
+        <h3 className="text-2xl font-black text-[#1E2A1F]">
+          Product Preview
+        </h3>
 
-      <p className="mt-4 text-3xl font-black text-[#2F6B3B]">₱{sellForm.price || "0"}</p>
-      <p className="mt-2 text-sm font-bold text-[#5C6B5D]">Stock: {sellForm.stock || "0"}</p>
-      
-      {/* Added Description */}
-      <p className="mt-4 text-sm leading-6 text-[#5C6B5D] line-clamp-4">{sellForm.description || "Fresh lettuce crop from local farmer."}</p>
-    </div>
-  </div>
-</div>
+        <div className="mt-6 overflow-hidden rounded-[28px] border border-green-100 bg-white shadow-sm">
+          <div
+            className="h-56 bg-cover bg-center"
+            style={{
+              backgroundImage: `url(${previewImage})`,
+            }}
+          />
+
+          <div className="p-5">
+            <p className="text-xs font-black uppercase tracking-wider text-[#2F6B3B]">
+              {sellForm.category}
+            </p>
+
+            <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">
+              {sellForm.name || "Product name"}
+            </h4>
+
+            <p className="mt-2 text-sm text-[#5C6B5D]">
+              Farmer: {account?.name || "Farmer"}
+            </p>
+
+            <p className="mt-3 text-sm text-gray-600">
+              📍{" "}
+              {sellForm.location ||
+                "Cebu, Philippines"}
+            </p>
+
+            <p className="mt-4 text-3xl font-black text-[#2F6B3B]">
+              ₱{sellForm.price || "0"}
+            </p>
+
+            <p className="mt-2 text-sm font-bold text-[#5C6B5D]">
+              Stock: {sellForm.stock || "0"}
+            </p>
+
+            <p className="mt-4 line-clamp-4 text-sm leading-6 text-[#5C6B5D]">
+              {sellForm.description ||
+                "Fresh product from local farmer."}
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   );
-
+};
   const renderFarmerListings = () => (
     <div>
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1096,54 +1480,106 @@ export default function HomePage() {
     </div>
   );
 
-  const renderHome = () => (
-    <div className="relative mx-auto grid min-h-[85vh] max-w-7xl items-center gap-16 overflow-hidden px-4 py-16 sm:px-6 lg:grid-cols-2 lg:px-8">
-      <div className="pointer-events-none absolute -left-28 top-12 h-72 w-72 rounded-full bg-green-200/35 blur-3xl" />
-      <div className="pointer-events-none absolute -right-24 bottom-10 h-80 w-80 rounded-full bg-[#5DBB63]/15 blur-3xl" />
+const renderHome = () => (
+  <div className="relative mx-auto grid min-h-[85vh] max-w-7xl items-center gap-16 overflow-hidden px-4 py-16 sm:px-6 lg:grid-cols-2 lg:px-8">
+    {/* Soft background decorations */}
+    <div className="pointer-events-none absolute -left-28 top-12 h-72 w-72 rounded-full bg-green-200/35 blur-3xl" />
+    <div className="pointer-events-none absolute -right-24 bottom-10 h-80 w-80 rounded-full bg-[#5DBB63]/15 blur-3xl" />
 
-      <div className="relative z-10 animate-in slide-in-from-left-8 duration-1000 fade-in">
-        <div className="inline-flex items-center gap-2 rounded-full border border-green-200 bg-white/75 px-4 py-2 text-xs font-bold uppercase tracking-widest text-[#2F6B3B] shadow-sm backdrop-blur-sm">
-          <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-[#2F6B3B]" /></span>
-          Fresh. Verified. Delivered.
-        </div>
+    {/* LEFT CONTENT */}
+    <div className="relative z-10 animate-in slide-in-from-left-8 duration-1000 fade-in">
+      <div className="inline-flex items-center gap-2 rounded-full border border-green-200 bg-white/75 px-4 py-2 text-xs font-bold uppercase tracking-widest text-[#2F6B3B] shadow-sm backdrop-blur-sm">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-[#2F6B3B]" />
+        </span>
 
-        <h1 className="mt-8 text-5xl font-black leading-[1.1] tracking-tight md:text-6xl lg:text-[72px]">
-          Premium lettuce, <br />
-          <span className="bg-gradient-to-r from-[#2F6B3B] to-[#5DBB63] bg-clip-text text-transparent">trust verified.</span>
-        </h1>
-
-        <p className="mt-6 max-w-xl text-lg leading-relaxed text-[#5C6B5D]">
-          Buy fresh lettuce, premium seeds, and bulk orders directly from verified local farmers.
-        </p>
-
-        <div className="mt-10 flex flex-wrap items-center gap-5">
-          <button onClick={() => setCurrentView("shop")} className="group flex items-center gap-2 rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-bold text-white shadow-[0_8px_20px_rgba(47,107,59,0.3)] ring-4 ring-[#2F6B3B]/10 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_12px_25px_rgba(47,107,59,0.4)] active:scale-95">
-            Enter Marketplace
-            <svg className="h-4 w-4 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
-          </button>
-        </div>
+        Fresh. Verified. Delivered.
       </div>
 
-      <div className="relative z-10 hidden lg:block animate-in slide-in-from-right-8 duration-1000 fade-in delay-150">
-        <div className="group relative overflow-hidden rounded-[40px] border-[8px] border-white bg-white shadow-2xl shadow-green-900/10 transition-transform duration-700 hover:-translate-y-4">
-          <div className="h-[650px] w-full bg-cover bg-center transition-transform duration-[2000ms] group-hover:scale-110" style={{ backgroundImage: "url('https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1600&auto=format&fit=crop')" }} />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-50 transition-opacity duration-700 group-hover:opacity-80" />
-          <div className="absolute bottom-10 left-10 translate-y-4 rounded-3xl border border-white/20 bg-white/95 p-6 shadow-2xl backdrop-blur-xl transition-all duration-700 group-hover:translate-y-0">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 shadow-inner">
-                <svg className="h-6 w-6 text-green-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
-              </div>
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-[#2F6B3B]">AI Verified</p>
-                <p className="text-lg font-black text-gray-900">100% Healthy Crop</p>
-              </div>
+      <h1 className="mt-8 text-5xl font-black leading-[1.1] tracking-tight md:text-6xl lg:text-[72px]">
+        Fresh lettuce,
+        <br />
+
+        <span className="bg-gradient-to-r from-[#2F6B3B] to-[#5DBB63] bg-clip-text text-transparent">
+          grown with trust.
+        </span>
+      </h1>
+
+      <p className="mt-6 max-w-xl text-lg leading-relaxed text-[#5C6B5D]">
+        Buy fresh lettuce, quality seeds, and farm bundles directly from
+        verified local farmers.
+      </p>
+
+      <div className="mt-10 flex flex-wrap items-center gap-5">
+        <button
+          onClick={() => setCurrentView("shop")}
+          className="group flex items-center gap-2 rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-bold text-white shadow-[0_8px_20px_rgba(47,107,59,0.3)] ring-4 ring-[#2F6B3B]/10 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_12px_25px_rgba(47,107,59,0.4)] active:scale-95"
+        >
+          Enter Marketplace
+
+          <svg
+            className="h-4 w-4 transition-transform group-hover:translate-x-1"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2.5}
+              d="M14 5l7 7m0 0l-7 7m7-7H3"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    {/* RIGHT HERO IMAGE */}
+    <div className="relative z-10 hidden animate-in slide-in-from-right-8 fade-in delay-150 duration-1000 lg:block">
+      <div className="group relative overflow-hidden rounded-[40px] border-[8px] border-white bg-white shadow-2xl shadow-green-900/10 transition-transform duration-700 hover:-translate-y-4">
+        <div
+          className="h-[650px] w-full bg-cover bg-center transition-transform duration-[2000ms] group-hover:scale-110"
+          style={{
+            backgroundImage:
+              "url('/images/products/letuce1.jpg')",
+          }}
+        />
+
+        <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-40 transition-opacity duration-700 group-hover:opacity-60" />
+
+        {/* AI VERIFIED CARD */}
+        <div className="absolute bottom-10 left-10 translate-y-4 rounded-3xl border border-white/20 bg-white/95 p-6 shadow-2xl backdrop-blur-xl transition-all duration-700 group-hover:translate-y-0">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 shadow-inner">
+              <svg
+                className="h-6 w-6 text-green-600"
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-[#2F6B3B]">
+                AI Verified
+              </p>
+
+              <p className="text-lg font-black text-gray-900">
+                Healthy Lettuce Crop
+              </p>
             </div>
           </div>
         </div>
       </div>
     </div>
-  );
-
+  </div>
+);
   const renderShop = () => (
     <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div className="flex flex-col md:flex-row md:items-end md:justify-between animate-in slide-in-from-bottom-4 fade-in duration-500">
@@ -1156,7 +1592,7 @@ export default function HomePage() {
       <div className="mt-10 flex flex-wrap gap-4 rounded-[28px] bg-white p-3 shadow-sm ring-1 ring-black/5 animate-in slide-in-from-bottom-6 fade-in duration-500 delay-75">
         <input className="min-w-[250px] flex-1 rounded-xl bg-[#F7FBF6] px-5 py-3.5 text-sm font-medium outline-none transition-all focus:bg-green-50 focus:ring-2 focus:ring-[#2F6B3B]/20" placeholder="Search fresh lettuce..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <select className="cursor-pointer rounded-xl bg-[#F7FBF6] px-5 py-3.5 text-sm font-medium outline-none transition-colors hover:bg-green-50" value={category} onChange={(e) => setCategory(e.target.value)}>
-          <option>All Categories</option><option>Fresh Lettuce</option><option>Premium Lettuce</option><option>Seeds</option><option>Bundles</option><option>Bulk Orders</option>
+          <option>All Categories</option><option>Fresh Lettuce</option><option>Seeds</option><option>Bundles</option>
         </select>
         <select className="cursor-pointer rounded-xl bg-[#F7FBF6] px-5 py-3.5 text-sm font-medium outline-none transition-colors hover:bg-green-50" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
           <option>Default</option><option>Price: Low to High</option><option>Price: High to Low</option><option>Newest</option>
@@ -1180,7 +1616,7 @@ export default function HomePage() {
               <p className="mt-1 text-xs font-medium uppercase tracking-wider text-gray-500">{product.category}</p>
 
               <div className="mt-auto flex items-center justify-between pt-6">
-                <p className="text-3xl font-black text-[#2F6B3B]">₱{product.price}</p>
+                <p className="text-3xl font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</p>
                 <div className="flex gap-2">
                   <button onClick={() => setSelectedProduct(product)} className="flex h-12 w-12 items-center justify-center rounded-full bg-green-50 text-[#2F6B3B] transition-colors hover:bg-green-100">👁</button>
                   {!isFarmer && (
@@ -1328,8 +1764,8 @@ export default function HomePage() {
                 {order.items.map((item) => (
                   <div key={`${order.id}-${item.productId}`} className="rounded-2xl bg-[#F7FBF6] p-4">
                     <p className="font-black text-[#1E2A1F]">{item.productName}</p>
-                    <p className="mt-1 text-sm text-[#5C6B5D]">{item.quantity} × ₱{item.price}</p>
-                    <p className="mt-2 font-black text-[#2F6B3B]">₱{item.subtotal}</p>
+                    <p className="mt-1 text-sm text-[#5C6B5D]">{item.quantity} × ₱{formatMoney(item.price)}</p>
+                    <p className="mt-2 font-black text-[#2F6B3B]">₱{formatMoney(item.subtotal)}</p>
                   </div>
                 ))}
               </div>

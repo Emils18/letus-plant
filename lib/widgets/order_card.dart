@@ -21,7 +21,8 @@ class OrderCard extends StatelessWidget {
         ? order['shipping_name'].toString()
         : 'Guest Buyer';
 
-    final total = order['total_amount']?.toString() ?? '0.00';
+    final total =
+    double.tryParse(order['total_amount']?.toString() ?? '0') ?? 0;
     final status = order['status']?.toString() ?? 'Pending';
     final paymentStatus = order['payment_status']?.toString() ?? 'Unpaid';
     final deliveryMethod =
@@ -154,7 +155,7 @@ class OrderCard extends StatelessWidget {
                     const SizedBox(width: 12),
 
                     Text(
-                      '₱$total',
+                     '₱${total.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.w900,

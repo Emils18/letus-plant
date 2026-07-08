@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ProductService {
@@ -7,7 +9,10 @@ class ProductService {
   static const String _fallbackImage =
       'https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop';
 
-  Future<bool> publishProduct(Map<String, dynamic> productData) async {
+  Future<bool> publishProduct({
+    required Map<String, dynamic> productData,
+    XFile? imageFile,
+  }) async {
     try {
       final user = _supabase.auth.currentUser;
 
@@ -52,6 +57,20 @@ class ProductService {
         return false;
       }
 
+      String? imageUrl = _fallbackImage;
+
+      if (imageFile != null) {
+        try {
+          final fileName = '${DateTime.now().millisecondsSinceEpoch}_${imageFile.name}';
+          final bytes = await imageFile.readAsBytes();
+
+          await _supabase.storage.from('products').uploadBinary(fileName, bytes);
+          imageUrl = _supabase.storage.from('products').getPublicUrl(fileName);
+        } catch (e) {
+          debugPrint('Image upload failed, using fallback: $e');
+        }
+      }
+
       await _supabase.from('products').insert({
         'farmer_id': user.id,
         'farmer': farmerName,
@@ -63,8 +82,8 @@ class ProductService {
         'stock': stock,
         'badge': badge,
         'freshness_info': description,
-        'image_url': _fallbackImage,
-        'image': _fallbackImage,
+        'image_url': imageUrl,
+        'image': imageUrl,
         'location': location,
         'status': 'Available',
         'updated_at': DateTime.now().toIso8601String(),
@@ -166,13 +185,11 @@ class ProductService {
   double _toDouble(dynamic value) {
     if (value is double) return value;
     if (value is int) return value.toDouble();
-
     return double.tryParse(value?.toString() ?? '0') ?? 0;
   }
 
   int _toInt(dynamic value) {
     if (value is int) return value;
-
     return int.tryParse(value?.toString() ?? '0') ?? 0;
   }
 }

@@ -254,18 +254,12 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     });
   }
 
-  List<String> get _categories {
-    final values = _products
-        .map((product) => product['category']?.toString().trim())
-        .where((category) => category != null && category.isNotEmpty)
-        .cast<String>()
-        .toSet()
-        .toList();
-
-    values.sort();
-
-    return ['All', ...values];
-  }
+   List<String> get _categories => const [
+  'All',
+  'Fresh Lettuce',
+  'Seeds',
+  'Bundles',
+];
 
   List<Map<String, dynamic>> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
@@ -479,16 +473,17 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
         'Local Farmer';
   }
 
-  Widget _safeProductImage(
+   Widget _safeProductImage(
     Map<String, dynamic> product, {
     double height = 180,
     double width = double.infinity,
     BorderRadius? borderRadius,
   }) {
+    final imageUrl = _productImage(product);
     return ClipRRect(
       borderRadius: borderRadius ?? BorderRadius.circular(16),
       child: Image.network(
-        _productImage(product),
+        imageUrl,
         height: height,
         width: width,
         fit: BoxFit.cover,
@@ -1131,13 +1126,13 @@ Widget _buildSearchAndFilters() {
                     children: [
                       Expanded(
                         child: Text(
-                          '₱${price.toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF2F6B3B),
-                          ),
-                        ),
+  '₱${price.toStringAsFixed(2)}',
+  style: const TextStyle(
+    fontSize: 24,
+    fontWeight: FontWeight.w900,
+    color: Color(0xFF2F6B3B),
+  ),
+),
                       ),
                       TextButton(
                         onPressed: () => _openProductDetails(product),

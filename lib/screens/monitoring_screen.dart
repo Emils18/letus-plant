@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import '../services/monitoring_service.dart';
-import '../widgets/sensor_card.dart';
-import '../widgets/recommendation_card.dart';
-import '../widgets/device_status_card.dart';
 import 'scan_screen.dart';
-import 'plant_tracking_screen.dart';
 import 'sell_crop_screen.dart';
 
 class MonitoringScreen extends StatefulWidget {
@@ -30,14 +26,6 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
     setState(() => data = result);
   }
 
-  // Helper function to safely get string values
-  String _getValue(String key, {String fallback = 'N/A'}) {
-    if (data == null) return fallback;
-    final value = data![key];
-    if (value == null) return fallback;
-    return value.toString();
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -46,168 +34,133 @@ class _MonitoringScreenState extends State<MonitoringScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        title: const Text('Farm Monitoring', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: Color(0xFF1E2A1F))),
+        title: const Text('Farm Monitoring', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20, color: Color(0xFF1E2A1F))),
         iconTheme: const IconThemeData(color: Color(0xFF1E2A1F)),
-        actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppConfig.isDemoMode ? Colors.amber.shade50 : Colors.green.shade50,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppConfig.isDemoMode ? Colors.amber.shade200 : Colors.green.shade200),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 6, height: 6,
-                  decoration: BoxDecoration(color: AppConfig.isDemoMode ? Colors.amber : Colors.green, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                Text(AppConfig.isDemoMode ? 'DEMO' : 'LIVE', style: TextStyle(color: AppConfig.isDemoMode ? Colors.amber.shade700 : Colors.green, fontWeight: FontWeight.bold, fontSize: 10)),
-              ],
-            ),
-          )
-        ],
       ),
       body: data == null
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF2F6B3B)))
-          : RefreshIndicator(
-              onRefresh: _loadData,
-              color: const Color(0xFF2F6B3B),
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Device Status
-                    SizedBox(
-                      height: 90,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        children: const [
-                          DeviceStatusCard(deviceName: 'ESP32 Board', icon: Icons.developer_board_rounded),
-                          DeviceStatusCard(deviceName: 'Soil Sensor', icon: Icons.water_drop_rounded),
-                          DeviceStatusCard(deviceName: 'LDR Sensor', icon: Icons.light_mode_rounded),
-                          DeviceStatusCard(deviceName: 'ESP32-CAM', icon: Icons.camera_rounded),
-                          DeviceStatusCard(deviceName: 'Weather API', icon: Icons.cloud_sync_rounded),
-                        ],
-                      ),
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Status
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 15)],
                     ),
-                    const SizedBox(height: 32),
-
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 24),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Sensor Readings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 16),
-
-                          GridView.count(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            crossAxisCount: 2,
-                            mainAxisSpacing: 16,
-                            crossAxisSpacing: 16,
-                            childAspectRatio: 0.85,
-                            children: [
-                              SensorCard(
-                                title: 'Soil Moisture',
-                                status: _getValue('soil_status'),
-                                subtitle: _getValue('soil_value'),
-                                icon: Icons.water_drop_rounded,
-                                color: Colors.blue,
-                              ),
-                              SensorCard(
-                                title: 'Light Level',
-                                status: _getValue('light_status'),
-                                subtitle: _getValue('light_value'),
-                                icon: Icons.light_mode_rounded,
-                                color: Colors.orange,
-                              ),
-                              SensorCard(
-                                title: 'Plant Health',
-                                status: _getValue('plant_health'),
-                                subtitle: 'Scan Result',
-                                icon: Icons.biotech_rounded,
-                                color: const Color(0xFF2F6B3B),
-                              ),
-                              SensorCard(
-                                title: 'Crop Stage',
-                                status: _getValue('crop_stage'),
-                                subtitle: 'Growth Track',
-                                icon: Icons.grass_rounded,
-                                color: Colors.teal,
-                              ),
-                            ],
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('All Sensors Online', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(20),
                           ),
-
-                          const SizedBox(height: 32),
-
-                          const Text('Smart Recommendations', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 16),
-                          const RecommendationCard(text: 'Soil moisture is ideal. No watering required for the next 12 hours.'),
-                          const RecommendationCard(text: 'Crop is Harvest Ready. Quality is Grade A based on AI scan.', isUrgent: true),
-
-                          const SizedBox(height: 32),
-
-                          const Text('Quick Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
-                          const SizedBox(height: 16),
-
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanScreen())),
-                                  icon: const Icon(Icons.document_scanner),
-                                  label: const Text('Scan Disease'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.white,
-                                    foregroundColor: Colors.indigo,
-                                    padding: const EdgeInsets.symmetric(vertical: 16),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                    elevation: 0,
-                                    side: BorderSide(color: Colors.indigo.withValues(alpha: 0.2)),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SellCropScreen())),
-                                  icon: const Icon(Icons.storefront),
-                                  label: const Text('Sell Crop'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF5DBB63),
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(vertical: 16),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                    elevation: 4,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 12),
-
-                          SizedBox(
-                            width: double.infinity,
-                            child: TextButton(
-                              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PlantTrackingScreen())),
-                              child: const Text('View Growth Tracking', style: TextStyle(color: Color(0xFF2F6B3B), fontWeight: FontWeight.bold)),
-                            ),
-                          ),
-                        ],
-                      ),
+                          child: const Text('LIVE', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+
+                  const SizedBox(height: 32),
+
+                  // Main Readings - Big & Simple
+                  const Text('Current Readings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _bigCard('Soil Moisture', data?['soil_value'] ?? 'N/A', Icons.water_drop_rounded, Colors.blue),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _bigCard('Light Level', data?['light_value'] ?? 'N/A', Icons.light_mode_rounded, Colors.orange),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _bigCard('Plant Health', data?['plant_health'] ?? 'N/A', Icons.eco_rounded, const Color(0xFF2F6B3B)),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _bigCard('Crop Stage', data?['crop_stage'] ?? 'N/A', Icons.grass_rounded, Colors.teal),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 40),
+
+                  // Quick Actions
+                  const Text('Quick Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ScanScreen())),
+                          icon: const Icon(Icons.document_scanner),
+                          label: const Text('Scan Disease'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.indigo,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SellCropScreen())),
+                          icon: const Icon(Icons.storefront),
+                          label: const Text('Sell Crop'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF5DBB63),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
+    );
+  }
+
+  Widget _bigCard(String title, String value, IconData icon, Color color) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 15)],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 36),
+          const SizedBox(height: 12),
+          Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
+          const SizedBox(height: 4),
+          Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+        ],
+      ),
     );
   }
 }
