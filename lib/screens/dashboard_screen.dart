@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../services/notification_service.dart';
+import 'notifications_screen.dart';
 import '../services/auth_service.dart';
 import '../services/order_service.dart';
 import 'scan_screen.dart';
@@ -16,6 +18,7 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final OrderService _orderService = OrderService();
+  final NotificationService _notificationService = NotificationService();
   final ImagePicker _imagePicker = ImagePicker();
 
   late Future<List<Map<String, dynamic>>> _recentOrders;
@@ -32,6 +35,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  Future<int> _loadUnreadNotifications() async {
+    return _notificationService.getUnreadCount();
+  }
+
   Future<void> _logout(BuildContext context) async {
     await AuthService().signOut();
 
@@ -44,7 +51,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     String orderId,
     String newStatus,
   ) async {
-    // Optimistic update → instant change, no jump
     setState(() {
       _recentOrders = _recentOrders.then((orders) {
         return orders.map((order) {
@@ -76,8 +82,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       );
     }
-
-    // Success: no _refreshOrders() → list stays in place
   }
 
   Future<void> _submitProof(String orderId) async {
@@ -167,10 +171,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ============================================================
-                // MODERN FARMER HERO
-                // ============================================================
-
                 _fadeUp(
                   delay: 0,
                   child: Container(
@@ -208,7 +208,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                           ),
                         ),
-
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -232,28 +231,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   ),
                                 ),
 
-                                Container(
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(
-                                      alpha: 0.12,
+                                Row(
+                                  children: [
+                                    FutureBuilder<int>(
+                                      future: _loadUnreadNotifications(),
+                                      builder: (context, snapshot) {
+                                        final unreadCount = snapshot.data ?? 0;
+
+                                        return Container(
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.12,
+                                            ),
+                                            borderRadius:
+                                                BorderRadius.circular(17),
+                                          ),
+                                          child: IconButton(
+                                            tooltip: 'Notifications',
+                                            onPressed: () async {
+                                              await Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (_) =>
+                                                      const NotificationsScreen(),
+                                                ),
+                                              );
+
+                                              if (mounted) {
+                                                setState(() {});
+                                              }
+                                            },
+                                            icon: Badge(
+                                              isLabelVisible: unreadCount > 0,
+                                              label: Text(
+                                                unreadCount.toString(),
+                                              ),
+                                              child: const Icon(
+                                                Icons.notifications_rounded,
+                                                color: Colors.white,
+                                                size: 28,
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
                                     ),
-                                    borderRadius: BorderRadius.circular(17),
-                                  ),
-                                  child: IconButton(
-                                    onPressed: () => _logout(context),
-                                    tooltip: 'Logout',
-                                    icon: const Icon(
-                                      Icons.logout_rounded,
-                                      color: Colors.white,
-                                      size: 28,
+                                    const SizedBox(width: 10),
+                                    Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.12,
+                                        ),
+                                        borderRadius: BorderRadius.circular(17),
+                                      ),
+                                      child: IconButton(
+                                        onPressed: () => _logout(context),
+                                        tooltip: 'Logout',
+                                        icon: const Icon(
+                                          Icons.logout_rounded,
+                                          color: Colors.white,
+                                          size: 28,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                 ),
                               ],
                             ),
-
                             const SizedBox(height: 22),
-
                             const Text(
                               'Welcome back,',
                               style: TextStyle(
@@ -263,9 +308,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 height: 1.2,
                               ),
                             ),
-
                             const SizedBox(height: 2),
-
                             const Text(
                               'Farmer',
                               style: TextStyle(
@@ -276,9 +319,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 letterSpacing: -0.8,
                               ),
                             ),
-
                             const SizedBox(height: 10),
-
                             const Text(
                               'What would you like to do today?',
                               style: TextStyle(
@@ -294,13 +335,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 34),
-
-                // ============================================================
-                // QUICK ACTIONS
-                // ============================================================
-
                 _fadeUp(
                   delay: 80,
                   child: const Column(
@@ -328,10 +363,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 18),
-
-                // Scan Disease
                 _fadeUp(
                   delay: 140,
                   child: ElevatedButton.icon(
@@ -370,10 +402,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
-
-                // Sell Crop
                 _fadeUp(
                   delay: 210,
                   child: ElevatedButton.icon(
@@ -412,13 +441,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 38),
-
-                // ============================================================
-                // RECENT ORDERS HEADER
-                // ============================================================
-
                 _fadeUp(
                   delay: 280,
                   child: Row(
@@ -465,13 +488,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 20),
-
-                // ============================================================
-                // RECENT ORDERS LIST
-                // ============================================================
-
                 FutureBuilder<List<Map<String, dynamic>>>(
                   future: _recentOrders,
                   builder: (context, snapshot) {
@@ -489,8 +506,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       );
                     }
 
-                    List<Map<String, dynamic>> orders =
-                        snapshot.data ?? [];
+                    List<Map<String, dynamic>> orders = snapshot.data ?? [];
 
                     if (orders.isEmpty) {
                       return _fadeUp(
@@ -567,48 +583,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           final firstItem = order['order_items'][0];
 
                           if (firstItem['products'] != null) {
-                            product = firstItem['products']['name']
-                                    ?.toString() ??
-                                'Lettuce';
+                            product =
+                                firstItem['products']['name']?.toString() ??
+                                    'Lettuce';
                           }
                         }
 
                         final buyer =
-                            order['shipping_name']?.toString() ??
-                                'Buyer';
+                            order['shipping_name']?.toString() ?? 'Buyer';
 
                         final phone =
-                            order['shipping_phone']?.toString() ??
-                                'No phone';
+                            order['shipping_phone']?.toString() ?? 'No phone';
 
                         final location =
-                            order['shipping_address']?.toString() ??
-                                'Cebu';
+                            order['shipping_address']?.toString() ?? 'Cebu';
 
                         final deliveryMethod =
-                            order['delivery_method']?.toString() ??
-                                'Delivery';
+                            order['delivery_method']?.toString() ?? 'Delivery';
 
-                        final status =
-                            order['status']?.toString() ??
-                                'Pending';
+                        final status = order['status']?.toString() ?? 'Pending';
 
                         final total = double.tryParse(
                               order['total_amount']?.toString() ?? '0',
                             ) ??
                             0;
 
-                        final orderId =
-                            order['id']?.toString() ?? '';
+                        final orderId = order['id']?.toString() ?? '';
 
-                        final imageUrl =
-                            order['image_url'] ??
-                                order['product_image'] ??
-                                'https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop';
+                     final imageUrl = _getOrderProductImage(order);
 
-                        final isNewest =
-                            orders.isNotEmpty &&
-                                order == orders.first;
+                        final isNewest = orders.isNotEmpty && order == orders.first;
 
                         return _fadeUp(
                           delay: 340 + (index * 70),
@@ -640,7 +644,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               crossAxisAlignment:
                                   CrossAxisAlignment.start,
                               children: [
-                                // Product Image + Main Information
                                 Row(
                                   children: [
                                     ClipRRect(
@@ -651,28 +654,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         height: 92,
                                         width: 92,
                                         fit: BoxFit.cover,
-                                        errorBuilder:
-                                            (_, __, ___) {
+                                        errorBuilder: (_, __, ___) {
                                           return Container(
                                             height: 92,
                                             width: 92,
-                                            color: const Color(
-                                              0xFFE8F3EA,
-                                            ),
+                                            color: const Color(0xFFE8F3EA),
                                             child: const Icon(
                                               Icons.eco_rounded,
-                                              color: Color(
-                                                0xFF2F6B3B,
-                                              ),
+                                              color: Color(0xFF2F6B3B),
                                               size: 46,
                                             ),
                                           );
                                         },
                                       ),
                                     ),
-
                                     const SizedBox(width: 18),
-
                                     Expanded(
                                       child: Column(
                                         crossAxisAlignment:
@@ -686,35 +682,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                   maxLines: 1,
                                                   overflow:
                                                       TextOverflow.ellipsis,
-                                                  style:
-                                                      const TextStyle(
+                                                  style: const TextStyle(
                                                     fontSize: 25,
                                                     fontWeight:
                                                         FontWeight.w900,
-                                                    color: Color(
-                                                      0xFF1E2A1F,
-                                                    ),
+                                                    color: Color(0xFF1E2A1F),
                                                     letterSpacing: -0.4,
                                                   ),
                                                 ),
                                               ),
-
                                               if (isNewest)
                                                 Container(
-                                                  padding:
-                                                      const EdgeInsets
-                                                          .symmetric(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
                                                     horizontal: 14,
                                                     vertical: 6,
                                                   ),
-                                                  decoration:
-                                                      BoxDecoration(
-                                                    color: const Color(
-                                                      0xFF5DBB63,
-                                                    ),
+                                                  decoration: BoxDecoration(
+                                                    color:
+                                                        const Color(0xFF5DBB63),
                                                     borderRadius:
-                                                        BorderRadius
-                                                            .circular(
+                                                        BorderRadius.circular(
                                                       20,
                                                     ),
                                                   ),
@@ -730,9 +718,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                 ),
                                             ],
                                           ),
-
                                           const SizedBox(height: 8),
-
                                           Text(
                                             'Buyer: $buyer',
                                             maxLines: 1,
@@ -746,7 +732,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                               height: 1.35,
                                             ),
                                           ),
-
                                           Text(
                                             'Phone: $phone',
                                             maxLines: 1,
@@ -765,10 +750,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 22),
-
-                                // Delivery Method
                                 Container(
                                   width: double.infinity,
                                   padding: const EdgeInsets.symmetric(
@@ -781,8 +763,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                             .contains('pickup')
                                         ? const Color(0xFFFFF3CD)
                                         : const Color(0xFFE8F3EA),
-                                    borderRadius:
-                                        BorderRadius.circular(24),
+                                    borderRadius: BorderRadius.circular(24),
                                   ),
                                   child: Row(
                                     children: [
@@ -800,21 +781,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                   .toLowerCase()
                                                   .contains('pickup')
                                               ? Icons.store_rounded
-                                              : Icons
-                                                  .local_shipping_rounded,
+                                              : Icons.local_shipping_rounded,
                                           color: deliveryMethod
                                                   .toLowerCase()
                                                   .contains('pickup')
                                               ? Colors.orange
-                                              : const Color(
-                                                  0xFF2F6B3B,
-                                                ),
+                                              : const Color(0xFF2F6B3B),
                                           size: 27,
                                         ),
                                       ),
-
                                       const SizedBox(width: 13),
-
                                       Expanded(
                                         child: Text(
                                           deliveryMethod
@@ -830,19 +806,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                                     .toLowerCase()
                                                     .contains('pickup')
                                                 ? Colors.orange
-                                                : const Color(
-                                                    0xFF2F6B3B,
-                                                  ),
+                                                : const Color(0xFF2F6B3B),
                                           ),
                                         ),
                                       ),
                                     ],
                                   ),
                                 ),
-
                                 const SizedBox(height: 20),
-
-                                // Location
                                 Row(
                                   crossAxisAlignment:
                                       CrossAxisAlignment.start,
@@ -851,9 +822,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       height: 38,
                                       width: 38,
                                       decoration: BoxDecoration(
-                                        color: const Color(
-                                          0xFFE8F3EA,
-                                        ),
+                                        color: const Color(0xFFE8F3EA),
                                         borderRadius:
                                             BorderRadius.circular(13),
                                       ),
@@ -863,15 +832,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         size: 24,
                                       ),
                                     ),
-
                                     const SizedBox(width: 12),
-
                                     Expanded(
                                       child: Padding(
                                         padding:
-                                            const EdgeInsets.only(
-                                          top: 6,
-                                        ),
+                                            const EdgeInsets.only(top: 6),
                                         child: Text(
                                           location,
                                           style: const TextStyle(
@@ -886,10 +851,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     ),
                                   ],
                                 ),
-
                                 const SizedBox(height: 22),
-
-                                // Price + Status
                                 Row(
                                   mainAxisAlignment:
                                       MainAxisAlignment.spaceBetween,
@@ -922,10 +884,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         ),
                                       ],
                                     ),
-
                                     Container(
-                                      padding:
-                                          const EdgeInsets.symmetric(
+                                      padding: const EdgeInsets.symmetric(
                                         horizontal: 14,
                                         vertical: 9,
                                       ),
@@ -941,30 +901,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           fontSize: 18,
                                           fontWeight:
                                               FontWeight.w900,
-                                          color:
-                                              _statusColor(status),
+                                          color: _statusColor(status),
                                         ),
                                       ),
                                     ),
                                   ],
                                 ),
-
-                                // ==================================================
-                                // EXISTING ACTION LOGIC — UNCHANGED
-                                // ==================================================
-
-                                if (status.toLowerCase() ==
-                                        'pending' ||
-                                    status.toLowerCase() ==
-                                        'confirmed' ||
-                                    status.toLowerCase() ==
-                                        'preparing' ||
-                                    status.toLowerCase() ==
-                                        'shipped')
+                                if (status.toLowerCase() == 'pending' ||
+                                    status.toLowerCase() == 'confirmed' ||
+                                    status.toLowerCase() == 'preparing' ||
+                                    status.toLowerCase() == 'shipped')
                                   const SizedBox(height: 22),
-
-                                if (status.toLowerCase() ==
-                                    'pending')
+                                if (status.toLowerCase() == 'pending')
                                   ElevatedButton(
                                     onPressed: () {
                                       _updateOrderStatus(
@@ -972,18 +920,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         'Confirmed',
                                       );
                                     },
-                                    style:
-                                        ElevatedButton.styleFrom(
+                                    style: ElevatedButton.styleFrom(
                                       backgroundColor:
                                           const Color(0xFF2F6B3B),
                                       foregroundColor: Colors.white,
-                                      minimumSize: const Size(
-                                        double.infinity,
-                                        68,
-                                      ),
+                                      minimumSize:
+                                          const Size(double.infinity, 68),
                                       elevation: 0,
-                                      shape:
-                                          RoundedRectangleBorder(
+                                      shape: RoundedRectangleBorder(
                                         borderRadius:
                                             BorderRadius.circular(22),
                                       ),
@@ -997,9 +941,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       ),
                                     ),
                                   ),
-
-                                if (status.toLowerCase() ==
-                                    'confirmed')
+                                if (status.toLowerCase() == 'confirmed')
                                   ElevatedButton(
                                     onPressed: () {
                                       _updateOrderStatus(
@@ -1007,18 +949,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         'Preparing',
                                       );
                                     },
-                                    style:
-                                        ElevatedButton.styleFrom(
+                                    style: ElevatedButton.styleFrom(
                                       backgroundColor:
                                           const Color(0xFF5DBB63),
                                       foregroundColor: Colors.white,
-                                      minimumSize: const Size(
-                                        double.infinity,
-                                        68,
-                                      ),
+                                      minimumSize:
+                                          const Size(double.infinity, 68),
                                       elevation: 0,
-                                      shape:
-                                          RoundedRectangleBorder(
+                                      shape: RoundedRectangleBorder(
                                         borderRadius:
                                             BorderRadius.circular(22),
                                       ),
@@ -1032,9 +970,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       ),
                                     ),
                                   ),
-
-                                if (status.toLowerCase() ==
-                                    'preparing')
+                                if (status.toLowerCase() == 'preparing')
                                   ElevatedButton(
                                     onPressed: () {
                                       _updateOrderStatus(
@@ -1042,18 +978,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                         'Shipped',
                                       );
                                     },
-                                    style:
-                                        ElevatedButton.styleFrom(
+                                    style: ElevatedButton.styleFrom(
                                       backgroundColor:
                                           const Color(0xFF2F6B3B),
                                       foregroundColor: Colors.white,
-                                      minimumSize: const Size(
-                                        double.infinity,
-                                        68,
-                                      ),
+                                      minimumSize:
+                                          const Size(double.infinity, 68),
                                       elevation: 0,
-                                      shape:
-                                          RoundedRectangleBorder(
+                                      shape: RoundedRectangleBorder(
                                         borderRadius:
                                             BorderRadius.circular(22),
                                       ),
@@ -1067,25 +999,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                       ),
                                     ),
                                   ),
-
-                                if (status.toLowerCase() ==
-                                    'shipped')
+                                if (status.toLowerCase() == 'shipped')
                                   ElevatedButton(
                                     onPressed: () {
                                       _submitProof(orderId);
                                     },
-                                    style:
-                                        ElevatedButton.styleFrom(
+                                    style: ElevatedButton.styleFrom(
                                       backgroundColor:
                                           const Color(0xFF5DBB63),
                                       foregroundColor: Colors.white,
-                                      minimumSize: const Size(
-                                        double.infinity,
-                                        68,
-                                      ),
+                                      minimumSize:
+                                          const Size(double.infinity, 68),
                                       elevation: 0,
-                                      shape:
-                                          RoundedRectangleBorder(
+                                      shape: RoundedRectangleBorder(
                                         borderRadius:
                                             BorderRadius.circular(22),
                                       ),
@@ -1115,7 +1041,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // Calm elder-friendly fade-up entrance
+  
+
+String _getOrderProductImage(Map<String, dynamic> order) {
+  const fallbackImage =
+      'https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop';
+
+  final orderItems = order['order_items'];
+
+  if (orderItems is List && orderItems.isNotEmpty) {
+    final firstItem = orderItems.first;
+
+    if (firstItem is Map<String, dynamic>) {
+      final product = firstItem['products'];
+
+      if (product is Map<String, dynamic>) {
+        final imageUrl =
+            product['image_url']?.toString().trim().isNotEmpty == true
+                ? product['image_url'].toString().trim()
+                : product['image']?.toString().trim();
+
+        if (imageUrl != null && imageUrl.isNotEmpty) {
+          return imageUrl;
+        }
+      }
+    }
+  }
+
+  final directImage =
+      order['image_url']?.toString().trim().isNotEmpty == true
+          ? order['image_url'].toString().trim()
+          : order['product_image']?.toString().trim();
+
+  if (directImage != null && directImage.isNotEmpty) {
+    return directImage;
+  }
+
+  return fallbackImage;
+}
+
+
+
   Widget _fadeUp({
     required Widget child,
     int delay = 0,
@@ -1148,8 +1114,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Color _statusColor(String status) {
     final s = status.toLowerCase();
 
-    if (s.contains('delivered') ||
-        s.contains('completed')) {
+    if (s.contains('delivered') || s.contains('completed')) {
       return const Color(0xFF2F6B3B);
     }
 

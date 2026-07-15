@@ -406,7 +406,22 @@ export async function POST(request: NextRequest) {
         .insert(orderItemsPayload);
 
       if (itemsError) throw itemsError;
+// CREATE NOTIFICATION FOR FARMER
+const { error: notificationError } = await supabase
+  .from("notifications")
+  .insert({
+    user_id: farmerId,
+    order_id: orderData.id,
+    title: "New Order",
+    message: "Someone ordered your product.",
+    type: "new_order",
+    is_read: false,
+  });
 
+if (notificationError) {
+  console.error("CREATE NOTIFICATION FAILED:", notificationError.message);
+  throw notificationError;
+}
       // Reduce stock only after the order and order items are saved.
       for (const item of normalizedItems) {
         const newStock = Math.max(item.current_stock - item.quantity, 0);

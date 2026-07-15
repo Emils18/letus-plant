@@ -1,6 +1,8 @@
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'notification_service.dart';
+
 class CheckoutResult {
   final bool success;
   final String? error;
@@ -27,6 +29,7 @@ class ProofUploadResult {
 
 class OrderService {
   final SupabaseClient supabase = Supabase.instance.client;
+  final NotificationService _notificationService = NotificationService();
 
   Future<List<Map<String, dynamic>>> getBuyerOrders() async {
     final user = supabase.auth.currentUser;
@@ -193,28 +196,42 @@ class OrderService {
             .select('id')
             .single();
 
-        final orderId = insertedOrder['id'];
+        final orderId = insertedOrder['id'].toString();
 
-   final orderItems = items.map((item) {
-  final price = _toDouble(item['price']);
-  final quantity = _toInt(item['quantity']);
-  final productName =
-      item['name']?.toString().trim().isNotEmpty == true
-          ? item['name'].toString().trim()
-          : 'Lettuce Product';
+        final orderItems = items.map((item) {
+          final price = _toDouble(item['price']);
+          final quantity = _toInt(item['quantity']);
+          final productName =
+              item['name']?.toString().trim().isNotEmpty == true
+                  ? item['name'].toString().trim()
+                  : 'Lettuce Product';
 
-  return {
-    'order_id': orderId,
-    'product_id': item['id'],
-    'product_name': productName,
-    'quantity': quantity,
-    'price': price,
-    'price_at_time': price,
-    'subtotal': price * quantity,
-  };
-}).toList();
+          return {
+            'order_id': orderId,
+            'product_id': item['id'],
+            'product_name': productName,
+            'quantity': quantity,
+            'price': price,
+            'price_at_time': price,
+            'subtotal': price * quantity,
+          };
+        }).toList();
 
         await supabase.from('order_items').insert(orderItems);
+
+        final notificationError = await _notificationService.createNotification(
+          userId: farmerId,
+          orderId: orderId,
+          title: 'New Order',
+          message: 'Someone ordered your product.',
+          type: 'new_order',
+        );
+
+        if (notificationError != null) {
+          print('CREATE NOTIFICATION FAILED: $notificationError');
+        } else {
+          print('NOTIFICATION CREATED FOR FARMER: $farmerId');
+        }
 
         createdOrders++;
       }
@@ -242,6 +259,13 @@ class OrderService {
     if (user == null) return 'Please login first.';
 
     try {
+      final orderData = await supabase
+          .from('orders')
+          .select('farmer_id, order_code')
+          .eq('id', orderId)
+          .eq('user_id', user.id)
+          .single();
+
       await supabase
           .from('orders')
           .update({
@@ -254,6 +278,24 @@ class OrderService {
           })
           .eq('id', orderId)
           .eq('user_id', user.id);
+
+      final farmerId = orderData['farmer_id']?.toString();
+      final orderCode = orderData['order_code']?.toString() ?? orderId;
+
+      if (farmerId != null && farmerId.isNotEmpty) {
+        final notificationError =
+            await _notificationService.createNotification(
+          userId: farmerId,
+          orderId: orderId,
+          title: 'Order Received',
+          message: 'The buyer confirmed receiving order $orderCode.',
+          type: 'confirm_received',
+        );
+
+        if (notificationError != null) {
+          print('CREATE CONFIRM RECEIVED NOTIFICATION FAILED: $notificationError');
+        }
+      }
 
       return null;
     } on PostgrestException catch (e) {
@@ -272,6 +314,13 @@ class OrderService {
     if (user == null) return 'Please login first.';
 
     try {
+      final orderData = await supabase
+          .from('orders')
+          .select('user_id, order_code')
+          .eq('id', orderId)
+          .eq('farmer_id', user.id)
+          .single();
+
       await supabase
           .from('orders')
           .update({
@@ -281,6 +330,24 @@ class OrderService {
           })
           .eq('id', orderId)
           .eq('farmer_id', user.id);
+
+      final buyerId = orderData['user_id']?.toString();
+      final orderCode = orderData['order_code']?.toString() ?? orderId;
+
+      if (buyerId != null && buyerId.isNotEmpty) {
+        final notificationError =
+            await _notificationService.createNotification(
+          userId: buyerId,
+          orderId: orderId,
+          title: 'Order Update',
+          message: 'Your order $orderCode is now $status.',
+          type: 'delivery_update',
+        );
+
+        if (notificationError != null) {
+          print('CREATE ORDER UPDATE NOTIFICATION FAILED: $notificationError');
+        }
+      }
 
       return null;
     } on PostgrestException catch (e) {
@@ -333,6 +400,31 @@ class OrderService {
           })
           .eq('id', orderId)
           .eq('farmer_id', user.id);
+
+      final orderData = await supabase
+          .from('orders')
+          .select('user_id, order_code')
+          .eq('id', orderId)
+          .eq('farmer_id', user.id)
+          .single();
+
+      final buyerId = orderData['user_id']?.toString();
+      final orderCode = orderData['order_code']?.toString() ?? orderId;
+
+      if (buyerId != null && buyerId.isNotEmpty) {
+        final notificationError =
+            await _notificationService.createNotification(
+          userId: buyerId,
+          orderId: orderId,
+          title: 'Order Delivered',
+          message: 'Your order $orderCode has been marked as delivered.',
+          type: 'delivery_update',
+        );
+
+        if (notificationError != null) {
+          print('CREATE DELIVERED NOTIFICATION FAILED: $notificationError');
+        }
+      }
 
       return ProofUploadResult(
         success: true,
