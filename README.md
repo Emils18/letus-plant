@@ -1,56 +1,333 @@
-<<<<<<< HEAD
-# letus_plant
+# 🌱 GreenGuard AI
+### AI & IoT Smart Farming Platform for Lettuce Disease Detection and E-commerce
 
-A new Flutter project.
+GreenGuard AI is a full-stack capstone project that combines **Artificial Intelligence**, **IoT**, **Mobile Development**, and **Web Technologies** into a single smart farming ecosystem.
 
-## Getting Started
+The platform enables farmers to monitor crops, detect lettuce diseases using AI, manage products, receive customer orders in real time, and sell directly to buyers through an integrated e-commerce system.
 
-This project is a starting point for a Flutter application.
+---
 
-A few resources to get you started if this is your first Flutter project:
+# 🚀 Project Overview
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+GreenGuard AI consists of **three major platforms** connected through **Supabase**.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+```
+                   GreenGuard AI Ecosystem
 
-## Getting Started
+                ┌─────────────────────────┐
+                │     Buyer Website       │
+                │      (Next.js)          │
+                └──────────┬──────────────┘
+                           │
+                     Place Orders
+                           │
+                           ▼
+                  ┌────────────────┐
+                  │    Supabase    │
+                  │ Auth Database  │
+                  │ Storage RLS    │
+                  └───────┬────────┘
+                          │
+         ┌────────────────┴───────────────┐
+         │                                │
+         ▼                                ▼
+ Farmer Mobile App                 Admin Dashboard
+    (Flutter)                         (Next.js)
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+         │
+         ▼
+  ESP32-CAM + AI Detection
+         │
+         ▼
+ Disease Monitoring
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+# 📱 Mobile Application (Flutter)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Designed specifically for farmers.
 
-## Learn More
+### Features
 
-To learn more about Next.js, take a look at the following resources:
+- Secure Authentication
+- Farmer Dashboard
+- Product Management
+- Order Management
+- Real-time Notifications
+- Delivery Proof Upload
+- Disease Detection
+- Weather Monitoring
+- QR Scanner
+- Profile Management
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Tech Stack
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Flutter
+- Dart
+- Supabase
+- Image Picker
+- Geolocator
+- Flutter Animate
+- HTTP
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# 🌐 Buyer Website (Next.js)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
->>>>>>> 400e1c72fdd5384e41b27eba9a43bacbd89ff908
+Allows customers to purchase fresh lettuce products directly from farmers.
+
+### Features
+
+- User Authentication
+- Product Catalog
+- Product Search
+- Shopping Cart
+- Checkout
+- Order History
+- Order Tracking
+- Notifications
+- Buyer Profile
+
+### Tech Stack
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+- Supabase
+
+---
+
+# 🖥 Admin Dashboard
+
+Designed for administrators.
+
+### Features
+
+- User Management
+- Product Management
+- Order Monitoring
+- Farmer Monitoring
+- Reports
+- Analytics
+
+---
+
+# 🤖 AI Disease Detection
+
+GreenGuard AI uses a custom-trained **YOLOv8** model capable of identifying lettuce diseases.
+
+Current supported diseases:
+
+- Downy Mildew
+- Powdery Mildew
+- Septoria Leaf Spot
+
+Detection results are stored inside Supabase and displayed inside the mobile application.
+
+---
+
+# 📷 IoT Integration
+
+Current Hardware
+
+- ESP32-CAM
+
+Future Workflow
+
+```
+ESP32-CAM
+      │
+Capture Image
+      │
+      ▼
+Supabase Storage
+      │
+      ▼
+YOLO Disease Detection
+      │
+      ▼
+Prediction Result
+      │
+      ▼
+Farmer Mobile App
+```
+
+Future sensor support
+
+- Temperature
+- Humidity
+- Soil Moisture
+- Weather API
+
+---
+
+# 🔔 Notification System
+
+GreenGuard AI provides a real-time notification system between buyers and farmers.
+
+Examples
+
+- New Order
+- Order Confirmed
+- Preparing
+- Shipped
+- Delivered
+- Delivery Proof Uploaded
+
+---
+
+# 🛒 Order Workflow
+
+```
+Buyer
+
+   │
+   ▼
+
+Place Order
+
+   │
+   ▼
+
+Supabase Database
+
+   │
+   ▼
+
+Farmer Notification
+
+   │
+   ▼
+
+Accept Order
+
+   │
+   ▼
+
+Preparing
+
+   │
+   ▼
+
+Shipped
+
+   │
+   ▼
+
+Upload Delivery Proof
+
+   │
+   ▼
+
+Buyer Confirms Delivery
+
+   │
+   ▼
+
+Delivered
+```
+
+---
+
+# 🗄 Backend
+
+Powered entirely by **Supabase**
+
+Services used
+
+- Authentication
+- PostgreSQL Database
+- Storage
+- Row Level Security
+- Realtime
+- File Uploads
+
+---
+
+# 📂 Repository Structure
+
+```
+GreenGuard-AI/
+
+├── mobile/                 # Flutter Farmer Application
+│
+├── buyer-web/              # Next.js Buyer Website
+│
+├── admin-web/              # Next.js Admin Dashboard
+│
+├── ai-model/               # YOLOv8 Model
+│
+└── documentation/
+```
+
+---
+
+# 🛠 Technologies Used
+
+### Mobile
+
+- Flutter
+- Dart
+
+### Web
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+
+### Backend
+
+- Supabase
+- PostgreSQL
+
+### AI
+
+- YOLOv8
+
+### IoT
+
+- ESP32-CAM
+
+---
+
+# 📌 Current Status
+
+### Completed
+
+- Authentication
+- Product Management
+- Buyer E-commerce
+- Farmer Dashboard
+- Order Management
+- Notifications
+- Delivery Proof Upload
+- Role-based Authentication
+- Responsive UI
+- Real-time Database Integration
+
+### In Progress
+
+- ESP32-CAM Live Integration
+- AI Disease Prediction Integration
+- Production Deployment
+
+---
+
+# 👨‍💻 Developed By
+
+**Emelio Mondares**
+
+Bachelor of Science in Information Technology
+
+University of Cebu Lapu-Lapu and Mandaue
+
+---
+
+# 📜 License
+
+This project was developed as an undergraduate capstone project.
+
+Educational and portfolio purposes.
