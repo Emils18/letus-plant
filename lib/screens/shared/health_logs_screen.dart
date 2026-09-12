@@ -16,241 +16,998 @@ class HealthLogsScreen extends StatefulWidget {
   final String? title;
 
   @override
-  State<HealthLogsScreen> createState() => _HealthLogsScreenState();
+  State<HealthLogsScreen> createState() =>
+      _HealthLogsScreenState();
 }
 
-class _HealthLogsScreenState extends State<HealthLogsScreen> {
-  final SupabaseClient _supabase = Supabase.instance.client;
+class _HealthLogsScreenState
+    extends State<HealthLogsScreen> {
+  final SupabaseClient _supabase =
+      Supabase.instance.client;
 
   bool _loading = true;
-  List<Map<String, dynamic>> _logs = [];
+
+  List<Map<String, dynamic>>
+      _logs = [];
 
   @override
   void initState() {
     super.initState();
+
     _loadHealthLogs();
   }
 
-  Future<void> _loadHealthLogs() async {
+  Future<void>
+      _loadHealthLogs() async {
     if (!mounted) return;
-    setState(() => _loading = true);
+
+    setState(() {
+      _loading = true;
+    });
 
     try {
-      final user = _supabase.auth.currentUser;
-      if (user == null) throw Exception('No logged-in user.');
+      final user =
+          _supabase.auth.currentUser;
 
-      dynamic query = _supabase.from('diagnostic_logs').select('*');
-
-      if (widget.readOnlyBuyer && widget.farmerId != null) {
-        query = query.eq('user_id', widget.farmerId!);
-      } else {
-        query = query.eq('user_id', user.id);
+      if (user == null) {
+        throw Exception(
+          'No logged-in user.',
+        );
       }
 
-      final data = await query.order('created_at', ascending: false);
+      dynamic query =
+          _supabase
+              .from(
+                'diagnostic_logs',
+              )
+              .select('*');
+
+      if (widget.readOnlyBuyer &&
+          widget.farmerId != null) {
+        query = query.eq(
+          'user_id',
+          widget.farmerId!,
+        );
+      }
+      else {
+        query = query.eq(
+          'user_id',
+          user.id,
+        );
+      }
+
+      final dynamic data =
+          await query.order(
+        'created_at',
+        ascending: false,
+      );
 
       if (!mounted) return;
+
       setState(() {
-        _logs = List<Map<String, dynamic>>.from(data);
+        _logs =
+            List<Map<String, dynamic>>
+                .from(
+          data as List,
+        );
       });
     } catch (error) {
-      if (mounted) _showSnack('Failed to load health logs', isError: true);
+      if (mounted) {
+        _showSnack(
+          'Failed to load health logs: $error',
+          isError: true,
+        );
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
     }
   }
 
-  String _getText(Map<String, dynamic> log, List<String> keys, String fallback) {
-    for (final key in keys) {
-      final value = log[key];
-      if (value != null && value.toString().trim().isNotEmpty) {
+  String _getText(
+    Map<String, dynamic> log,
+    List<String> keys,
+    String fallback,
+  ) {
+    for (final String key
+        in keys) {
+      final dynamic value =
+          log[key];
+
+      if (value != null &&
+          value
+              .toString()
+              .trim()
+              .isNotEmpty) {
         return value.toString();
       }
     }
+
     return fallback;
   }
 
-  String _getDiseaseName(Map<String, dynamic> log) {
-    return _getText(log, ['disease_name', 'result', 'disease', 'label'], 'Unknown Result');
+  String _getDiseaseName(
+    Map<String, dynamic> log,
+  ) {
+    return _getText(
+      log,
+      [
+        'disease_name',
+        'result',
+        'disease',
+        'label',
+      ],
+      'Unknown Result',
+    ).replaceAll(
+      '_',
+      ' ',
+    );
   }
 
-  String _getConfidence(Map<String, dynamic> log) {
-    final raw = log['confidence_score'] ?? log['confidence'] ?? log['score'];
-    if (raw == null) return 'N/A';
-    final value = double.tryParse(raw.toString());
-    if (value == null) return raw.toString();
-    return value <= 1 ? '${(value * 100).toStringAsFixed(1)}%' : '${value.toStringAsFixed(1)}%';
+  String _getConfidence(
+    Map<String, dynamic> log,
+  ) {
+    final dynamic raw =
+        log['confidence_score'] ??
+            log['confidence'] ??
+            log['score'];
+
+    if (raw == null) {
+      return 'N/A';
+    }
+
+    final double? value =
+        double.tryParse(
+      raw.toString(),
+    );
+
+    if (value == null) {
+      return raw.toString();
+    }
+
+    if (value <= 1) {
+      return '${(value * 100).toStringAsFixed(1)}%';
+    }
+
+    return '${value.toStringAsFixed(1)}%';
   }
 
-  String _getTemperature(Map<String, dynamic> log) {
-    final raw = log['temperature'] ?? log['temp'];
-    if (raw == null) return 'N/A';
-    final value = double.tryParse(raw.toString());
-    return value == null ? raw.toString() : '${value.toStringAsFixed(1)}°C';
+  String _getTemperature(
+    Map<String, dynamic> log,
+  ) {
+    final dynamic raw =
+        log['temperature'] ??
+            log['temp'];
+
+    if (raw == null) {
+      return 'N/A';
+    }
+
+    final double? value =
+        double.tryParse(
+      raw.toString(),
+    );
+
+    if (value == null) {
+      return raw.toString();
+    }
+
+    return '${value.toStringAsFixed(1)}°C';
   }
 
-  String _getDate(Map<String, dynamic> log) {
-    final raw = log['captured_at'] ?? log['created_at'];
-    if (raw == null) return 'No date';
-    final parsed = DateTime.tryParse(raw.toString());
-    if (parsed == null) return raw.toString();
-    return '${parsed.month}/${parsed.day}/${parsed.year} • ${parsed.hour.toString().padLeft(2, '0')}:${parsed.minute.toString().padLeft(2, '0')}';
+  String _getDate(
+    Map<String, dynamic> log,
+  ) {
+    final dynamic raw =
+        log['captured_at'] ??
+            log['created_at'];
+
+    if (raw == null) {
+      return 'No date';
+    }
+
+    final DateTime? parsed =
+        DateTime.tryParse(
+      raw.toString(),
+    );
+
+    if (parsed == null) {
+      return raw.toString();
+    }
+
+    final DateTime local =
+        parsed.toLocal();
+
+    return '${local.month}/${local.day}/${local.year} • '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
   }
 
-  bool _isHealthy(String diseaseName) {
-    final value = diseaseName.toLowerCase();
-    return value.contains('healthy') || value.contains('none') || value.contains('no disease');
+  String _getPathogen(
+    String diseaseName,
+  ) {
+    final String value =
+        diseaseName
+            .toLowerCase()
+            .replaceAll(
+              '_',
+              ' ',
+            )
+            .trim();
+
+    if (value ==
+        'downy mildew') {
+      return 'Bremia lactucae';
+    }
+
+    if (value ==
+        'powdery mildew') {
+      return 'Erysiphe cichoracearum';
+    }
+
+    if (value ==
+            'septoria blight' ||
+        value ==
+            'septoria leaf spot') {
+      return 'Septoria lactucae';
+    }
+
+    if (value.contains(
+      'healthy',
+    )) {
+      return 'No pathogen detected';
+    }
+
+    return 'N/A';
   }
 
-  Color _statusColor(String diseaseName) {
-    return _isHealthy(diseaseName) ? const Color(0xFF5DBB63) : Colors.orangeAccent;
+  bool _isHealthy(
+    String diseaseName,
+  ) {
+    final String value =
+        diseaseName.toLowerCase();
+
+    return value.contains(
+          'healthy',
+        ) ||
+        value.contains(
+          'none',
+        ) ||
+        value.contains(
+          'no disease',
+        );
   }
 
-  int get _healthyCount => _logs.where((log) => _isHealthy(_getDiseaseName(log))).length;
-  int get _riskCount => _logs.length - _healthyCount;
+  bool _isUnknown(
+    String diseaseName,
+  ) {
+    final String value =
+        diseaseName.toLowerCase();
 
-  void _showSnack(String message, {bool isError = false}) {
+    return value.contains(
+          'unknown',
+        ) ||
+        value.contains(
+          'out of scope',
+        );
+  }
+
+  bool _isDemo(
+    Map<String, dynamic> log,
+  ) {
+    return log['device_id']
+            ?.toString()
+            .toUpperCase() ==
+        'DEMO_MODE';
+  }
+
+  Color _statusColor(
+    String diseaseName,
+  ) {
+    final String value =
+        diseaseName
+            .toLowerCase()
+            .replaceAll(
+              '_',
+              ' ',
+            );
+
+    if (_isHealthy(
+      diseaseName,
+    )) {
+      return const Color(
+        0xFF5DBB63,
+      );
+    }
+
+    if (value.contains(
+      'downy mildew',
+    )) {
+      return Colors.redAccent;
+    }
+
+    if (value.contains(
+      'powdery mildew',
+    )) {
+      return Colors.orangeAccent;
+    }
+
+    if (value.contains(
+      'septoria',
+    )) {
+      return Colors.deepOrange;
+    }
+
+    return Colors.grey;
+  }
+
+  int get _healthyCount =>
+      _logs
+          .where(
+            (
+              Map<String, dynamic>
+                  log,
+            ) =>
+                _isHealthy(
+              _getDiseaseName(
+                log,
+              ),
+            ),
+          )
+          .length;
+
+  int get _riskCount =>
+      _logs.length -
+      _healthyCount;
+
+  void _showSnack(
+    String message, {
+    bool isError = false,
+  }) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(
       SnackBar(
-        backgroundColor: isError ? Colors.red : const Color(0xFF2F6B3B),
-        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        backgroundColor:
+            isError
+                ? Colors.red
+                : const Color(
+                    0xFF2F6B3B,
+                  ),
+        content: Text(
+          message,
+          style:
+              const TextStyle(
+            fontWeight:
+                FontWeight.bold,
+            fontSize: 15,
+          ),
+        ),
       ),
     );
   }
 
   @override
-  Widget build(BuildContext context) {
-    final title = widget.title ?? (widget.readOnlyBuyer ? 'Product Health Logs' : 'Scan History Logs');
+  Widget build(
+    BuildContext context,
+  ) {
+    final String title =
+        widget.title ??
+            (
+              widget.readOnlyBuyer
+                  ? 'Product Health Logs'
+                  : 'Scan History Logs'
+            );
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6FBF7),
+      backgroundColor:
+          const Color(
+        0xFFF6FBF7,
+      ),
       appBar: AppBar(
-        backgroundColor: const Color(0xFFF6FBF7),
+        backgroundColor:
+            const Color(
+          0xFFF6FBF7,
+        ),
         elevation: 0,
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 26, color: Color(0xFF1E2A1F))),
-        iconTheme: const IconThemeData(color: Color(0xFF1E2A1F), size: 32),
+        title: Text(
+          title,
+          style:
+              const TextStyle(
+            fontWeight:
+                FontWeight.w900,
+            fontSize: 25,
+            color: Color(
+              0xFF1E2A1F,
+            ),
+          ),
+        ),
+        iconTheme:
+            const IconThemeData(
+          color: Color(
+            0xFF1E2A1F,
+          ),
+          size: 30,
+        ),
         actions: [
           IconButton(
-            onPressed: _loadHealthLogs,
-            icon: const Icon(Icons.refresh_rounded, color: Color(0xFF2F6B3B), size: 32),
+            onPressed:
+                _loading
+                    ? null
+                    : _loadHealthLogs,
+            icon: const Icon(
+              Icons.refresh_rounded,
+              color: Color(
+                0xFF2F6B3B,
+              ),
+              size: 30,
+            ),
           ),
         ],
       ),
       body: RefreshIndicator(
-        color: const Color(0xFF2F6B3B),
-        onRefresh: _loadHealthLogs,
+        color: const Color(
+          0xFF2F6B3B,
+        ),
+        onRefresh:
+            _loadHealthLogs,
         child: _loading
-            ? const Center(child: CircularProgressIndicator(color: Color(0xFF2F6B3B)))
+            ? const Center(
+                child:
+                    CircularProgressIndicator(
+                  color: Color(
+                    0xFF2F6B3B,
+                  ),
+                ),
+              )
             : ListView(
-                padding: const EdgeInsets.all(28),
+                physics:
+                    const AlwaysScrollableScrollPhysics(),
+                padding:
+                    const EdgeInsets.all(
+                  18,
+                ),
                 children: [
+                  if (widget.productName !=
+                      null) ...[
+                    Container(
+                      width:
+                          double.infinity,
+                      padding:
+                          const EdgeInsets.all(
+                        16,
+                      ),
+                      decoration:
+                          BoxDecoration(
+                        color:
+                            Colors.white,
+                        borderRadius:
+                            BorderRadius
+                                .circular(
+                          18,
+                        ),
+                      ),
+                      child: Text(
+                        'Crop: ${widget.productName}',
+                        style:
+                            const TextStyle(
+                          fontWeight:
+                              FontWeight
+                                  .w800,
+                          color:
+                              Color(
+                            0xFF2F6B3B,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(
+                      height: 16,
+                    ),
+                  ],
+
                   Row(
                     children: [
-                      Expanded(child: _summaryCard('Total Logs', _logs.length.toString(), Icons.history_rounded)),
-                      const SizedBox(width: 16),
-                      Expanded(child: _summaryCard('Healthy', _healthyCount.toString(), Icons.verified_rounded)),
-                      const SizedBox(width: 16),
-                      Expanded(child: _summaryCard('Risk', _riskCount.toString(), Icons.warning_rounded)),
+                      Expanded(
+                        child:
+                            _summaryCard(
+                          'Total',
+                          _logs.length
+                              .toString(),
+                          Icons
+                              .history_rounded,
+                        ),
+                      ),
+                      const SizedBox(
+                        width: 10,
+                      ),
+                      Expanded(
+                        child:
+                            _summaryCard(
+                          'Healthy',
+                          _healthyCount
+                              .toString(),
+                          Icons
+                              .verified_rounded,
+                        ),
+                      ),
+                      const SizedBox(
+                        width: 10,
+                      ),
+                      Expanded(
+                        child:
+                            _summaryCard(
+                          'Risk',
+                          _riskCount
+                              .toString(),
+                          Icons
+                              .warning_rounded,
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 32),
+
+                  const SizedBox(
+                    height: 24,
+                  ),
+
                   if (_logs.isEmpty)
                     Container(
-                      padding: const EdgeInsets.all(40),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(28),
+                      padding:
+                          const EdgeInsets.all(
+                        38,
                       ),
-                      child: const Column(
+                      decoration:
+                          BoxDecoration(
+                        color:
+                            Colors.white,
+                        borderRadius:
+                            BorderRadius
+                                .circular(
+                          28,
+                        ),
+                      ),
+                      child:
+                          const Column(
                         children: [
-                          Icon(Icons.eco_rounded, size: 90, color: Colors.grey),
-                          SizedBox(height: 20),
-                          Text('No health logs yet.', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
-                          SizedBox(height: 12),
-                          Text('Scan records will appear here after using the camera.', style: TextStyle(fontSize: 18)),
+                          Icon(
+                            Icons
+                                .eco_rounded,
+                            size: 80,
+                            color:
+                                Colors.grey,
+                          ),
+                          SizedBox(
+                            height: 18,
+                          ),
+                          Text(
+                            'No health logs yet.',
+                            textAlign:
+                                TextAlign
+                                    .center,
+                            style:
+                                TextStyle(
+                              fontSize:
+                                  22,
+                              fontWeight:
+                                  FontWeight
+                                      .w900,
+                            ),
+                          ),
+                          SizedBox(
+                            height: 10,
+                          ),
+                          Text(
+                            'Real lettuce AI scan records will appear here after Use Photo completes successfully.',
+                            textAlign:
+                                TextAlign
+                                    .center,
+                            style:
+                                TextStyle(
+                              fontSize:
+                                  15,
+                              height:
+                                  1.5,
+                            ),
+                          ),
                         ],
                       ),
                     )
                   else
-                    ..._logs.map(_buildLogCard),
+                    ..._logs.map(
+                      _buildLogCard,
+                    ),
                 ],
               ),
       ),
     );
   }
 
-  Widget _summaryCard(String label, String value, IconData icon) {
+  Widget _summaryCard(
+    String label,
+    String value,
+    IconData icon,
+  ) {
     return Container(
-      padding: const EdgeInsets.all(24),
+      constraints:
+          const BoxConstraints(
+        minHeight: 136,
+      ),
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 18,
+      ),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
+        borderRadius:
+            BorderRadius.circular(
+          22,
+        ),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment:
+            MainAxisAlignment
+                .center,
         children: [
-          Icon(icon, color: const Color(0xFF2F6B3B), size: 36),
-          const SizedBox(height: 16),
-          Text(value, style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Color(0xFF1E2A1F))),
-          const SizedBox(height: 6),
-          Text(label, style: const TextStyle(fontSize: 18, color: Colors.grey)),
+          Icon(
+            icon,
+            color:
+                const Color(
+              0xFF2F6B3B,
+            ),
+            size: 30,
+          ),
+          const SizedBox(
+            height: 10,
+          ),
+          Text(
+            value,
+            style:
+                const TextStyle(
+              fontSize: 28,
+              fontWeight:
+                  FontWeight.w900,
+              color: Color(
+                0xFF1E2A1F,
+              ),
+            ),
+          ),
+          const SizedBox(
+            height: 4,
+          ),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              maxLines: 1,
+              style:
+                  const TextStyle(
+                fontSize: 14,
+                fontWeight:
+                    FontWeight.w700,
+                color: Colors.grey,
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildLogCard(Map<String, dynamic> log) {
-    final diseaseName = _getText(log, ['disease_name', 'result', 'disease', 'label'], 'Unknown Result');
-    final confidence = _getConfidence(log);
-    final temperature = _getTemperature(log);
-    final weather = _getText(log, ['weather_condition', 'weather'], 'N/A');
-    final date = _getDate(log);
-    final color = _statusColor(diseaseName);
+  Widget _buildLogCard(
+    Map<String, dynamic> log,
+  ) {
+    final String diseaseName =
+        _getDiseaseName(
+      log,
+    );
+
+    final String confidence =
+        _getConfidence(
+      log,
+    );
+
+    final String temperature =
+        _getTemperature(
+      log,
+    );
+
+    final String weather =
+        _getText(
+      log,
+      [
+        'weather_condition',
+        'weather',
+      ],
+      'N/A',
+    );
+
+    final String location =
+        _getText(
+      log,
+      [
+        'location',
+      ],
+      'N/A',
+    );
+
+    final String device =
+        _getText(
+      log,
+      [
+        'device_id',
+      ],
+      'Unknown device',
+    );
+
+    final String date =
+        _getDate(
+      log,
+    );
+
+    final String pathogen =
+        _getPathogen(
+      diseaseName,
+    );
+
+    final Color color =
+        _statusColor(
+      diseaseName,
+    );
+
+    final bool demo =
+        _isDemo(
+      log,
+    );
+
+    final bool unknown =
+        _isUnknown(
+      diseaseName,
+    );
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 20),
-      padding: const EdgeInsets.all(28),
+      margin:
+          const EdgeInsets.only(
+        bottom: 18,
+      ),
+      padding:
+          const EdgeInsets.all(
+        22,
+      ),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(28),
+        borderRadius:
+            BorderRadius.circular(
+          26,
+        ),
+        border: Border.all(
+          color: color.withValues(
+            alpha: 0.18,
+          ),
+        ),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment:
+                CrossAxisAlignment
+                    .start,
             children: [
               Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(20),
+                width: 50,
+                height: 50,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      color.withValues(
+                    alpha: 0.10,
+                  ),
+                  borderRadius:
+                      BorderRadius
+                          .circular(
+                    16,
+                  ),
                 ),
                 child: Icon(
-                  _isHealthy(diseaseName) ? Icons.verified_rounded : Icons.warning_amber_rounded,
+                  _isHealthy(
+                    diseaseName,
+                  )
+                      ? Icons
+                          .verified_rounded
+                      : unknown
+                          ? Icons
+                              .help_outline_rounded
+                          : Icons
+                              .warning_amber_rounded,
                   color: color,
-                  size: 40,
+                  size: 30,
                 ),
               ),
-              const SizedBox(width: 20),
+
+              const SizedBox(
+                width: 14,
+              ),
+
               Expanded(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment:
+                      CrossAxisAlignment
+                          .start,
                   children: [
-                    Text(diseaseName, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Color(0xFF1E2A1F))),
-                    const SizedBox(height: 6),
-                    Text(date, style: const TextStyle(fontSize: 18, color: Colors.grey)),
+                    Text(
+                      diseaseName,
+                      style:
+                          const TextStyle(
+                        fontSize: 21,
+                        fontWeight:
+                            FontWeight
+                                .w900,
+                        color: Color(
+                          0xFF1E2A1F,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(
+                      height: 5,
+                    ),
+                    Text(
+                      date,
+                      style:
+                          const TextStyle(
+                        fontSize: 14,
+                        color:
+                            Colors.grey,
+                      ),
+                    ),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 24),
-          Text('Confidence: $confidence', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text('Temperature: $temperature', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text('Weather: $weather', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _chip(
+                demo
+                    ? 'Demo / Legacy'
+                    : 'AI Scan',
+                demo
+                    ? Colors.grey
+                    : const Color(
+                        0xFF2F6B3B,
+                      ),
+              ),
+              _chip(
+                device,
+                const Color(
+                  0xFF2F6B3B,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 18,
+          ),
+
+          _infoRow(
+            'Confidence',
+            confidence,
+          ),
+
+          if (pathogen !=
+              'N/A')
+            _infoRow(
+              'Pathogen',
+              pathogen,
+            ),
+
+          _infoRow(
+            'Temperature',
+            temperature,
+          ),
+
+          _infoRow(
+            'Weather',
+            weather,
+          ),
+
+          _infoRow(
+            'Location',
+            location,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(
+    String label,
+    Color color,
+  ) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 6,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(
+          alpha: 0.10,
+        ),
+        borderRadius:
+            BorderRadius.circular(
+          18,
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight:
+              FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(
+    String label,
+    String value,
+  ) {
+    return Padding(
+      padding:
+          const EdgeInsets.only(
+        bottom: 8,
+      ),
+      child: Row(
+        crossAxisAlignment:
+            CrossAxisAlignment
+                .start,
+        children: [
+          SizedBox(
+            width: 112,
+            child: Text(
+              '$label:',
+              style:
+                  const TextStyle(
+                fontSize: 15,
+                fontWeight:
+                    FontWeight.w800,
+                color:
+                    Colors.grey,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style:
+                  const TextStyle(
+                fontSize: 15,
+                fontWeight:
+                    FontWeight.w800,
+                color: Color(
+                  0xFF1E2A1F,
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
