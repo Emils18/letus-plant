@@ -23,11 +23,7 @@ class MonitoringService {
   // SOIL SENSOR ESP32
   // ============================================================
   //
-  // IMPORTANT:
-  // Replace this with the IP shown in the ESP32 Serial Monitor.
-  //
-  // Example:
-  // ESP32 Soil IP: 192.168.254.123
+  // Current IP shown by the ESP32 Serial Monitor.
   //
   // ============================================================
 
@@ -73,7 +69,27 @@ class MonitoringService {
         return _offlineData();
       }
 
-      if (decoded['success'] != true) {
+      // ========================================================
+      // ESP32 RESPONSE CHECK
+      // ========================================================
+      //
+      // The ESP32 returns:
+      //
+      // {
+      //   "soil_moisture": 50,
+      //   "soil_status": "IDEAL",
+      //   "device_ip": "10.x.x.x"
+      // }
+      //
+      // It does NOT return "success": true.
+      // ========================================================
+
+      if (!decoded.containsKey(
+            'soil_moisture',
+          ) ||
+          !decoded.containsKey(
+            'soil_status',
+          )) {
         return _offlineData();
       }
 
@@ -95,9 +111,16 @@ class MonitoringService {
                   .trim() ??
               soilDeviceName;
 
+      final String deviceIp =
+          decoded['device_ip']
+                  ?.toString()
+                  .trim() ??
+              soilEsp32Ip;
+
       return {
         'connected': true,
         'device': deviceName,
+        'device_ip': deviceIp,
         'soil_moisture': moisture,
         'soil_value': '$moisture%',
         'soil_status': status,
@@ -110,11 +133,16 @@ class MonitoringService {
     }
   }
 
+  // ============================================================
+  // OFFLINE SOIL SENSOR DATA
+  // ============================================================
+
   Map<String, dynamic>
       _offlineData() {
     return {
       'connected': false,
       'device': soilDeviceName,
+      'device_ip': soilEsp32Ip,
       'soil_moisture': null,
       'soil_value': '--%',
       'soil_status': 'OFFLINE',
@@ -123,6 +151,10 @@ class MonitoringService {
               .toIso8601String(),
     };
   }
+
+  // ============================================================
+  // SAFE INTEGER CONVERSION
+  // ============================================================
 
   int _readInt(
     dynamic value,

@@ -44,8 +44,15 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _scanSaved = false;
 
   Timer? _soilTimer;
+
   Map<String, dynamic> _sensorData = {};
+
   bool _soilLoading = true;
+
+  // Used so the in-app connection message
+  // only appears when the sensor changes
+  // from offline -> connected.
+  bool _soilWasConnected = false;
 
   Map<String, dynamic>? _scanResponse;
 
@@ -89,23 +96,23 @@ class _ScanScreenState extends State<ScanScreen> {
   ];
 
   @override
-void initState() {
-  super.initState();
+  void initState() {
+    super.initState();
 
-  _cameraSubscription =
-      _espCamService.cameraEvents.listen(
-    _cameraRegistered,
-  );
+    _cameraSubscription =
+        _espCamService.cameraEvents.listen(
+      _cameraRegistered,
+    );
 
-  _startSoilMonitoring();
+    _startSoilMonitoring();
 
-  WidgetsBinding.instance
-      .addPostFrameCallback(
-    (_) {
-      _initializeCamera();
-    },
-  );
-}
+    WidgetsBinding.instance
+        .addPostFrameCallback(
+      (_) {
+        _initializeCamera();
+      },
+    );
+  }
 
   @override
   void dispose() {
@@ -139,9 +146,10 @@ void initState() {
       _loadSoilData(),
     );
 
+    // Refresh the real ESP32 soil data every 1 second.
     _soilTimer = Timer.periodic(
       const Duration(
-        seconds: 5,
+        seconds: 1,
       ),
       (_) {
         unawaited(
@@ -158,10 +166,111 @@ void initState() {
 
     if (!mounted) return;
 
+    final bool isConnected =
+        data['connected'] == true;
+
+    final bool showConnectedMessage =
+        isConnected &&
+        !_soilWasConnected;
+
     setState(() {
       _sensorData = data;
       _soilLoading = false;
+      _soilWasConnected =
+          isConnected;
     });
+
+    // ============================================================
+    // IN-APP MESSAGE ONLY
+    // ============================================================
+    //
+    // This is NOT an Android/system notification.
+    // It stays inside GreenGuard.
+    //
+    // It only appears when the sensor changes:
+    //
+    // OFFLINE -> CONNECTED
+    //
+    // ============================================================
+
+    if (showConnectedMessage &&
+        mounted) {
+      ScaffoldMessenger.of(context)
+          .hideCurrentSnackBar();
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        const SnackBar(
+          content: Text(
+            '🌱 Soil Sensor Detected\n'
+            'GreenGuard is now receiving live soil moisture data.',
+            style: TextStyle(
+              fontWeight:
+                  FontWeight.w700,
+              height: 1.4,
+            ),
+          ),
+          backgroundColor:
+              Color(
+            0xFF2F6B3B,
+          ),
+          duration:
+              Duration(
+            seconds: 3,
+          ),
+        ),
+      );
+    }
+  }
+
+  // ============================================================
+  // SIMPLE SOIL EXPLANATIONS
+  // ============================================================
+  //
+  // These explanations are intentionally simple
+  // so farmers and elderly users can understand them.
+  //
+  // ============================================================
+
+  String _soilMeaning(
+    String status,
+  ) {
+    switch (status.toUpperCase()) {
+      case 'DRY':
+        return 'The soil is dry and needs water.';
+
+      case 'IDEAL':
+        return 'The soil has enough moisture. No watering is needed right now.';
+
+      case 'WET':
+        return 'The soil has too much water. Avoid adding more water.';
+
+      case 'OFFLINE':
+        return 'The soil sensor is not connected. Check the ESP32 power and Wi-Fi.';
+
+      default:
+        return 'GreenGuard is checking the soil condition.';
+    }
+  }
+
+  Color _soilStatusColor(
+    String status,
+  ) {
+    switch (status.toUpperCase()) {
+      case 'DRY':
+        return Colors.orange;
+
+      case 'IDEAL':
+        return const Color(
+          0xFF2F6B3B,
+        );
+
+      case 'WET':
+        return Colors.blue;
+
+      default:
+        return Colors.grey;
+    }
   }
 
   // ============================================================
@@ -681,6 +790,10 @@ void initState() {
     );
   }
 
+  // ============================================================
+  // TAKE PHOTO
+  // ============================================================
+
   Future<void> _takePhoto() async {
     if (!_cameraConnected) {
       ScaffoldMessenger.of(context)
@@ -761,6 +874,10 @@ void initState() {
 
     await _startPreview();
   }
+
+  // ============================================================
+  // USE PHOTO / AI SCAN
+  // ============================================================
 
   Future<void> _usePhoto() async {
     final Uint8List? image =
@@ -873,8 +990,7 @@ void initState() {
               saveError,
         };
       }
-    }
-    else {
+    } else {
       finalResponse = {
         ...response,
         'database_saved':
@@ -898,18 +1014,15 @@ void initState() {
           response['message']
                   ?.toString() ??
               'GreenGuard scan failed.';
-    }
-    else if (!diagnosisAvailable) {
+    } else if (!diagnosisAvailable) {
       message =
           response['message']
                   ?.toString() ??
               'No lettuce diagnosis was produced.';
-    }
-    else if (saved) {
+    } else if (saved) {
       message =
           'Lettuce health check complete and saved to Health Logs.';
-    }
-    else {
+    } else {
       message =
           'Lettuce health check complete, but the Health Log could not be saved${saveError == null ? '.' : ': $saveError'}';
     }
@@ -1060,6 +1173,10 @@ void initState() {
       ),
     );
   }
+
+  // ============================================================
+  // SCAN RESULT CARD
+  // ============================================================
 
   Widget _buildScanResultCard() {
     final Map<String, dynamic>?
@@ -1663,6 +1780,10 @@ void initState() {
               : onChanged,
     );
   }
+
+  // ============================================================
+  // CAMERA SETTINGS CARD
+  // ============================================================
 
   Widget _buildCameraSettingsCard() {
     final EspCamSettings?
@@ -2568,6 +2689,10 @@ void initState() {
     );
   }
 
+  // ============================================================
+  // CAMERA BOX
+  // ============================================================
+
   Widget _cameraBox() {
     if (_isCapturing) {
       return const Center(
@@ -2839,6 +2964,10 @@ void initState() {
     );
   }
 
+  // ============================================================
+  // GREEN GUARD PIPELINE CARD
+  // ============================================================
+
   Widget _buildPipelineCard() {
     return Container(
       width: double.infinity,
@@ -2858,31 +2987,35 @@ void initState() {
         crossAxisAlignment:
             CrossAxisAlignment.start,
         children: [
-          const Row(
-            children: [
-              Icon(
-                Icons
-                    .auto_awesome_rounded,
-                color:
-                    Color(
-                  0xFF2F6B3B,
-                ),
-              ),
-              SizedBox(
-                width: 8,
-              ),
-              Text(
-                'How GreenGuard Checks Your Photo',
-                style:
-                    TextStyle(
-                  fontSize: 18,
-                  fontWeight:
-                      FontWeight
-                          .w900,
-                ),
-              ),
-            ],
-          ),
+         const Row(
+  crossAxisAlignment:
+      CrossAxisAlignment.start,
+  children: [
+    Icon(
+      Icons.auto_awesome_rounded,
+      color: Color(
+        0xFF2F6B3B,
+      ),
+    ),
+
+    SizedBox(
+      width: 8,
+    ),
+
+    Expanded(
+      child: Text(
+        'How GreenGuard Checks Your Photo',
+        softWrap: true,
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight:
+              FontWeight.w900,
+          height: 1.2,
+        ),
+      ),
+    ),
+  ],
+),
 
           const SizedBox(
             height: 14,
@@ -2993,6 +3126,10 @@ void initState() {
       ),
     );
   }
+
+  // ============================================================
+  // PHOTO ACTIONS
+  // ============================================================
 
   Widget _buildPhotoActions() {
     if (_capturedImage == null) {
@@ -3152,21 +3289,49 @@ void initState() {
     );
   }
 
+  // ============================================================
+  // SCREEN
+  // ============================================================
+
   @override
   Widget build(
     BuildContext context,
   ) {
-    final String soilValue = _soilLoading
-        ? 'Loading...'
-        : (_sensorData['soil_value']
-                ?.toString() ??
-            '--%');
+    final bool soilConnected =
+        !_soilLoading &&
+        _sensorData['connected'] == true;
 
-    final String soilStatus = _soilLoading
-        ? 'Connecting...'
-        : (_sensorData['soil_status']
-                ?.toString() ??
-            'Offline');
+    final String soilValue =
+        _soilLoading
+            ? 'Loading...'
+            : (_sensorData['soil_value']
+                    ?.toString() ??
+                '--%');
+
+    final String soilStatus =
+        _soilLoading
+            ? 'CONNECTING'
+            : (_sensorData['soil_status']
+                    ?.toString()
+                    .toUpperCase() ??
+                'OFFLINE');
+
+    final String soilConnection =
+        _soilLoading
+            ? 'CONNECTING'
+            : soilConnected
+                ? 'CONNECTED'
+                : 'OFFLINE';
+
+    final String soilMeaning =
+        _soilMeaning(
+      soilStatus,
+    );
+
+    final Color soilColor =
+        _soilStatusColor(
+      soilStatus,
+    );
 
     return Scaffold(
       backgroundColor:
@@ -3462,7 +3627,58 @@ void initState() {
                   ),
 
                   const SizedBox(
-                    height: 12,
+                    height: 18,
+                  ),
+
+                  Row(
+                    children: [
+                      Icon(
+                        soilConnected
+                            ? Icons
+                                .check_circle_rounded
+                            : _soilLoading
+                                ? Icons
+                                    .sync_rounded
+                                : Icons
+                                    .error_outline_rounded,
+                        color:
+                            soilConnected
+                                ? const Color(
+                                    0xFF2F6B3B,
+                                  )
+                                : _soilLoading
+                                    ? Colors.orange
+                                    : Colors.grey,
+                        size: 26,
+                      ),
+
+                      const SizedBox(
+                        width: 10,
+                      ),
+
+                      Expanded(
+                        child: Text(
+                          'Soil Sensor: $soilConnection',
+                          style:
+                              TextStyle(
+                            fontSize: 17,
+                            fontWeight:
+                                FontWeight
+                                    .w900,
+                            color:
+                                soilConnected
+                                    ? const Color(
+                                        0xFF2F6B3B,
+                                      )
+                                    : Colors.grey,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(
+                    height: 18,
                   ),
 
                   const Text(
@@ -3476,6 +3692,10 @@ void initState() {
                     ),
                   ),
 
+                  const SizedBox(
+                    height: 8,
+                  ),
+
                   Text(
                     'Soil Moisture: $soilValue',
                     style:
@@ -3487,18 +3707,104 @@ void initState() {
                     ),
                   ),
 
-                  Text(
-                    'Status: $soilStatus',
-                    style:
-                        const TextStyle(
-                      fontSize: 18,
-                      fontWeight:
-                          FontWeight
-                              .bold,
-                      color:
-                          Color(
-                        0xFF5DBB63,
+                  const SizedBox(
+                    height: 8,
+                  ),
+
+                  Row(
+                    children: [
+                      const Text(
+                        'Condition: ',
+                        style:
+                            TextStyle(
+                          fontSize: 18,
+                          fontWeight:
+                              FontWeight
+                                  .bold,
+                        ),
                       ),
+
+                      Text(
+                        soilStatus,
+                        style:
+                            TextStyle(
+                          fontSize: 18,
+                          fontWeight:
+                              FontWeight
+                                  .w900,
+                          color:
+                              soilColor,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(
+                    height: 18,
+                  ),
+
+                  Container(
+                    width:
+                        double.infinity,
+                    padding:
+                        const EdgeInsets.all(
+                      16,
+                    ),
+                    decoration:
+                        BoxDecoration(
+                      color:
+                          soilColor.withValues(
+                        alpha: 0.08,
+                      ),
+                      borderRadius:
+                          BorderRadius.circular(
+                        16,
+                      ),
+                      border:
+                          Border.all(
+                        color:
+                            soilColor.withValues(
+                          alpha: 0.20,
+                        ),
+                      ),
+                    ),
+                    child:
+                        Column(
+                      crossAxisAlignment:
+                          CrossAxisAlignment
+                              .start,
+                      children: [
+                        const Text(
+                          'What does this mean?',
+                          style:
+                              TextStyle(
+                            fontSize: 15,
+                            fontWeight:
+                                FontWeight
+                                    .w900,
+                            color:
+                                Color(
+                              0xFF1E2A1F,
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(
+                          height: 6,
+                        ),
+
+                        Text(
+                          soilMeaning,
+                          style:
+                              const TextStyle(
+                            fontSize: 15,
+                            height: 1.5,
+                            fontWeight:
+                                FontWeight
+                                    .w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
