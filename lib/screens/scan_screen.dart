@@ -43,19 +43,19 @@ class _ScanScreenState extends State<ScanScreen> {
   bool _isProcessing = false;
   bool _scanSaved = false;
 
+  Timer? _soilTimer;
+  Map<String, dynamic> _sensorData = {};
+  bool _soilLoading = true;
+
   Map<String, dynamic>? _scanResponse;
 
   String _cameraStatus =
       'Waiting for GreenGuard-CAM-01...';
 
-  // ============================================================
-  // SUBJECT IDENTIFICATION LAYER
-  // ============================================================
-
   final List<Map<String, dynamic>>
       _subjectTypes = [
     {
-      'name': 'Unknown / Non-Plant',
+      'name': 'Not a Plant',
       'color': Colors.grey,
     },
     {
@@ -67,10 +67,6 @@ class _ScanScreenState extends State<ScanScreen> {
       'color': Color(0xFF2F6B3B),
     },
   ];
-
-  // ============================================================
-  // LETTUCE DIAGNOSIS CLASSES
-  // ============================================================
 
   final List<Map<String, dynamic>>
       _supportedDiseases = [
@@ -92,26 +88,24 @@ class _ScanScreenState extends State<ScanScreen> {
     },
   ];
 
-  // ============================================================
-  // LIFE CYCLE
-  // ============================================================
-
   @override
-  void initState() {
-    super.initState();
+void initState() {
+  super.initState();
 
-    _cameraSubscription =
-        _espCamService.cameraEvents.listen(
-      _cameraRegistered,
-    );
+  _cameraSubscription =
+      _espCamService.cameraEvents.listen(
+    _cameraRegistered,
+  );
 
-    WidgetsBinding.instance
-        .addPostFrameCallback(
-      (_) {
-        _initializeCamera();
-      },
-    );
-  }
+  _startSoilMonitoring();
+
+  WidgetsBinding.instance
+      .addPostFrameCallback(
+    (_) {
+      _initializeCamera();
+    },
+  );
+}
 
   @override
   void dispose() {
@@ -131,7 +125,43 @@ class _ScanScreenState extends State<ScanScreen> {
       _espCamService.stopMjpegStream(),
     );
 
+    _soilTimer?.cancel();
+
     super.dispose();
+  }
+
+  // ============================================================
+  // SOIL MONITORING
+  // ============================================================
+
+  void _startSoilMonitoring() {
+    unawaited(
+      _loadSoilData(),
+    );
+
+    _soilTimer = Timer.periodic(
+      const Duration(
+        seconds: 5,
+      ),
+      (_) {
+        unawaited(
+          _loadSoilData(),
+        );
+      },
+    );
+  }
+
+  Future<void> _loadSoilData() async {
+    final Map<String, dynamic> data =
+        await _monitoringService
+            .fetchSensorData();
+
+    if (!mounted) return;
+
+    setState(() {
+      _sensorData = data;
+      _soilLoading = false;
+    });
   }
 
   // ============================================================
@@ -236,10 +266,6 @@ class _ScanScreenState extends State<ScanScreen> {
     await _initializeCamera();
   }
 
-  // ============================================================
-  // LIVE STREAM
-  // ============================================================
-
   Future<void> _stopPreview() async {
     if (_mjpegSubscription != null) {
       await _mjpegSubscription!.cancel();
@@ -297,10 +323,6 @@ class _ScanScreenState extends State<ScanScreen> {
       },
     );
   }
-
-  // ============================================================
-  // CAMERA SETTINGS
-  // ============================================================
 
   Future<void> _loadCameraSettings() async {
     final EspCamSettings? settings =
@@ -374,10 +396,6 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
-  // ============================================================
-  // PRESET
-  // ============================================================
-
   Future<void> _setPreset(
     String preset,
   ) async {
@@ -388,10 +406,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // XCLK
-  // ============================================================
 
   Future<void> _changeXclk(
     int change,
@@ -413,8 +427,6 @@ class _ScanScreenState extends State<ScanScreen> {
       return;
     }
 
-    // Immediately reflect the requested
-    // value in the UI.
     setState(() {
       _cameraSettings =
           settings.copyWith(
@@ -429,10 +441,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // BASIC IMAGE CONTROLS
-  // ============================================================
 
   Future<void> _saveBrightness(
     int value,
@@ -467,10 +475,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // SPECIAL EFFECT
-  // ============================================================
-
   Future<void> _setSpecialEffect(
     int value,
   ) async {
@@ -481,10 +485,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // WHITE BALANCE
-  // ============================================================
 
   Future<void> _setAwb(
     bool value,
@@ -519,10 +519,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // EXPOSURE
-  // ============================================================
-
   Future<void> _setAec(
     bool value,
   ) async {
@@ -556,10 +552,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // GAIN
-  // ============================================================
-
   Future<void> _setAgc(
     bool value,
   ) async {
@@ -581,10 +573,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // IMAGE PROCESSING
-  // ============================================================
 
   Future<void> _setBpc(
     bool value,
@@ -641,10 +629,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // ORIENTATION / DIAGNOSTIC
-  // ============================================================
-
   Future<void> _setMirror(
     bool value,
   ) async {
@@ -678,10 +662,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // FLASH
-  // ============================================================
-
   Future<void> _setFlashLevel(
     String level,
   ) async {
@@ -693,10 +673,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // RESET
-  // ============================================================
-
   Future<void>
       _resetCameraSettings() async {
     await _applyCameraChange(
@@ -704,10 +680,6 @@ class _ScanScreenState extends State<ScanScreen> {
           .resetRecommendedSettings(),
     );
   }
-
-  // ============================================================
-  // TAKE PHOTO
-  // ============================================================
 
   Future<void> _takePhoto() async {
     if (!_cameraConnected) {
@@ -774,10 +746,6 @@ class _ScanScreenState extends State<ScanScreen> {
     });
   }
 
-  // ============================================================
-  // RETAKE
-  // ============================================================
-
   Future<void> _retakePhoto() async {
     if (_isProcessing) {
       return;
@@ -793,15 +761,6 @@ class _ScanScreenState extends State<ScanScreen> {
 
     await _startPreview();
   }
-
-  // ============================================================
-  // USE PHOTO
-  //
-  // The actual API request is added after image_enhancer.py
-  // and the final AI server response are completed.
-  // ============================================================
-
-  
 
   Future<void> _usePhoto() async {
     final Uint8List? image =
@@ -948,11 +907,11 @@ class _ScanScreenState extends State<ScanScreen> {
     }
     else if (saved) {
       message =
-          'AI diagnosis complete and saved to Health Logs.';
+          'Lettuce health check complete and saved to Health Logs.';
     }
     else {
       message =
-          'AI diagnosis complete, but the Health Log could not be saved${saveError == null ? '.' : ': $saveError'}';
+          'Lettuce health check complete, but the Health Log could not be saved${saveError == null ? '.' : ': $saveError'}';
     }
 
     ScaffoldMessenger.of(context)
@@ -1070,10 +1029,6 @@ class _ScanScreenState extends State<ScanScreen> {
 
     return Colors.grey;
   }
-
-  // ============================================================
-  // UI HELPERS
-  // ============================================================
 
   Widget _badge(
     String label,
@@ -1249,7 +1204,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
                 Expanded(
                   child: Text(
-                    'Subject: $subjectLabel',
+                    'Detected: $subjectLabel',
                     style:
                         const TextStyle(
                       fontSize: 20,
@@ -1278,7 +1233,7 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 12,
             ),
             const Text(
-              'No disease result was saved because the subject was not confirmed as lettuce.',
+              'No health result was saved because GreenGuard could not confirm lettuce in the photo.',
               style: TextStyle(
                 fontWeight:
                     FontWeight.w700,
@@ -1421,7 +1376,7 @@ class _ScanScreenState extends State<ScanScreen> {
                           .start,
                   children: [
                     const Text(
-                      'AI Disease Identification',
+                      'Lettuce Health Result',
                       style:
                           TextStyle(
                         fontSize: 13,
@@ -1482,7 +1437,7 @@ class _ScanScreenState extends State<ScanScreen> {
             height: 8,
           ),
           Text(
-            'Subject: $subjectLabel',
+            'Detected: $subjectLabel',
             style: const TextStyle(
               fontSize: 15,
               fontWeight:
@@ -1494,9 +1449,9 @@ class _ScanScreenState extends State<ScanScreen> {
             const SizedBox(
               height: 14,
             ),
-            Text(
-              'Image Enhancer: ${operations.join(' → ')}',
-              style: const TextStyle(
+            const Text(
+              'Photo Improvement: Complete',
+              style: TextStyle(
                 fontSize: 13,
                 fontWeight:
                     FontWeight.w700,
@@ -1556,10 +1511,10 @@ class _ScanScreenState extends State<ScanScreen> {
                 Expanded(
                   child: Text(
                     databaseSaved
-                        ? 'Saved to Supabase diagnostic_logs. It will appear in Scan History Logs.'
+                        ? 'Saved to Health Logs.'
                         : databaseError ==
                                 null
-                            ? 'Diagnosis is available, but this scan was not saved to the database.'
+                            ? 'Health result is ready, but it was not saved to Health Logs.'
                             : 'Diagnosis is available, but database save failed: $databaseError',
                     style:
                         const TextStyle(
@@ -1709,10 +1664,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // CAMERA SETTINGS CARD
-  // ============================================================
-
   Widget _buildCameraSettingsCard() {
     final EspCamSettings?
         settings =
@@ -1768,10 +1719,6 @@ class _ScanScreenState extends State<ScanScreen> {
                   CircularProgressIndicator(),
             )
           else ...[
-            // =================================================
-            // PERFORMANCE
-            // =================================================
-
             _sectionTitle(
               'Performance',
             ),
@@ -1981,10 +1928,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 14,
             ),
 
-            // =================================================
-            // PRESETS
-            // =================================================
-
             _sectionTitle(
               'Preset',
             ),
@@ -2063,10 +2006,6 @@ class _ScanScreenState extends State<ScanScreen> {
             const Divider(
               height: 30,
             ),
-
-            // =================================================
-            // BASIC IMAGE
-            // =================================================
 
             _sectionTitle(
               'Image',
@@ -2218,10 +2157,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 30,
             ),
 
-            // =================================================
-            // WHITE BALANCE
-            // =================================================
-
             _sectionTitle(
               'White Balance',
             ),
@@ -2317,10 +2252,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 30,
             ),
 
-            // =================================================
-            // EXPOSURE
-            // =================================================
-
             _sectionTitle(
               'Exposure',
             ),
@@ -2365,10 +2296,6 @@ class _ScanScreenState extends State<ScanScreen> {
             const Divider(
               height: 30,
             ),
-
-            // =================================================
-            // GAIN
-            // =================================================
 
             _sectionTitle(
               'Gain',
@@ -2462,10 +2389,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 30,
             ),
 
-            // =================================================
-            // PROCESSING
-            // =================================================
-
             _sectionTitle(
               'Sensor Processing',
             ),
@@ -2523,10 +2446,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 30,
             ),
 
-            // =================================================
-            // FLASH
-            // =================================================
-
             _sectionTitle(
               'Flash Level',
             ),
@@ -2572,10 +2491,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 30,
             ),
 
-            // =================================================
-            // ORIENTATION
-            // =================================================
-
             _sectionTitle(
               'Orientation',
             ),
@@ -2600,10 +2515,6 @@ class _ScanScreenState extends State<ScanScreen> {
             const Divider(
               height: 30,
             ),
-
-            // =================================================
-            // DIAGNOSTIC
-            // =================================================
 
             _sectionTitle(
               'Diagnostic',
@@ -2656,10 +2567,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // CAMERA VIEW
-  // ============================================================
 
   Widget _cameraBox() {
     if (_isCapturing) {
@@ -2932,10 +2839,6 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // PROCESSING PIPELINE CARD
-  // ============================================================
-
   Widget _buildPipelineCard() {
     return Container(
       width: double.infinity,
@@ -2969,7 +2872,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 width: 8,
               ),
               Text(
-                'GreenGuard AI Pipeline',
+                'How GreenGuard Checks Your Photo',
                 style:
                     TextStyle(
                   fontSize: 18,
@@ -2986,7 +2889,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
 
           const Text(
-            'After you press Use Photo:',
+            'After you choose Use Photo:',
             style:
                 TextStyle(
               fontWeight:
@@ -2999,7 +2902,9 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
 
           const Text(
-            'Image Enhancer → Subject Identification → Lettuce Diagnosis',
+            '1. Improve Photo\n'
+            '2. Check Plant\n'
+            '3. Check Lettuce Health',
             style:
                 TextStyle(
               color:
@@ -3017,7 +2922,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
 
           const Text(
-            'Subject Identification',
+            'What GreenGuard Sees',
             style:
                 TextStyle(
               fontWeight:
@@ -3053,7 +2958,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
 
           const Text(
-            'If Lettuce Is Confirmed',
+            'Possible Health Results',
             style:
                 TextStyle(
               fontWeight:
@@ -3088,10 +2993,6 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
-
-  // ============================================================
-  // PHOTO ACTIONS
-  // ============================================================
 
   Widget _buildPhotoActions() {
     if (_capturedImage == null) {
@@ -3251,14 +3152,22 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  // ============================================================
-  // BUILD
-  // ============================================================
-
   @override
   Widget build(
     BuildContext context,
   ) {
+    final String soilValue = _soilLoading
+        ? 'Loading...'
+        : (_sensorData['soil_value']
+                ?.toString() ??
+            '--%');
+
+    final String soilStatus = _soilLoading
+        ? 'Connecting...'
+        : (_sensorData['soil_status']
+                ?.toString() ??
+            'Offline');
+
     return Scaffold(
       backgroundColor:
           const Color(
@@ -3279,7 +3188,7 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
         ),
         title: const Text(
-          'ESP32-CAM AI Scan',
+          'Lettuce Health Scan',
           style: TextStyle(
             fontWeight:
                 FontWeight.w900,
@@ -3300,10 +3209,6 @@ class _ScanScreenState extends State<ScanScreen> {
         ),
         child: Column(
           children: [
-            // =================================================
-            // CAMERA DISPLAY
-            // =================================================
-
             Container(
               height: 320,
               width:
@@ -3335,10 +3240,6 @@ class _ScanScreenState extends State<ScanScreen> {
             const SizedBox(
               height: 18,
             ),
-
-            // =================================================
-            // CAMERA STATUS
-            // =================================================
 
             Container(
               width:
@@ -3505,10 +3406,6 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 38,
             ),
 
-            // =================================================
-            // FARM STATUS
-            // =================================================
-
             const Text(
               'Farm Status',
               style: TextStyle(
@@ -3544,12 +3441,12 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
               ),
               child:
-                  const Column(
+                  Column(
                 crossAxisAlignment:
                     CrossAxisAlignment
                         .start,
                 children: [
-                  Text(
+                  const Text(
                     'Monitoring',
                     style:
                         TextStyle(
@@ -3564,11 +3461,11 @@ class _ScanScreenState extends State<ScanScreen> {
                     ),
                   ),
 
-                  SizedBox(
+                  const SizedBox(
                     height: 12,
                   ),
 
-                  Text(
+                  const Text(
                     'Temperature: 24.5°C',
                     style:
                         TextStyle(
@@ -3580,9 +3477,9 @@ class _ScanScreenState extends State<ScanScreen> {
                   ),
 
                   Text(
-                    'Soil Moisture: 45%',
+                    'Soil Moisture: $soilValue',
                     style:
-                        TextStyle(
+                        const TextStyle(
                       fontSize: 18,
                       fontWeight:
                           FontWeight
@@ -3591,9 +3488,9 @@ class _ScanScreenState extends State<ScanScreen> {
                   ),
 
                   Text(
-                    'Status: Normal',
+                    'Status: $soilStatus',
                     style:
-                        TextStyle(
+                        const TextStyle(
                       fontSize: 18,
                       fontWeight:
                           FontWeight

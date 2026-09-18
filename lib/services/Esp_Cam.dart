@@ -466,7 +466,7 @@ class EspCamService {
   // GreenGuard AI Flask server running on the laptop.
   // Change only this value if the laptop IPv4 address changes.
   static const String aiServerBaseUrl =
-      'http://192.168.254.192:5000';
+    'http://172.21.109.132:5000';
 
   HttpServer? _discoveryServer;
 

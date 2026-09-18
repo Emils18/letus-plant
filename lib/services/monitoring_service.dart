@@ -1,4 +1,6 @@
-import '../config/app_config.dart';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HealthLogSaveResult {
@@ -17,36 +19,132 @@ class MonitoringService {
   final SupabaseClient _supabase =
       Supabase.instance.client;
 
+  // ============================================================
+  // SOIL SENSOR ESP32
+  // ============================================================
+  //
+  // IMPORTANT:
+  // Replace this with the IP shown in the ESP32 Serial Monitor.
+  //
+  // Example:
+  // ESP32 Soil IP: 192.168.254.123
+  //
+  // ============================================================
+
+  static const String soilEsp32Ip =
+      '10.175.35.214';
+
+  static const String soilDeviceName =
+      'GreenGuard-SOIL-01';
+
+  // ============================================================
+  // GET REAL SOIL SENSOR DATA
+  // ============================================================
+
   Future<Map<String, dynamic>>
       fetchSensorData() async {
-    if (AppConfig.isDemoMode) {
-      await Future.delayed(
-        const Duration(
-          milliseconds: 600,
-        ),
+    try {
+      final Uri uri = Uri.parse(
+        'http://$soilEsp32Ip/soil',
       );
 
+      final http.Response response =
+          await http
+              .get(
+                uri,
+              )
+              .timeout(
+                const Duration(
+                  seconds: 4,
+                ),
+              );
+
+      if (response.statusCode != 200) {
+        return _offlineData();
+      }
+
+      final dynamic decoded =
+          jsonDecode(
+        response.body,
+      );
+
+      if (decoded
+          is! Map<String, dynamic>) {
+        return _offlineData();
+      }
+
+      if (decoded['success'] != true) {
+        return _offlineData();
+      }
+
+      final int moisture =
+          _readInt(
+        decoded['soil_moisture'],
+      );
+
+      final String status =
+          decoded['soil_status']
+                  ?.toString()
+                  .trim()
+                  .toUpperCase() ??
+              'UNKNOWN';
+
+      final String deviceName =
+          decoded['device']
+                  ?.toString()
+                  .trim() ??
+              soilDeviceName;
+
       return {
-        'soil_status': 'Ideal',
-        'soil_value': '65%',
-        'light_status': 'Ideal',
-        'light_value': '850 lx',
-        'plant_health': 'Healthy',
-        'crop_stage': 'Harvest Ready',
-        'last_sync': DateTime.now()
-            .subtract(
-              const Duration(
-                minutes: 2,
-              ),
-            )
-            .toIso8601String(),
+        'connected': true,
+        'device': deviceName,
+        'soil_moisture': moisture,
+        'soil_value': '$moisture%',
+        'soil_status': status,
+        'last_sync':
+            DateTime.now()
+                .toIso8601String(),
       };
+    } catch (_) {
+      return _offlineData();
+    }
+  }
+
+  Map<String, dynamic>
+      _offlineData() {
+    return {
+      'connected': false,
+      'device': soilDeviceName,
+      'soil_moisture': null,
+      'soil_value': '--%',
+      'soil_status': 'OFFLINE',
+      'last_sync':
+          DateTime.now()
+              .toIso8601String(),
+    };
+  }
+
+  int _readInt(
+    dynamic value,
+  ) {
+    if (value is int) {
+      return value;
     }
 
-    // Existing placeholder is intentionally preserved.
-    // Real IoT sensor fetching can be connected here later.
-    return {};
+    if (value is num) {
+      return value.round();
+    }
+
+    return int.tryParse(
+          value?.toString() ??
+              '',
+        ) ??
+        0;
   }
+
+  // ============================================================
+  // HEALTH LOG
+  // ============================================================
 
   Future<HealthLogSaveResult>
       saveHealthLog({
@@ -81,8 +179,10 @@ class MonitoringService {
           diseaseName.trim(),
       'confidence_score':
           confidence,
-      'location': location,
-      'device_id': deviceId,
+      'location':
+          location,
+      'device_id':
+          deviceId,
       'captured_at':
           now.toIso8601String(),
       'created_at':
@@ -141,8 +241,7 @@ class MonitoringService {
     String location =
         'Lapu-Lapu City, Cebu',
   }) async {
-    final HealthLogSaveResult
-        result =
+    final HealthLogSaveResult result =
         await saveHealthLog(
       diseaseName:
           diseaseName,
