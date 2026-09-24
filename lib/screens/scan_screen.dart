@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/Esp_Cam.dart';
 import '../services/monitoring_service.dart';
@@ -30,34 +31,49 @@ class _ScanScreenState extends State<ScanScreen> {
   StreamSubscription<Uint8List>?
       _mjpegSubscription;
 
+  Timer? _soilTimer;
+
   Uint8List? _liveFrame;
   Uint8List? _capturedImage;
 
-  EspCamSettings? _cameraSettings;
+  Map<String, dynamic>? _scanResponse;
+
+  Map<String, dynamic> _sensorData = {};
 
   bool _streamConnecting = false;
   bool _cameraConnected = false;
   bool _isSearching = true;
   bool _isCapturing = false;
-  bool _settingsBusy = false;
   bool _isProcessing = false;
   bool _scanSaved = false;
 
-  Timer? _soilTimer;
-
-  Map<String, dynamic> _sensorData = {};
-
   bool _soilLoading = true;
-
-  // Used so the in-app connection message
-  // only appears when the sensor changes
-  // from offline -> connected.
   bool _soilWasConnected = false;
 
-  Map<String, dynamic>? _scanResponse;
+  bool _scanCompleted = false;
+  bool _scanAddedToSession = false;
+  bool _sessionFinished = false;
 
   String _cameraStatus =
       'Waiting for GreenGuard-CAM-01...';
+
+  // ============================================================
+  // CURRENT SCAN SESSION
+  // ============================================================
+
+  final List<Map<String, dynamic>>
+      _sessionScans = [];
+
+  String? _sessionId;
+
+  late DateTime _sessionStartedAt;
+
+  static const String _scanImageBucket =
+      'diagnostic-images';
+
+  // ============================================================
+  // SUBJECTS / DISEASES
+  // ============================================================
 
   final List<Map<String, dynamic>>
       _subjectTypes = [
@@ -71,7 +87,7 @@ class _ScanScreenState extends State<ScanScreen> {
     },
     {
       'name': 'Lettuce',
-      'color': Color(0xFF2F6B3B),
+      'color': const Color(0xFF2F6B3B),
     },
   ];
 
@@ -95,9 +111,16 @@ class _ScanScreenState extends State<ScanScreen> {
     },
   ];
 
+  // ============================================================
+  // START
+  // ============================================================
+
   @override
   void initState() {
     super.initState();
+
+    _sessionStartedAt =
+        DateTime.now();
 
     _cameraSubscription =
         _espCamService.cameraEvents.listen(
@@ -114,8 +137,14 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
+  // ============================================================
+  // DISPOSE
+  // ============================================================
+
   @override
   void dispose() {
+    _soilTimer?.cancel();
+
     if (_mjpegSubscription != null) {
       unawaited(
         _mjpegSubscription!.cancel(),
@@ -132,13 +161,11 @@ class _ScanScreenState extends State<ScanScreen> {
       _espCamService.stopMjpegStream(),
     );
 
-    _soilTimer?.cancel();
-
     super.dispose();
   }
 
   // ============================================================
-  // SOIL MONITORING
+  // SOIL SENSOR
   // ============================================================
 
   void _startSoilMonitoring() {
@@ -146,8 +173,8 @@ class _ScanScreenState extends State<ScanScreen> {
       _loadSoilData(),
     );
 
-    // Refresh the real ESP32 soil data every 1 second.
-    _soilTimer = Timer.periodic(
+    _soilTimer =
+        Timer.periodic(
       const Duration(
         seconds: 1,
       ),
@@ -166,35 +193,20 @@ class _ScanScreenState extends State<ScanScreen> {
 
     if (!mounted) return;
 
-    final bool isConnected =
+    final bool connected =
         data['connected'] == true;
 
-    final bool showConnectedMessage =
-        isConnected &&
+    final bool newlyConnected =
+        connected &&
         !_soilWasConnected;
 
     setState(() {
       _sensorData = data;
       _soilLoading = false;
-      _soilWasConnected =
-          isConnected;
+      _soilWasConnected = connected;
     });
 
-    // ============================================================
-    // IN-APP MESSAGE ONLY
-    // ============================================================
-    //
-    // This is NOT an Android/system notification.
-    // It stays inside GreenGuard.
-    //
-    // It only appears when the sensor changes:
-    //
-    // OFFLINE -> CONNECTED
-    //
-    // ============================================================
-
-    if (showConnectedMessage &&
-        mounted) {
+    if (newlyConnected) {
       ScaffoldMessenger.of(context)
           .hideCurrentSnackBar();
 
@@ -211,26 +223,13 @@ class _ScanScreenState extends State<ScanScreen> {
             ),
           ),
           backgroundColor:
-              Color(
-            0xFF2F6B3B,
-          ),
+              Color(0xFF2F6B3B),
           duration:
-              Duration(
-            seconds: 3,
-          ),
+              Duration(seconds: 3),
         ),
       );
     }
   }
-
-  // ============================================================
-  // SIMPLE SOIL EXPLANATIONS
-  // ============================================================
-  //
-  // These explanations are intentionally simple
-  // so farmers and elderly users can understand them.
-  //
-  // ============================================================
 
   String _soilMeaning(
     String status,
@@ -344,13 +343,52 @@ class _ScanScreenState extends State<ScanScreen> {
           'GreenGuard-CAM-01 connected.';
     });
 
-    unawaited(
-      _loadCameraSettings(),
-    );
+    // Automatically use the camera settings we selected:
+    //
+    // Preset: BEST
+    // Clock: 28 MHz
+    //
+    // Farmers do not need to adjust camera settings manually.
 
     unawaited(
-      _startPreview(),
+      _prepareBestCamera(),
     );
+  }
+
+  Future<void> _prepareBestCamera() async {
+    await _stopPreview();
+
+    final settings =
+        await _espCamService
+            .updateSettings(
+      preset: 'best',
+      xclkMHz: 28,
+    );
+
+    if (!mounted) return;
+
+    if (settings == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Camera connected, but recommended settings could not be applied.',
+          ),
+        ),
+      );
+    }
+
+    await Future<void>.delayed(
+      const Duration(
+        milliseconds: 180,
+      ),
+    );
+
+    if (mounted &&
+        _cameraConnected &&
+        _capturedImage == null) {
+      await _startPreview();
+    }
   }
 
   Future<void> _searchAgain() async {
@@ -363,7 +401,6 @@ class _ScanScreenState extends State<ScanScreen> {
     setState(() {
       _capturedImage = null;
       _liveFrame = null;
-      _cameraSettings = null;
 
       _cameraConnected = false;
       _isSearching = true;
@@ -375,9 +412,14 @@ class _ScanScreenState extends State<ScanScreen> {
     await _initializeCamera();
   }
 
+  // ============================================================
+  // CAMERA PREVIEW
+  // ============================================================
+
   Future<void> _stopPreview() async {
     if (_mjpegSubscription != null) {
-      await _mjpegSubscription!.cancel();
+      await _mjpegSubscription!
+          .cancel();
 
       _mjpegSubscription = null;
     }
@@ -404,7 +446,9 @@ class _ScanScreenState extends State<ScanScreen> {
         _espCamService
             .mjpegStream()
             .listen(
-      (Uint8List frame) {
+      (
+        Uint8List frame,
+      ) {
         if (!mounted ||
             _isCapturing ||
             _capturedImage != null) {
@@ -416,7 +460,9 @@ class _ScanScreenState extends State<ScanScreen> {
           _streamConnecting = false;
         });
       },
-      onError: (Object error) {
+      onError: (
+        Object error,
+      ) {
         if (!mounted) return;
 
         setState(() {
@@ -430,363 +476,6 @@ class _ScanScreenState extends State<ScanScreen> {
           _streamConnecting = false;
         });
       },
-    );
-  }
-
-  Future<void> _loadCameraSettings() async {
-    final EspCamSettings? settings =
-        await _espCamService
-            .getCameraSettings();
-
-    if (!mounted ||
-        settings == null) {
-      return;
-    }
-
-    setState(() {
-      _cameraSettings = settings;
-    });
-  }
-
-  Future<void> _applyCameraChange(
-    Future<EspCamSettings?>
-        Function() action,
-  ) async {
-    if (_settingsBusy) return;
-
-    setState(() {
-      _settingsBusy = true;
-    });
-
-    await _stopPreview();
-
-    await Future<void>.delayed(
-      const Duration(
-        milliseconds: 180,
-      ),
-    );
-
-    final EspCamSettings? settings =
-        await action();
-
-    if (!mounted) return;
-
-    setState(() {
-      _settingsBusy = false;
-
-      if (settings != null) {
-        _cameraSettings =
-            settings;
-      }
-    });
-
-    if (settings == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Camera setting could not be updated.',
-          ),
-        ),
-      );
-    }
-
-    if (_capturedImage == null &&
-        _cameraConnected) {
-      await Future<void>.delayed(
-        const Duration(
-          milliseconds: 180,
-        ),
-      );
-
-      if (mounted) {
-        await _startPreview();
-      }
-    }
-  }
-
-  Future<void> _setPreset(
-    String preset,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        preset: preset,
-      ),
-    );
-  }
-
-  Future<void> _changeXclk(
-    int change,
-  ) async {
-    final EspCamSettings? settings =
-        _cameraSettings;
-
-    if (settings == null) return;
-
-    final int next =
-        (settings.xclkMHz + change)
-            .clamp(
-              20,
-              28,
-            );
-
-    if (next ==
-        settings.xclkMHz) {
-      return;
-    }
-
-    setState(() {
-      _cameraSettings =
-          settings.copyWith(
-        xclkMHz: next,
-      );
-    });
-
-    await _applyCameraChange(
-      () => _espCamService
-          .setXclkMHz(
-        next,
-      ),
-    );
-  }
-
-  Future<void> _saveBrightness(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        brightness: value,
-      ),
-    );
-  }
-
-  Future<void> _saveContrast(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        contrast: value,
-      ),
-    );
-  }
-
-  Future<void> _saveSaturation(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        saturation: value,
-      ),
-    );
-  }
-
-  Future<void> _setSpecialEffect(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        specialEffect: value,
-      ),
-    );
-  }
-
-  Future<void> _setAwb(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        awb: value,
-      ),
-    );
-  }
-
-  Future<void> _setAwbGain(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        awbGain: value,
-      ),
-    );
-  }
-
-  Future<void> _setWbMode(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        wbMode: value,
-      ),
-    );
-  }
-
-  Future<void> _setAec(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        aec: value,
-      ),
-    );
-  }
-
-  Future<void> _setAec2(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        aec2: value,
-      ),
-    );
-  }
-
-  Future<void> _saveAeLevel(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        aeLevel: value,
-      ),
-    );
-  }
-
-  Future<void> _setAgc(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        agc: value,
-      ),
-    );
-  }
-
-  Future<void> _setGainCeiling(
-    int value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        gainCeiling: value,
-      ),
-    );
-  }
-
-  Future<void> _setBpc(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        bpc: value,
-      ),
-    );
-  }
-
-  Future<void> _setWpc(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        wpc: value,
-      ),
-    );
-  }
-
-  Future<void> _setRawGma(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        rawGma: value,
-      ),
-    );
-  }
-
-  Future<void> _setLensCorrection(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        lensCorrection: value,
-      ),
-    );
-  }
-
-  Future<void> _setDcw(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        dcw: value,
-      ),
-    );
-  }
-
-  Future<void> _setMirror(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        hMirror: value,
-      ),
-    );
-  }
-
-  Future<void> _setVerticalFlip(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        vFlip: value,
-      ),
-    );
-  }
-
-  Future<void> _setColorBar(
-    bool value,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .updateSettings(
-        colorBar: value,
-      ),
-    );
-  }
-
-  Future<void> _setFlashLevel(
-    String level,
-  ) async {
-    await _applyCameraChange(
-      () => _espCamService
-          .setFlashLevel(
-        level,
-      ),
-    );
-  }
-
-  Future<void>
-      _resetCameraSettings() async {
-    await _applyCameraChange(
-      () => _espCamService
-          .resetRecommendedSettings(),
     );
   }
 
@@ -814,7 +503,10 @@ class _ScanScreenState extends State<ScanScreen> {
       _capturedImage = null;
       _liveFrame = null;
       _scanResponse = null;
+
       _scanSaved = false;
+      _scanCompleted = false;
+      _scanAddedToSession = false;
     });
 
     await _stopPreview();
@@ -860,15 +552,16 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   Future<void> _retakePhoto() async {
-    if (_isProcessing) {
-      return;
-    }
+    if (_isProcessing) return;
 
     setState(() {
       _capturedImage = null;
       _liveFrame = null;
       _scanResponse = null;
+
       _scanSaved = false;
+      _scanCompleted = false;
+      _scanAddedToSession = false;
       _isProcessing = false;
     });
 
@@ -876,7 +569,76 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   // ============================================================
-  // USE PHOTO / AI SCAN
+  // SAVE SCAN PHOTO
+  // ============================================================
+
+  Future<String?> _uploadScanPhoto(
+    Uint8List imageBytes,
+  ) async {
+    final SupabaseClient supabase =
+        Supabase.instance.client;
+
+    final user =
+        supabase.auth.currentUser;
+
+    if (user == null ||
+        _sessionId == null) {
+      return null;
+    }
+
+    final int scanNumber =
+        _sessionScans.length + 1;
+
+    // Example:
+    //
+    // user-id/
+    //   session-id/
+    //     lettuce_001.jpg
+    //     lettuce_002.jpg
+    //
+    // Upsert allows the same photo slot to be retried without
+    // creating duplicate files.
+
+    final String fileName =
+        'lettuce_${scanNumber.toString().padLeft(3, '0')}.jpg';
+
+    final String path =
+        '${user.id}/${_sessionId!}/$fileName';
+
+    try {
+      await supabase.storage
+          .from(
+            _scanImageBucket,
+          )
+          .uploadBinary(
+            path,
+            imageBytes,
+            fileOptions:
+                const FileOptions(
+              contentType:
+                  'image/jpeg',
+              upsert: true,
+            ),
+          );
+
+      return supabase.storage
+          .from(
+            _scanImageBucket,
+          )
+          .getPublicUrl(
+            path,
+          );
+    } catch (e) {
+      debugPrint(
+        'Scan photo upload failed: $e',
+      );
+
+      return null;
+    }
+  }
+
+  // ============================================================
+  // USE PHOTO / AI DIAGNOSIS
   // ============================================================
 
   Future<void> _usePhoto() async {
@@ -885,21 +647,8 @@ class _ScanScreenState extends State<ScanScreen> {
 
     if (image == null ||
         image.isEmpty ||
-        _isProcessing) {
-      return;
-    }
-
-    if (_scanSaved &&
-        _scanResponse != null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(
-        const SnackBar(
-          content: Text(
-            'This scan is already saved. Retake the photo for a new scan.',
-          ),
-        ),
-      );
-
+        _isProcessing ||
+        _scanCompleted) {
       return;
     }
 
@@ -907,6 +656,10 @@ class _ScanScreenState extends State<ScanScreen> {
       _isProcessing = true;
       _scanResponse = null;
     });
+
+    // ==========================================================
+    // RUN GREENGUARD AI
+    // ==========================================================
 
     final Map<String, dynamic>
         response =
@@ -931,15 +684,68 @@ class _ScanScreenState extends State<ScanScreen> {
             true;
 
     bool saved = false;
+
     String? saveError;
+    String? imageUrl;
+
+    // ==========================================================
+    // VALID LETTUCE DIAGNOSIS
+    // ==========================================================
 
     if (success &&
         diagnosisAvailable) {
+      // ========================================================
+      // CREATE REAL SUPABASE SCAN SESSION
+      // ========================================================
+      //
+      // This only happens once:
+      // when the first valid lettuce is diagnosed.
+      //
+      // All following lettuce scans use the same UUID.
+      //
+      // ========================================================
+
+      if (_sessionId == null) {
+        try {
+          _sessionId =
+              await _monitoringService
+                  .createScanSession();
+
+          _sessionStartedAt =
+              DateTime.now();
+        } catch (e) {
+          if (!mounted) return;
+
+          setState(() {
+            _isProcessing = false;
+            _scanResponse =
+                finalResponse;
+          });
+
+          ScaffoldMessenger.of(context)
+              .showSnackBar(
+            SnackBar(
+              content: Text(
+                'Unable to start scan session: $e',
+              ),
+              backgroundColor:
+                  Colors.redAccent,
+            ),
+          );
+
+          return;
+        }
+      }
+
       final dynamic rawResult =
           response['result'];
 
       if (rawResult
           is Map<String, dynamic>) {
+        // ======================================================
+        // DISEASE NAME
+        // ======================================================
+
         final String diseaseName =
             (
               rawResult[
@@ -955,10 +761,66 @@ class _ScanScreenState extends State<ScanScreen> {
                 )
                 .trim();
 
+        // ======================================================
+        // CONFIDENCE
+        // ======================================================
+
         final double confidence =
             _readDoubleValue(
           rawResult['confidence'],
         );
+
+        // ======================================================
+        // SAVE PHOTO FIRST
+        // ======================================================
+
+        imageUrl =
+            await _uploadScanPhoto(
+          image,
+        );
+
+        // Every accepted lettuce scan must have its photo.
+        //
+        // If the photo does not save, we DO NOT count the
+        // lettuce yet.
+
+        if (imageUrl == null) {
+          if (!mounted) return;
+
+          finalResponse = {
+            ...response,
+            'database_saved':
+                false,
+            'database_error':
+                'The lettuce photo could not be saved.',
+          };
+
+          setState(() {
+            _isProcessing = false;
+            _scanResponse =
+                finalResponse;
+
+            _scanSaved = false;
+            _scanCompleted = false;
+          });
+
+          ScaffoldMessenger.of(context)
+              .showSnackBar(
+            const SnackBar(
+              content: Text(
+                'The lettuce photo could not be saved. Please tap Use Photo again.',
+              ),
+              backgroundColor:
+                  Colors.redAccent,
+            ),
+          );
+
+          return;
+        }
+
+        // ======================================================
+        // SAVE DIAGNOSTIC LOG
+        // ======================================================
 
         final HealthLogSaveResult
             saveResult =
@@ -972,6 +834,14 @@ class _ScanScreenState extends State<ScanScreen> {
               'Lapu-Lapu City, Cebu',
           deviceId:
               'GreenGuard-CAM-01',
+
+          // Saved lettuce photo.
+          imageUrl:
+              imageUrl,
+
+          // REAL SUPABASE SESSION UUID.
+          scanSessionId:
+              _sessionId,
         );
 
         if (!mounted) return;
@@ -982,12 +852,62 @@ class _ScanScreenState extends State<ScanScreen> {
         saveError =
             saveResult.error;
 
+        // ======================================================
+        // ADD TO CURRENT SESSION
+        // ======================================================
+        //
+        // Only count the lettuce when:
+        //
+        // 1. AI diagnosis succeeded
+        // 2. Photo was saved
+        // 3. Diagnostic log was saved
+        //
+        // ======================================================
+
+        if (saved &&
+            !_scanAddedToSession) {
+          _sessionScans.add(
+            <String, dynamic>{
+              'scan_session_id':
+                  _sessionId,
+              'disease_name':
+                  diseaseName,
+              'confidence':
+                  confidence,
+              'image_bytes':
+                  Uint8List.fromList(
+                image,
+              ),
+              'image_url':
+                  imageUrl,
+              'database_saved':
+                  true,
+              'captured_at':
+                  DateTime.now()
+                      .toIso8601String(),
+            },
+          );
+
+          _scanAddedToSession = true;
+        }
+
         finalResponse = {
           ...response,
+
           'database_saved':
               saved,
+
           'database_error':
               saveError,
+
+          'image_url':
+              imageUrl,
+
+          'scan_session_id':
+              _sessionId,
+
+          'session_scan_number':
+              _sessionScans.length,
         };
       }
     } else {
@@ -1002,10 +922,20 @@ class _ScanScreenState extends State<ScanScreen> {
 
     setState(() {
       _isProcessing = false;
+
       _scanResponse =
           finalResponse;
+
       _scanSaved = saved;
+
+      // Scan Next only becomes available when this lettuce
+      // was successfully stored.
+      _scanCompleted = saved;
     });
+
+    // ==========================================================
+    // MESSAGE
+    // ==========================================================
 
     final String message;
 
@@ -1021,10 +951,11 @@ class _ScanScreenState extends State<ScanScreen> {
               'No lettuce diagnosis was produced.';
     } else if (saved) {
       message =
-          'Lettuce health check complete and saved to Health Logs.';
+          'Lettuce #${_sessionScans.length} saved. You can scan the next lettuce.';
     } else {
       message =
-          'Lettuce health check complete, but the Health Log could not be saved${saveError == null ? '.' : ': $saveError'}';
+          'The diagnosis is ready, but it was not saved'
+          '${saveError == null ? '. Please tap Use Photo again.' : ': $saveError'}';
     }
 
     ScaffoldMessenger.of(context)
@@ -1034,7 +965,7 @@ class _ScanScreenState extends State<ScanScreen> {
           message,
         ),
         backgroundColor:
-            success
+            saved
                 ? const Color(
                     0xFF2F6B3B,
                   )
@@ -1042,6 +973,296 @@ class _ScanScreenState extends State<ScanScreen> {
       ),
     );
   }
+
+  // ============================================================
+  // SCAN NEXT LETTUCE
+  // ============================================================
+
+  Future<void> _scanNextLettuce() async {
+    if (_isProcessing) return;
+
+    setState(() {
+      _capturedImage = null;
+      _liveFrame = null;
+      _scanResponse = null;
+
+      _scanSaved = false;
+      _scanCompleted = false;
+      _scanAddedToSession = false;
+      _isProcessing = false;
+    });
+
+    await _startPreview();
+  }
+
+  // ============================================================
+  // DONE SCANNING
+  // ============================================================
+
+  Future<void> _finishScanning() async {
+    if (_sessionScans.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Scan at least one lettuce before finishing the session.',
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    final String? sessionId =
+        _sessionId;
+
+    if (sessionId == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        const SnackBar(
+          content: Text(
+            'The scan session was not created. Please try again.',
+          ),
+          backgroundColor:
+              Colors.redAccent,
+        ),
+      );
+
+      return;
+    }
+
+    await _stopPreview();
+
+    if (!mounted) return;
+
+    // ==========================================================
+    // COUNT RESULTS
+    // ==========================================================
+
+    int healthyCount = 0;
+    int downyCount = 0;
+    int powderyCount = 0;
+    int septoriaCount = 0;
+
+    double healthyConfidenceTotal =
+        0.0;
+
+    double downyConfidenceTotal =
+        0.0;
+
+    double powderyConfidenceTotal =
+        0.0;
+
+    double septoriaConfidenceTotal =
+        0.0;
+
+    for (final Map<String, dynamic>
+        scan in _sessionScans) {
+      final String disease =
+          (
+            scan['disease_name'] ??
+                ''
+          )
+              .toString()
+              .toLowerCase()
+              .replaceAll(
+                '_',
+                ' ',
+              )
+              .trim();
+
+      double confidence =
+          _readDoubleValue(
+        scan['confidence'],
+      );
+
+      // Store confidence averages in 0.0 - 1.0 format.
+
+      if (confidence > 1.0) {
+        confidence =
+            confidence / 100.0;
+      }
+
+      if (disease == 'healthy') {
+        healthyCount++;
+
+        healthyConfidenceTotal +=
+            confidence;
+      } else if (disease ==
+          'downy mildew') {
+        downyCount++;
+
+        downyConfidenceTotal +=
+            confidence;
+      } else if (disease ==
+          'powdery mildew') {
+        powderyCount++;
+
+        powderyConfidenceTotal +=
+            confidence;
+      } else if (disease ==
+              'septoria blight' ||
+          disease ==
+              'septoria leaf spot') {
+        septoriaCount++;
+
+        septoriaConfidenceTotal +=
+            confidence;
+      }
+    }
+
+    // ==========================================================
+    // AVERAGE CONFIDENCE
+    // ==========================================================
+
+    final double healthyAverage =
+        healthyCount == 0
+            ? 0.0
+            : healthyConfidenceTotal /
+                healthyCount;
+
+    final double downyAverage =
+        downyCount == 0
+            ? 0.0
+            : downyConfidenceTotal /
+                downyCount;
+
+    final double powderyAverage =
+        powderyCount == 0
+            ? 0.0
+            : powderyConfidenceTotal /
+                powderyCount;
+
+    final double septoriaAverage =
+        septoriaCount == 0
+            ? 0.0
+            : septoriaConfidenceTotal /
+                septoriaCount;
+
+    // ==========================================================
+    // SAVE FINAL REPORT TO SUPABASE
+    // ==========================================================
+
+    try {
+      await _monitoringService
+          .completeScanSession(
+        sessionId:
+            sessionId,
+
+        totalScanned:
+            _sessionScans.length,
+
+        healthyCount:
+            healthyCount,
+
+        downyCount:
+            downyCount,
+
+        powderyCount:
+            powderyCount,
+
+        septoriaCount:
+            septoriaCount,
+
+        healthyAverageConfidence:
+            healthyAverage,
+
+        downyAverageConfidence:
+            downyAverage,
+
+        powderyAverageConfidence:
+            powderyAverage,
+
+        septoriaAverageConfidence:
+            septoriaAverage,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        SnackBar(
+          content: Text(
+            'The final report could not be saved: $e',
+          ),
+          backgroundColor:
+              Colors.redAccent,
+        ),
+      );
+
+      return;
+    }
+
+    if (!mounted) return;
+
+    final DateTime completedAt =
+        DateTime.now();
+
+    setState(() {
+      _sessionFinished = true;
+    });
+
+    // ==========================================================
+    // SHOW FINAL REPORT
+    // ==========================================================
+
+    final bool? startNewSession =
+        await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            ScanSessionReportScreen(
+          scans:
+              List<Map<String, dynamic>>
+                  .from(
+            _sessionScans,
+          ),
+          startedAt:
+              _sessionStartedAt,
+          completedAt:
+              completedAt,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (startNewSession == true) {
+      await _startNewSession();
+    }
+  }
+
+  // ============================================================
+  // START NEW SESSION
+  // ============================================================
+
+  Future<void> _startNewSession() async {
+    setState(() {
+      _sessionScans.clear();
+
+      _sessionId = null;
+
+      _sessionStartedAt =
+          DateTime.now();
+
+      _sessionFinished = false;
+
+      _capturedImage = null;
+      _liveFrame = null;
+      _scanResponse = null;
+
+      _scanSaved = false;
+      _scanCompleted = false;
+      _scanAddedToSession = false;
+      _isProcessing = false;
+    });
+
+    await _startPreview();
+  }
+
+  // ============================================================
+  // SAFE NUMBER CONVERSION
+  // ============================================================
 
   double _readDoubleValue(
     dynamic value,
@@ -1057,6 +1278,10 @@ class _ScanScreenState extends State<ScanScreen> {
         0.0;
   }
 
+  // ============================================================
+  // DISEASE NAME
+  // ============================================================
+
   String _normalizeDiseaseName(
     String value,
   ) {
@@ -1067,6 +1292,10 @@ class _ScanScreenState extends State<ScanScreen> {
         )
         .trim();
   }
+
+  // ============================================================
+  // PATHOGEN
+  // ============================================================
 
   String _pathogenForDisease(
     String diseaseName,
@@ -1097,13 +1326,94 @@ class _ScanScreenState extends State<ScanScreen> {
       return 'Septoria lactucae';
     }
 
-    if (normalized ==
-        'healthy') {
-      return 'No pathogen detected';
+    if (normalized == 'healthy') {
+      return 'None detected';
     }
 
     return 'Not available';
   }
+
+  // ============================================================
+  // SIMPLE DESCRIPTION FOR FARMERS / ELDERLY USERS
+  // ============================================================
+
+  String _descriptionForDisease(
+    String diseaseName,
+  ) {
+    final String normalized =
+        diseaseName
+            .toLowerCase()
+            .replaceAll(
+              '_',
+              ' ',
+            )
+            .trim();
+
+    if (normalized == 'healthy') {
+      return 'No visible signs of disease were found. '
+          'The lettuce looks healthy based on this scan.';
+    }
+
+    if (normalized ==
+        'downy mildew') {
+      return 'Causes yellow spots on the leaves and may form '
+          'mold underneath the leaf.';
+    }
+
+    if (normalized ==
+        'powdery mildew') {
+      return 'Looks like white powder on the leaves and can '
+          'spread across the plant.';
+    }
+
+    if (normalized ==
+            'septoria blight' ||
+        normalized ==
+            'septoria leaf spot') {
+      return 'Causes small brown or dark spots that can grow '
+          'and damage the leaves.';
+    }
+
+    return 'GreenGuard completed the lettuce health scan.';
+  }
+
+
+String _pathogenDescriptionForDisease(
+  String diseaseName,
+) {
+  final String normalized =
+      diseaseName
+          .toLowerCase()
+          .replaceAll('_', ' ')
+          .trim();
+
+  if (normalized == 'healthy') {
+    return 'No supported disease-causing pathogen was detected '
+        'in this lettuce image.';
+  }
+
+  if (normalized == 'downy mildew') {
+    return 'Bremia lactucae is a disease-causing microorganism '
+        'that infects lettuce leaves. It grows well in cool, '
+        'wet, and humid conditions.';
+  }
+
+  if (normalized == 'powdery mildew') {
+    return 'Erysiphe cichoracearum is a fungus that grows on '
+        'plant surfaces and can look like white powder on the leaves.';
+  }
+
+  if (normalized == 'septoria blight' ||
+      normalized == 'septoria leaf spot') {
+    return 'Septoria lactucae is a fungus that infects lettuce '
+        'leaves and causes brown or dark leaf spots.';
+  }
+
+  return 'No pathogen information is available.';
+}
+  // ============================================================
+  // RESULT COLOR
+  // ============================================================
 
   Color _resultColor(
     String diseaseName,
@@ -1117,8 +1427,7 @@ class _ScanScreenState extends State<ScanScreen> {
             )
             .trim();
 
-    if (normalized ==
-        'healthy') {
+    if (normalized == 'healthy') {
       return const Color(
         0xFF5DBB63,
       );
@@ -1142,6 +1451,10 @@ class _ScanScreenState extends State<ScanScreen> {
 
     return Colors.grey;
   }
+
+  // ============================================================
+  // SMALL BADGE
+  // ============================================================
 
   Widget _badge(
     String label,
@@ -1175,7 +1488,221 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   // ============================================================
-  // SCAN RESULT CARD
+  // CAMERA VIEW
+  // ============================================================
+
+  Widget _cameraBox() {
+    if (_isCapturing) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment:
+              MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(
+              color:
+                  Color(0xFF2F6B3B),
+            ),
+            SizedBox(height: 20),
+            Text(
+              'Capturing high-quality image...',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight:
+                    FontWeight.w700,
+                color: Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // ==========================================================
+    // CAPTURED IMAGE
+    // ==========================================================
+
+    if (_capturedImage != null) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.memory(
+            _capturedImage!,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+          ),
+
+          Positioned(
+            top: 12,
+            right: 12,
+            child: Container(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                horizontal: 12,
+                vertical: 7,
+              ),
+              decoration:
+                  BoxDecoration(
+                color: Colors.black
+                    .withValues(
+                  alpha: 0.65,
+                ),
+                borderRadius:
+                    BorderRadius.circular(
+                  18,
+                ),
+              ),
+              child:
+                  const Text(
+                'CAPTURED',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // ==========================================================
+    // LIVE CAMERA
+    // ==========================================================
+
+    if (_cameraConnected) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          if (_liveFrame != null)
+            Image.memory(
+              _liveFrame!,
+              fit: BoxFit.contain,
+              gaplessPlayback: true,
+              filterQuality:
+                  FilterQuality.low,
+            )
+          else
+            Center(
+              child: Column(
+                mainAxisAlignment:
+                    MainAxisAlignment.center,
+                children: [
+                  const CircularProgressIndicator(
+                    color:
+                        Color(
+                      0xFF2F6B3B,
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height: 14,
+                  ),
+
+                  Text(
+                    _streamConnecting
+                        ? 'Starting live stream...'
+                        : 'Waiting for live video...',
+                    style:
+                        const TextStyle(
+                      fontSize: 16,
+                      fontWeight:
+                          FontWeight.w700,
+                      color: Colors.grey,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          Positioned(
+            top: 12,
+            right: 12,
+            child: Container(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                horizontal: 12,
+                vertical: 7,
+              ),
+              decoration:
+                  BoxDecoration(
+                color:
+                    const Color(
+                  0xFF2F6B3B,
+                ).withValues(
+                  alpha: 0.90,
+                ),
+                borderRadius:
+                    BorderRadius.circular(
+                  18,
+                ),
+              ),
+              child:
+                  const Text(
+                'LIVE',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // ==========================================================
+    // CAMERA OFFLINE
+    // ==========================================================
+
+    return Center(
+      child: Column(
+        mainAxisAlignment:
+            MainAxisAlignment.center,
+        children: [
+          if (_isSearching)
+            const SizedBox(
+              width: 42,
+              height: 42,
+              child:
+                  CircularProgressIndicator(
+                color:
+                    Color(0xFF2F6B3B),
+              ),
+            )
+          else
+            const Icon(
+              Icons.camera_alt_rounded,
+              size: 80,
+              color: Colors.grey,
+            ),
+
+          const SizedBox(
+            height: 18,
+          ),
+
+          Text(
+            _isSearching
+                ? 'Searching for camera...'
+                : 'Camera Offline',
+            style:
+                const TextStyle(
+              fontSize: 19,
+              fontWeight:
+                  FontWeight.w800,
+              color: Colors.grey,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // RESULT CARD
   // ============================================================
 
   Widget _buildScanResultCard() {
@@ -1198,8 +1725,7 @@ class _ScanScreenState extends State<ScanScreen> {
     final dynamic rawSubject =
         response['subject'];
 
-    final Map<String, dynamic>
-        subject =
+    final Map<String, dynamic> subject =
         rawSubject
                 is Map<String, dynamic>
             ? rawSubject
@@ -1210,74 +1736,31 @@ class _ScanScreenState extends State<ScanScreen> {
                 ?.toString() ??
             'Unknown';
 
+    // ==========================================================
+    // FAILED SCAN
+    // ==========================================================
+
     if (!success) {
       final String message =
           response['message']
                   ?.toString() ??
               'GreenGuard could not complete the scan.';
 
-      return Container(
-        width: double.infinity,
-        padding:
-            const EdgeInsets.all(
-          22,
-        ),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius:
-              BorderRadius.circular(
-            24,
-          ),
-          border: Border.all(
-            color: Colors.redAccent
-                .withValues(
-              alpha: 0.35,
-            ),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Row(
-              children: [
-                Icon(
-                  Icons
-                      .error_outline_rounded,
-                  color:
-                      Colors.redAccent,
-                  size: 30,
-                ),
-                SizedBox(
-                  width: 10,
-                ),
-                Text(
-                  'Scan Failed',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight:
-                        FontWeight.w900,
-                    color: Color(
-                      0xFF1E2A1F,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(
-              height: 12,
-            ),
-            Text(
-              message,
-              style: const TextStyle(
-                fontSize: 15,
-                height: 1.5,
-              ),
-            ),
-          ],
-        ),
+      return _simpleMessageCard(
+        icon:
+            Icons.error_outline_rounded,
+        title:
+            'Scan Failed',
+        message:
+            message,
+        color:
+            Colors.redAccent,
       );
     }
+
+    // ==========================================================
+    // NO LETTUCE DIAGNOSIS
+    // ==========================================================
 
     if (!diagnosisAvailable) {
       final String message =
@@ -1285,88 +1768,23 @@ class _ScanScreenState extends State<ScanScreen> {
                   ?.toString() ??
               'No lettuce diagnosis is available.';
 
-      return Container(
-        width: double.infinity,
-        padding:
-            const EdgeInsets.all(
-          22,
-        ),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius:
-              BorderRadius.circular(
-            24,
-          ),
-          border: Border.all(
-            color: Colors.grey
-                .withValues(
-              alpha: 0.25,
-            ),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons
-                      .center_focus_weak_rounded,
-                  color: Colors.teal,
-                  size: 30,
-                ),
-                const SizedBox(
-                  width: 10,
-                ),
-                Expanded(
-                  child: Text(
-                    'Detected: $subjectLabel',
-                    style:
-                        const TextStyle(
-                      fontSize: 20,
-                      fontWeight:
-                          FontWeight
-                              .w900,
-                      color: Color(
-                        0xFF1E2A1F,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(
-              height: 12,
-            ),
-            Text(
-              message,
-              style: const TextStyle(
-                fontSize: 15,
-                height: 1.5,
-              ),
-            ),
-            const SizedBox(
-              height: 12,
-            ),
-            const Text(
-              'No health result was saved because GreenGuard could not confirm lettuce in the photo.',
-              style: TextStyle(
-                fontWeight:
-                    FontWeight.w700,
-                color: Colors.grey,
-              ),
-            ),
-          ],
-        ),
+      return _simpleMessageCard(
+        icon:
+            Icons
+                .center_focus_weak_rounded,
+        title:
+            'Detected: $subjectLabel',
+        message:
+            message,
+        color:
+            Colors.teal,
       );
     }
 
     final dynamic rawResult =
         response['result'];
 
-    final Map<String, dynamic>
-        result =
+    final Map<String, dynamic> result =
         rawResult
                 is Map<String, dynamic>
             ? rawResult
@@ -1390,8 +1808,7 @@ class _ScanScreenState extends State<ScanScreen> {
                     as num
               ).toDouble()
             : _readDoubleValue(
-                  result[
-                      'confidence'],
+                  result['confidence'],
                 ) *
                 100.0;
 
@@ -1454,6 +1871,10 @@ class _ScanScreenState extends State<ScanScreen> {
         crossAxisAlignment:
             CrossAxisAlignment.start,
         children: [
+          // ====================================================
+          // RESULT TITLE
+          // ====================================================
+
           Row(
             children: [
               Container(
@@ -1466,8 +1887,7 @@ class _ScanScreenState extends State<ScanScreen> {
                     alpha: 0.12,
                   ),
                   borderRadius:
-                      BorderRadius
-                          .circular(
+                      BorderRadius.circular(
                     16,
                   ),
                 ),
@@ -1483,9 +1903,11 @@ class _ScanScreenState extends State<ScanScreen> {
                   size: 30,
                 ),
               ),
+
               const SizedBox(
                 width: 14,
               ),
+
               Expanded(
                 child: Column(
                   crossAxisAlignment:
@@ -1494,26 +1916,24 @@ class _ScanScreenState extends State<ScanScreen> {
                   children: [
                     const Text(
                       'Lettuce Health Result',
-                      style:
-                          TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
                         fontWeight:
-                            FontWeight
-                                .w800,
-                        color:
-                            Colors.grey,
+                            FontWeight.w800,
+                        color: Colors.grey,
                       ),
                     ),
+
                     const SizedBox(
                       height: 4,
                     ),
+
                     Text(
                       diseaseName,
                       style: TextStyle(
                         fontSize: 24,
                         fontWeight:
-                            FontWeight
-                                .w900,
+                            FontWeight.w900,
                         color: color,
                       ),
                     ),
@@ -1522,67 +1942,212 @@ class _ScanScreenState extends State<ScanScreen> {
               ),
             ],
           ),
+
           const SizedBox(
             height: 20,
           ),
+
+          // ====================================================
+          // PATHOGEN
+          // ====================================================
+
           Text(
-            'Pathogen: $pathogen',
-            style: const TextStyle(
+            diseaseName
+                        .toLowerCase() ==
+                    'healthy'
+                ? 'Pathogen: None detected'
+                : 'Pathogen: $pathogen',
+            style:
+                const TextStyle(
               fontSize: 16,
               fontWeight:
                   FontWeight.w800,
-              color: Color(
-                0xFF1E2A1F,
-              ),
+              color:
+                  Color(0xFF1E2A1F),
             ),
           ),
+
           const SizedBox(
             height: 8,
           ),
+
+          // ====================================================
+          // CONFIDENCE
+          // ====================================================
+
           Text(
             'Confidence: ${confidencePercent.toStringAsFixed(1)}%',
-            style: const TextStyle(
+            style:
+                const TextStyle(
               fontSize: 20,
               fontWeight:
                   FontWeight.w900,
-              color: Color(
-                0xFF1E2A1F,
-              ),
+              color:
+                  Color(0xFF1E2A1F),
             ),
           ),
+
           const SizedBox(
             height: 8,
           ),
+
           Text(
             'Detected: $subjectLabel',
-            style: const TextStyle(
+            style:
+                const TextStyle(
               fontSize: 15,
               fontWeight:
                   FontWeight.w700,
               color: Colors.grey,
             ),
           ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          // ====================================================
+          // SIMPLE ELDER-FRIENDLY DESCRIPTION
+          // ====================================================
+
+          Container(
+            width:
+                double.infinity,
+            padding:
+                const EdgeInsets.all(
+              16,
+            ),
+            decoration:
+                BoxDecoration(
+              color:
+                  color.withValues(
+                alpha: 0.07,
+              ),
+              borderRadius:
+                  BorderRadius.circular(
+                16,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment
+                      .start,
+              children: [
+                const Text(
+                  'What does this mean?',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight:
+                        FontWeight.w900,
+                    color:
+                        Color(
+                      0xFF1E2A1F,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 7,
+                ),
+
+                Text(
+                  _descriptionForDisease(
+                    diseaseName,
+                  ),
+                  style:
+                      const TextStyle(
+                    fontSize: 16,
+                    height: 1.5,
+                    fontWeight:
+                        FontWeight.w600,
+                    color:
+                        Color(
+                      0xFF465248,
+                    ),
+                  ),
+                ),
+
+
+const SizedBox(
+  height: 16,
+),
+
+const Divider(),
+
+const SizedBox(
+  height: 12,
+),
+
+const Text(
+  'What is this pathogen?',
+  style: TextStyle(
+    fontSize: 16,
+    fontWeight:
+        FontWeight.w900,
+    color:
+        Color(
+      0xFF1E2A1F,
+    ),
+  ),
+),
+
+const SizedBox(
+  height: 7,
+),
+
+Text(
+  _pathogenDescriptionForDisease(
+    diseaseName,
+  ),
+  style:
+      const TextStyle(
+    fontSize: 16,
+    height: 1.5,
+    fontWeight:
+        FontWeight.w600,
+    color:
+        Color(
+      0xFF465248,
+    ),
+  ),
+),
+
+
+              ],
+            ),
+          ),
+
           if (operations.isNotEmpty) ...[
             const SizedBox(
               height: 14,
             ),
+
             const Text(
               'Photo Improvement: Complete',
-              style: TextStyle(
+              style:
+                  TextStyle(
                 fontSize: 13,
                 fontWeight:
                     FontWeight.w700,
-                color: Color(
+                color:
+                    Color(
                   0xFF2F6B3B,
                 ),
               ),
             ),
           ],
+
           const SizedBox(
             height: 18,
           ),
+
+          // ====================================================
+          // DATABASE STATUS
+          // ====================================================
+
           Container(
-            width: double.infinity,
+            width:
+                double.infinity,
             padding:
                 const EdgeInsets
                     .symmetric(
@@ -1599,8 +2164,7 @@ class _ScanScreenState extends State<ScanScreen> {
                       0xFFFFF4E5,
                     ),
               borderRadius:
-                  BorderRadius
-                      .circular(
+                  BorderRadius.circular(
                 14,
               ),
             ),
@@ -1619,25 +2183,26 @@ class _ScanScreenState extends State<ScanScreen> {
                       ? const Color(
                           0xFF2F6B3B,
                         )
-                      : Colors
-                          .orangeAccent,
+                      : Colors.orange,
                 ),
+
                 const SizedBox(
                   width: 10,
                 ),
+
                 Expanded(
                   child: Text(
                     databaseSaved
-                        ? 'Saved to Health Logs.'
+                        ? 'Photo and health result saved.'
                         : databaseError ==
                                 null
-                            ? 'Health result is ready, but it was not saved to Health Logs.'
-                            : 'Diagnosis is available, but database save failed: $databaseError',
+                            ? 'The result has not been saved yet.'
+                            : 'Save failed: $databaseError',
                     style:
                         const TextStyle(
+                      fontSize: 14,
                       fontWeight:
-                          FontWeight
-                              .w700,
+                          FontWeight.w700,
                       height: 1.4,
                     ),
                   ),
@@ -1650,1313 +2215,81 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  Widget _sectionTitle(
-    String title,
-  ) {
-    return Align(
-      alignment:
-          Alignment.centerLeft,
-      child: Padding(
-        padding:
-            const EdgeInsets.only(
-          top: 10,
-          bottom: 8,
-        ),
-        child: Text(
-          title,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight:
-                FontWeight.w900,
-            color:
-                Color(0xFF1E2A1F),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _settingsSlider({
+  Widget _simpleMessageCard({
+    required IconData icon,
     required String title,
-    required int value,
-    required ValueChanged<int>
-        localUpdate,
-    required ValueChanged<int>
-        saveValue,
+    required String message,
+    required Color color,
   }) {
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style:
-                    const TextStyle(
-                  fontWeight:
-                      FontWeight.w700,
-                ),
-              ),
-            ),
-            Text(
-              value > 0
-                  ? '+$value'
-                  : '$value',
-              style:
-                  const TextStyle(
-                fontWeight:
-                    FontWeight.w900,
-                color:
-                    Color(0xFF2F6B3B),
-              ),
-            ),
-          ],
-        ),
-        Slider(
-          value:
-              value.toDouble(),
-          min: -2,
-          max: 2,
-          divisions: 4,
-          activeColor:
-              const Color(
-            0xFF2F6B3B,
-          ),
-          onChanged:
-              _settingsBusy
-                  ? null
-                  : (double value) {
-                      localUpdate(
-                        value.round(),
-                      );
-                    },
-          onChangeEnd:
-              _settingsBusy
-                  ? null
-                  : (double value) {
-                      saveValue(
-                        value.round(),
-                      );
-                    },
-        ),
-      ],
-    );
-  }
-
-  Widget _settingsSwitch({
-    required String title,
-    String? subtitle,
-    required bool value,
-    required ValueChanged<bool>
-        onChanged,
-  }) {
-    return SwitchListTile(
-      contentPadding:
-          EdgeInsets.zero,
-      dense: true,
-      title: Text(
-        title,
-        style: const TextStyle(
-          fontWeight:
-              FontWeight.w800,
-        ),
-      ),
-      subtitle:
-          subtitle == null
-              ? null
-              : Text(
-                  subtitle,
-                ),
-      value: value,
-      activeThumbColor:
-          const Color(
-        0xFF2F6B3B,
-      ),
-      onChanged:
-          _settingsBusy
-              ? null
-              : onChanged,
-    );
-  }
-
-  // ============================================================
-  // CAMERA SETTINGS CARD
-  // ============================================================
-
-  Widget _buildCameraSettingsCard() {
-    final EspCamSettings?
-        settings =
-        _cameraSettings;
-
     return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: Colors.white,
+      width:
+          double.infinity,
+      padding:
+          const EdgeInsets.all(
+        22,
+      ),
+      decoration:
+          BoxDecoration(
+        color:
+            Colors.white,
         borderRadius:
             BorderRadius.circular(
-          22,
+          24,
         ),
-      ),
-      child: ExpansionTile(
-        leading: const Icon(
-          Icons.tune_rounded,
+        border:
+            Border.all(
           color:
-              Color(0xFF2F6B3B),
-        ),
-        title: const Text(
-          'Camera Settings',
-          style: TextStyle(
-            fontWeight:
-                FontWeight.w900,
+              color.withValues(
+            alpha: 0.30,
           ),
         ),
-        subtitle:
-            settings == null
-                ? const Text(
-                    'Loading settings...',
-                  )
-                : Text(
-                    '${settings.preset.toUpperCase()} • '
-                    '${settings.xclkMHz} MHz • '
-                    '${settings.previewResolution}',
-                  ),
-        childrenPadding:
-            const EdgeInsets.fromLTRB(
-          18,
-          0,
-          18,
-          20,
-        ),
-        children: [
-          if (settings == null)
-            const Padding(
-              padding:
-                  EdgeInsets.all(
-                20,
-              ),
-              child:
-                  CircularProgressIndicator(),
-            )
-          else ...[
-            _sectionTitle(
-              'Performance',
-            ),
-
-            Container(
-              padding:
-                  const EdgeInsets.all(
-                14,
-              ),
-              decoration:
-                  BoxDecoration(
-                color:
-                    const Color(
-                  0xFFF3F8F3,
-                ),
-                borderRadius:
-                    BorderRadius.circular(
-                  16,
-                ),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment
-                                  .start,
-                          children: [
-                            Text(
-                              'XCLK MHz',
-                              style:
-                                  TextStyle(
-                                fontWeight:
-                                    FontWeight
-                                        .w900,
-                              ),
-                            ),
-                            SizedBox(
-                              height: 3,
-                            ),
-                            Text(
-                              'Camera clock frequency',
-                              style:
-                                  TextStyle(
-                                fontSize:
-                                    12,
-                                color:
-                                    Colors
-                                        .grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      IconButton(
-                        onPressed:
-                            _settingsBusy ||
-                                    settings.xclkMHz <=
-                                        20
-                                ? null
-                                : () =>
-                                    _changeXclk(
-                                      -1,
-                                    ),
-                        icon:
-                            const Icon(
-                          Icons
-                              .remove_circle_outline_rounded,
-                        ),
-                      ),
-
-                      Container(
-                        width: 78,
-                        alignment:
-                            Alignment
-                                .center,
-                        padding:
-                            const EdgeInsets
-                                .symmetric(
-                          vertical: 10,
-                        ),
-                        decoration:
-                            BoxDecoration(
-                          color:
-                              Colors
-                                  .white,
-                          borderRadius:
-                              BorderRadius
-                                  .circular(
-                            12,
-                          ),
-                          border:
-                              Border.all(
-                            color:
-                                const Color(
-                              0xFFB7D9B9,
-                            ),
-                          ),
-                        ),
-                        child: Text(
-                          '${settings.xclkMHz} MHz',
-                          style:
-                              const TextStyle(
-                            fontWeight:
-                                FontWeight
-                                    .w900,
-                            color:
-                                Color(
-                              0xFF2F6B3B,
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      IconButton(
-                        onPressed:
-                            _settingsBusy ||
-                                    settings.xclkMHz >=
-                                        28
-                                ? null
-                                : () =>
-                                    _changeXclk(
-                                      1,
-                                    ),
-                        icon:
-                            const Icon(
-                          Icons
-                              .add_circle_outline_rounded,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const Divider(),
-
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Live Resolution',
-                          style:
-                              TextStyle(
-                            fontWeight:
-                                FontWeight
-                                    .w800,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        settings
-                            .previewResolution,
-                        style:
-                            const TextStyle(
-                          fontWeight:
-                              FontWeight
-                                  .w900,
-                          color:
-                              Color(
-                            0xFF2F6B3B,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  const SizedBox(
-                    height: 8,
-                  ),
-
-                  Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Still Capture',
-                          style:
-                              TextStyle(
-                            fontWeight:
-                                FontWeight
-                                    .w800,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        settings
-                            .captureResolution,
-                        style:
-                            const TextStyle(
-                          fontWeight:
-                              FontWeight
-                                  .w900,
-                          color:
-                              Color(
-                            0xFF2F6B3B,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(
-              height: 14,
-            ),
-
-            _sectionTitle(
-              'Preset',
-            ),
-
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ChoiceChip(
-                  label:
-                      const Text(
-                    'Stable',
-                  ),
-                  selected:
-                      settings.preset ==
-                          'stable',
-                  onSelected:
-                      _settingsBusy
-                          ? null
-                          : (_) =>
-                              _setPreset(
-                                'stable',
-                              ),
-                ),
-                ChoiceChip(
-                  label:
-                      const Text(
-                    'Fast',
-                  ),
-                  selected:
-                      settings.preset ==
-                          'fast',
-                  onSelected:
-                      _settingsBusy
-                          ? null
-                          : (_) =>
-                              _setPreset(
-                                'fast',
-                              ),
-                ),
-                ChoiceChip(
-                  label:
-                      const Text(
-                    'Balanced',
-                  ),
-                  selected:
-                      settings.preset ==
-                          'balanced',
-                  onSelected:
-                      _settingsBusy
-                          ? null
-                          : (_) =>
-                              _setPreset(
-                                'balanced',
-                              ),
-                ),
-                ChoiceChip(
-                  label:
-                      const Text(
-                    'Best',
-                  ),
-                  selected:
-                      settings.preset ==
-                          'best',
-                  onSelected:
-                      _settingsBusy
-                          ? null
-                          : (_) =>
-                              _setPreset(
-                                'best',
-                              ),
-                ),
-              ],
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Image',
-            ),
-
-            _settingsSlider(
-              title:
-                  'Brightness',
-              value:
-                  settings.brightness,
-              localUpdate:
-                  (int value) {
-                setState(() {
-                  _cameraSettings =
-                      settings.copyWith(
-                    brightness:
-                        value,
-                  );
-                });
-              },
-              saveValue:
-                  _saveBrightness,
-            ),
-
-            _settingsSlider(
-              title:
-                  'Contrast',
-              value:
-                  settings.contrast,
-              localUpdate:
-                  (int value) {
-                setState(() {
-                  _cameraSettings =
-                      settings.copyWith(
-                    contrast:
-                        value,
-                  );
-                });
-              },
-              saveValue:
-                  _saveContrast,
-            ),
-
-            _settingsSlider(
-              title:
-                  'Saturation',
-              value:
-                  settings.saturation,
-              localUpdate:
-                  (int value) {
-                setState(() {
-                  _cameraSettings =
-                      settings.copyWith(
-                    saturation:
-                        value,
-                  );
-                });
-              },
-              saveValue:
-                  _saveSaturation,
-            ),
-
-            const SizedBox(
-              height: 8,
-            ),
-
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Special Effect',
-                    style:
-                        TextStyle(
-                      fontWeight:
-                          FontWeight
-                              .w800,
-                    ),
-                  ),
-                ),
-
-                DropdownButton<int>(
-                  value:
-                      settings
-                          .specialEffect,
-                  onChanged:
-                      _settingsBusy
-                          ? null
-                          : (
-                              int?
-                                  value,
-                            ) {
-                              if (value !=
-                                  null) {
-                                _setSpecialEffect(
-                                  value,
-                                );
-                              }
-                            },
-                  items:
-                      const [
-                    DropdownMenuItem(
-                      value: 0,
-                      child: Text(
-                        'None',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 1,
-                      child: Text(
-                        'Negative',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 2,
-                      child: Text(
-                        'Grayscale',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 3,
-                      child: Text(
-                        'Red Tint',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 4,
-                      child: Text(
-                        'Green Tint',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 5,
-                      child: Text(
-                        'Blue Tint',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 6,
-                      child: Text(
-                        'Sepia',
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'White Balance',
-            ),
-
-            _settingsSwitch(
-              title: 'AWB',
-              subtitle:
-                  'Automatic white balance',
-              value:
-                  settings.awb,
-              onChanged:
-                  _setAwb,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'AWB Gain',
-              value:
-                  settings.awbGain,
-              onChanged:
-                  _setAwbGain,
-            ),
-
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'WB Mode',
-                    style:
-                        TextStyle(
-                      fontWeight:
-                          FontWeight
-                              .w800,
-                    ),
-                  ),
-                ),
-
-                DropdownButton<int>(
-                  value:
-                      settings.wbMode,
-                  onChanged:
-                      _settingsBusy
-                          ? null
-                          : (
-                              int?
-                                  value,
-                            ) {
-                              if (value !=
-                                  null) {
-                                _setWbMode(
-                                  value,
-                                );
-                              }
-                            },
-                  items:
-                      const [
-                    DropdownMenuItem(
-                      value: 0,
-                      child: Text(
-                        'Auto',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 1,
-                      child: Text(
-                        'Sunny',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 2,
-                      child: Text(
-                        'Cloudy',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 3,
-                      child: Text(
-                        'Office',
-                      ),
-                    ),
-                    DropdownMenuItem(
-                      value: 4,
-                      child: Text(
-                        'Home',
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Exposure',
-            ),
-
-            _settingsSwitch(
-              title:
-                  'AEC Sensor',
-              value:
-                  settings.aec,
-              onChanged:
-                  _setAec,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'AEC DSP',
-              value:
-                  settings.aec2,
-              onChanged:
-                  _setAec2,
-            ),
-
-            _settingsSlider(
-              title:
-                  'AE Level',
-              value:
-                  settings.aeLevel,
-              localUpdate:
-                  (int value) {
-                setState(() {
-                  _cameraSettings =
-                      settings.copyWith(
-                    aeLevel:
-                        value,
-                  );
-                });
-              },
-              saveValue:
-                  _saveAeLevel,
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Gain',
-            ),
-
-            _settingsSwitch(
-              title: 'AGC',
-              subtitle:
-                  'Automatic gain control',
-              value:
-                  settings.agc,
-              onChanged:
-                  _setAgc,
-            ),
-
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Gain Ceiling',
-                    style:
-                        TextStyle(
-                      fontWeight:
-                          FontWeight
-                              .w800,
-                    ),
-                  ),
-                ),
-
-                DropdownButton<int>(
-                  value:
-                      settings
-                          .gainCeiling,
-                  onChanged:
-                      _settingsBusy
-                          ? null
-                          : (
-                              int?
-                                  value,
-                            ) {
-                              if (value !=
-                                  null) {
-                                _setGainCeiling(
-                                  value,
-                                );
-                              }
-                            },
-                  items:
-                      const [
-                    DropdownMenuItem(
-                      value: 0,
-                      child:
-                          Text('2x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 1,
-                      child:
-                          Text('4x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 2,
-                      child:
-                          Text('8x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 3,
-                      child:
-                          Text('16x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 4,
-                      child:
-                          Text('32x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 5,
-                      child:
-                          Text('64x'),
-                    ),
-                    DropdownMenuItem(
-                      value: 6,
-                      child:
-                          Text('128x'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Sensor Processing',
-            ),
-
-            _settingsSwitch(
-              title:
-                  'BPC',
-              subtitle:
-                  'Black pixel correction',
-              value:
-                  settings.bpc,
-              onChanged:
-                  _setBpc,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'WPC',
-              subtitle:
-                  'White pixel correction',
-              value:
-                  settings.wpc,
-              onChanged:
-                  _setWpc,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'Raw GMA',
-              value:
-                  settings.rawGma,
-              onChanged:
-                  _setRawGma,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'Lens Correction',
-              value:
-                  settings
-                      .lensCorrection,
-              onChanged:
-                  _setLensCorrection,
-            ),
-
-            _settingsSwitch(
-              title: 'DCW',
-              value:
-                  settings.dcw,
-              onChanged:
-                  _setDcw,
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Flash Level',
-            ),
-
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final String level
-                    in <String>[
-                  'off',
-                  'low',
-                  'medium',
-                  'high',
-                  'max',
-                ])
-                  ChoiceChip(
-                    label: Text(
-                      level ==
-                              'off'
-                          ? 'Off'
-                          : level[0]
-                                  .toUpperCase() +
-                              level.substring(
-                                1,
-                              ),
-                    ),
-                    selected:
-                        settings.flashLevel ==
-                            level,
-                    onSelected:
-                        _settingsBusy
-                            ? null
-                            : (_) =>
-                                _setFlashLevel(
-                                  level,
-                                ),
-                  ),
-              ],
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Orientation',
-            ),
-
-            _settingsSwitch(
-              title: 'Mirror',
-              value:
-                  settings.hMirror,
-              onChanged:
-                  _setMirror,
-            ),
-
-            _settingsSwitch(
-              title:
-                  'Vertical Flip',
-              value:
-                  settings.vFlip,
-              onChanged:
-                  _setVerticalFlip,
-            ),
-
-            const Divider(
-              height: 30,
-            ),
-
-            _sectionTitle(
-              'Diagnostic',
-            ),
-
-            _settingsSwitch(
-              title:
-                  'Color Bar',
-              subtitle:
-                  'Sensor test pattern',
-              value:
-                  settings.colorBar,
-              onChanged:
-                  _setColorBar,
-            ),
-
-            const SizedBox(
-              height: 12,
-            ),
-
-            SizedBox(
-              width:
-                  double.infinity,
-              child:
-                  OutlinedButton.icon(
-                onPressed:
-                    _settingsBusy
-                        ? null
-                        : _resetCameraSettings,
-                icon:
-                    const Icon(
-                  Icons
-                      .restart_alt_rounded,
-                ),
-                label:
-                    const Text(
-                  'Reset Recommended',
-                ),
-              ),
-            ),
-
-            if (_settingsBusy) ...[
-              const SizedBox(
-                height: 16,
-              ),
-              const LinearProgressIndicator(),
-            ],
-          ],
-        ],
       ),
-    );
-  }
-
-  // ============================================================
-  // CAMERA BOX
-  // ============================================================
-
-  Widget _cameraBox() {
-    if (_isCapturing) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment:
-              MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(
-              color:
-                  Color(0xFF2F6B3B),
-            ),
-            SizedBox(
-              height: 20,
-            ),
-            Text(
-              'Capturing high-quality image...',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight:
-                    FontWeight.w700,
-                color: Colors.grey,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_capturedImage != null) {
-      return Stack(
-        fit: StackFit.expand,
+      child:
+          Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
         children: [
-          Image.memory(
-            _capturedImage!,
-            fit: BoxFit.contain,
-            gaplessPlayback: true,
-          ),
+          Row(
+            children: [
+              Icon(
+                icon,
+                color: color,
+                size: 30,
+              ),
 
-          Positioned(
-            top: 12,
-            right: 12,
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 7,
+              const SizedBox(
+                width: 10,
               ),
-              decoration:
-                  BoxDecoration(
-                color:
-                    Colors.black
-                        .withValues(
-                  alpha: 0.65,
-                ),
-                borderRadius:
-                    BorderRadius.circular(
-                  18,
-                ),
-              ),
-              child:
-                  const Text(
-                'CAPTURED',
-                style: TextStyle(
-                  color:
-                      Colors.white,
-                  fontWeight:
-                      FontWeight
-                          .w900,
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
 
-    if (_cameraConnected) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          if (_liveFrame != null)
-            Image.memory(
-              _liveFrame!,
-              fit:
-                  BoxFit.contain,
-              gaplessPlayback:
-                  true,
-              filterQuality:
-                  FilterQuality.low,
-            )
-          else
-            Center(
-              child: Column(
-                mainAxisAlignment:
-                    MainAxisAlignment
-                        .center,
-                children: [
-                  const CircularProgressIndicator(
+              Expanded(
+                child:
+                    Text(
+                  title,
+                  style:
+                      const TextStyle(
+                    fontSize: 20,
+                    fontWeight:
+                        FontWeight.w900,
                     color:
                         Color(
-                      0xFF2F6B3B,
+                      0xFF1E2A1F,
                     ),
                   ),
-                  const SizedBox(
-                    height: 14,
-                  ),
-                  Text(
-                    _streamConnecting
-                        ? 'Starting live stream...'
-                        : 'Waiting for live video...',
-                    style:
-                        const TextStyle(
-                      fontSize:
-                          16,
-                      fontWeight:
-                          FontWeight
-                              .w700,
-                      color:
-                          Colors.grey,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          if (_cameraSettings
-                  ?.flashEnabled ==
-              true)
-            Positioned(
-              top: 12,
-              left: 12,
-              child: Container(
-                padding:
-                    const EdgeInsets
-                        .symmetric(
-                  horizontal:
-                      10,
-                  vertical:
-                      7,
-                ),
-                decoration:
-                    BoxDecoration(
-                  color:
-                      Colors.amber,
-                  borderRadius:
-                      BorderRadius
-                          .circular(
-                    18,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize:
-                      MainAxisSize
-                          .min,
-                  children: [
-                    const Icon(
-                      Icons
-                          .flash_on_rounded,
-                      color:
-                          Colors.white,
-                      size: 18,
-                    ),
-                    const SizedBox(
-                      width: 5,
-                    ),
-                    Text(
-                      _cameraSettings!
-                          .flashLevel
-                          .toUpperCase(),
-                      style:
-                          const TextStyle(
-                        color:
-                            Colors
-                                .white,
-                        fontWeight:
-                            FontWeight
-                                .w900,
-                      ),
-                    ),
-                  ],
                 ),
               ),
-            ),
-
-          Positioned(
-            top: 12,
-            right: 12,
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 7,
-              ),
-              decoration:
-                  BoxDecoration(
-                color:
-                    const Color(
-                  0xFF2F6B3B,
-                ).withValues(
-                  alpha: 0.90,
-                ),
-                borderRadius:
-                    BorderRadius.circular(
-                  18,
-                ),
-              ),
-              child:
-                  const Text(
-                'LIVE',
-                style: TextStyle(
-                  color:
-                      Colors.white,
-                  fontWeight:
-                      FontWeight
-                          .w900,
-                ),
-              ),
-            ),
+            ],
           ),
-        ],
-      );
-    }
-
-    return Center(
-      child: Column(
-        mainAxisAlignment:
-            MainAxisAlignment.center,
-        children: [
-          if (_isSearching)
-            const SizedBox(
-              width: 42,
-              height: 42,
-              child:
-                  CircularProgressIndicator(
-                color:
-                    Color(
-                  0xFF2F6B3B,
-                ),
-              ),
-            )
-          else
-            const Icon(
-              Icons
-                  .camera_alt_rounded,
-              size: 80,
-              color:
-                  Colors.grey,
-            ),
 
           const SizedBox(
-            height: 18,
+            height: 12,
           ),
 
           Text(
-            _isSearching
-                ? 'Searching for camera...'
-                : 'Camera Offline',
+            message,
             style:
                 const TextStyle(
-              fontSize: 19,
-              fontWeight:
-                  FontWeight.w800,
-              color:
-                  Colors.grey,
+              fontSize: 15,
+              height: 1.5,
             ),
           ),
         ],
@@ -2965,57 +2298,62 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   // ============================================================
-  // GREEN GUARD PIPELINE CARD
+  // GREEN GUARD PIPELINE
   // ============================================================
 
   Widget _buildPipelineCard() {
     return Container(
-      width: double.infinity,
+      width:
+          double.infinity,
       padding:
           const EdgeInsets.all(
         18,
       ),
       decoration:
           BoxDecoration(
-        color: Colors.white,
+        color:
+            Colors.white,
         borderRadius:
             BorderRadius.circular(
           22,
         ),
       ),
-      child: Column(
+      child:
+          Column(
         crossAxisAlignment:
             CrossAxisAlignment.start,
         children: [
-         const Row(
-  crossAxisAlignment:
-      CrossAxisAlignment.start,
-  children: [
-    Icon(
-      Icons.auto_awesome_rounded,
-      color: Color(
-        0xFF2F6B3B,
-      ),
-    ),
+          const Row(
+            crossAxisAlignment:
+                CrossAxisAlignment
+                    .start,
+            children: [
+              Icon(
+                Icons
+                    .auto_awesome_rounded,
+                color:
+                    Color(
+                  0xFF2F6B3B,
+                ),
+              ),
 
-    SizedBox(
-      width: 8,
-    ),
+              SizedBox(
+                width: 8,
+              ),
 
-    Expanded(
-      child: Text(
-        'How GreenGuard Checks Your Photo',
-        softWrap: true,
-        style: TextStyle(
-          fontSize: 18,
-          fontWeight:
-              FontWeight.w900,
-          height: 1.2,
-        ),
-      ),
-    ),
-  ],
-),
+              Expanded(
+                child: Text(
+                  'How GreenGuard Checks Your Photo',
+                  style:
+                      TextStyle(
+                    fontSize: 18,
+                    fontWeight:
+                        FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
 
           const SizedBox(
             height: 14,
@@ -3071,7 +2409,8 @@ class _ScanScreenState extends State<ScanScreen> {
             spacing: 8,
             runSpacing: 8,
             children:
-                _subjectTypes.map(
+                _subjectTypes
+                    .map(
               (
                 Map<String, dynamic>
                     subject,
@@ -3128,69 +2467,382 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   // ============================================================
-  // PHOTO ACTIONS
+  // CURRENT SESSION STATUS
+  // ============================================================
+
+  Widget _buildSessionStatusCard() {
+    final int total =
+        _sessionScans.length;
+
+    return Container(
+      width:
+          double.infinity,
+      padding:
+          const EdgeInsets.all(
+        18,
+      ),
+      decoration:
+          BoxDecoration(
+        color:
+            const Color(
+          0xFFEAF4EB,
+        ),
+        borderRadius:
+            BorderRadius.circular(
+          20,
+        ),
+        border:
+            Border.all(
+          color:
+              const Color(
+            0xFFB7D9B9,
+          ),
+        ),
+      ),
+      child:
+          Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration:
+                BoxDecoration(
+              color:
+                  const Color(
+                0xFF2F6B3B,
+              ),
+              borderRadius:
+                  BorderRadius.circular(
+                14,
+              ),
+            ),
+            child:
+                const Icon(
+              Icons
+                  .inventory_2_rounded,
+              color:
+                  Colors.white,
+            ),
+          ),
+
+          const SizedBox(
+            width: 13,
+          ),
+
+          Expanded(
+            child:
+                Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment
+                      .start,
+              children: [
+                const Text(
+                  'Current Scan Session',
+                  style:
+                      TextStyle(
+                    fontSize: 16,
+                    fontWeight:
+                        FontWeight.w900,
+                    color:
+                        Color(
+                      0xFF1E2A1F,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 4,
+                ),
+
+                Text(
+                  total == 0
+                      ? 'No lettuce scanned yet.'
+                      : '$total lettuce ${total == 1 ? 'has' : 'have'} been scanned.',
+                  style:
+                      const TextStyle(
+                    fontSize: 14,
+                    fontWeight:
+                        FontWeight.w700,
+                    color:
+                        Color(
+                      0xFF68736A,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // PHOTO ACTION BUTTONS
   // ============================================================
 
   Widget _buildPhotoActions() {
-    if (_capturedImage == null) {
+    // ==========================================================
+    // SESSION ALREADY FINISHED
+    // ==========================================================
+
+    if (_sessionFinished) {
       return SizedBox(
-        width: double.infinity,
-        height: 68,
+        width:
+            double.infinity,
+        height: 64,
         child:
             ElevatedButton.icon(
           onPressed:
-              !_cameraConnected ||
-                      _isCapturing ||
-                      _isProcessing
-                  ? null
-                  : _takePhoto,
-          icon: _isCapturing
-              ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child:
-                      CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    color:
-                        Colors.white,
-                  ),
-                )
-              : const Icon(
-                  Icons
-                      .camera_alt_rounded,
-                  size: 28,
-                ),
-          label: Text(
-            _isCapturing
-                ? 'Capturing...'
-                : 'Take Photo',
+              _startNewSession,
+          icon:
+              const Icon(
+            Icons
+                .restart_alt_rounded,
+          ),
+          label:
+              const Text(
+            'Start New Scan Session',
             style:
-                const TextStyle(
-              fontSize: 19,
+                TextStyle(
               fontWeight:
                   FontWeight.w900,
             ),
           ),
           style:
-              ElevatedButton.styleFrom(
+              ElevatedButton
+                  .styleFrom(
             backgroundColor:
                 const Color(
-              0xFF5DBB63,
+              0xFF2F6B3B,
             ),
             foregroundColor:
                 Colors.white,
             shape:
                 RoundedRectangleBorder(
               borderRadius:
-                  BorderRadius
-                      .circular(
-                22,
+                  BorderRadius.circular(
+                20,
               ),
             ),
           ),
         ),
       );
     }
+
+    // ==========================================================
+    // CURRENT LETTUCE IS SAVED
+    // ==========================================================
+
+    if (_scanCompleted) {
+      return Row(
+        children: [
+          Expanded(
+            child:
+                ElevatedButton.icon(
+              onPressed:
+                  _scanNextLettuce,
+              icon:
+                  const Icon(
+                Icons
+                    .add_a_photo_rounded,
+              ),
+              label:
+                  const Text(
+                'Scan Next Lettuce',
+                textAlign:
+                    TextAlign.center,
+                style:
+                    TextStyle(
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+              style:
+                  ElevatedButton
+                      .styleFrom(
+                minimumSize:
+                    const Size(
+                  0,
+                  64,
+                ),
+                backgroundColor:
+                    const Color(
+                  0xFF5DBB63,
+                ),
+                foregroundColor:
+                    Colors.white,
+                shape:
+                    RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.circular(
+                    20,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            width: 12,
+          ),
+
+          Expanded(
+            child:
+                ElevatedButton.icon(
+              onPressed:
+                  _finishScanning,
+              icon:
+                  const Icon(
+                Icons
+                    .assessment_rounded,
+              ),
+              label:
+                  const Text(
+                'Done Scanning',
+                textAlign:
+                    TextAlign.center,
+                style:
+                    TextStyle(
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+              style:
+                  ElevatedButton
+                      .styleFrom(
+                minimumSize:
+                    const Size(
+                  0,
+                  64,
+                ),
+                backgroundColor:
+                    const Color(
+                  0xFF1E2A1F,
+                ),
+                foregroundColor:
+                    Colors.white,
+                shape:
+                    RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.circular(
+                    20,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // ==========================================================
+    // NO PHOTO YET
+    // ==========================================================
+
+    if (_capturedImage == null) {
+      return Column(
+        children: [
+          SizedBox(
+            width:
+                double.infinity,
+            height: 68,
+            child:
+                ElevatedButton.icon(
+              onPressed:
+                  !_cameraConnected ||
+                          _isCapturing ||
+                          _isProcessing
+                      ? null
+                      : _takePhoto,
+              icon:
+                  _isCapturing
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child:
+                              CircularProgressIndicator(
+                            strokeWidth:
+                                2.5,
+                            color:
+                                Colors.white,
+                          ),
+                        )
+                      : const Icon(
+                          Icons
+                              .camera_alt_rounded,
+                          size: 28,
+                        ),
+              label:
+                  Text(
+                _isCapturing
+                    ? 'Capturing...'
+                    : 'Take Photo',
+                style:
+                    const TextStyle(
+                  fontSize: 19,
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+              style:
+                  ElevatedButton
+                      .styleFrom(
+                backgroundColor:
+                    const Color(
+                  0xFF5DBB63,
+                ),
+                foregroundColor:
+                    Colors.white,
+                shape:
+                    RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.circular(
+                    22,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          if (_sessionScans
+              .isNotEmpty) ...[
+            const SizedBox(
+              height: 12,
+            ),
+
+            SizedBox(
+              width:
+                  double.infinity,
+              height: 58,
+              child:
+                  OutlinedButton.icon(
+                onPressed:
+                    _finishScanning,
+                icon:
+                    const Icon(
+                  Icons
+                      .assessment_rounded,
+                ),
+                label:
+                    const Text(
+                  'Done Scanning',
+                  style:
+                      TextStyle(
+                    fontWeight:
+                        FontWeight.w900,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
+
+    // ==========================================================
+    // PHOTO CAPTURED
+    // ==========================================================
 
     return Row(
       children: [
@@ -3201,17 +2853,17 @@ class _ScanScreenState extends State<ScanScreen> {
                 _isProcessing
                     ? null
                     : _retakePhoto,
-            icon: const Icon(
-              Icons
-                  .refresh_rounded,
+            icon:
+                const Icon(
+              Icons.refresh_rounded,
             ),
             label:
                 const Text(
               'Retake',
-              style: TextStyle(
+              style:
+                  TextStyle(
                 fontWeight:
-                    FontWeight
-                        .w900,
+                    FontWeight.w900,
               ),
             ),
             style:
@@ -3225,47 +2877,45 @@ class _ScanScreenState extends State<ScanScreen> {
             ),
           ),
         ),
+
         const SizedBox(
           width: 12,
         ),
+
         Expanded(
           child:
               ElevatedButton.icon(
             onPressed:
                 _isProcessing ||
-                        _scanSaved
+                        _scanCompleted
                     ? null
                     : _usePhoto,
-            icon: _isProcessing
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child:
-                        CircularProgressIndicator(
-                      strokeWidth:
-                          2.5,
-                      color:
-                          Colors.white,
-                    ),
-                  )
-                : Icon(
-                    _scanSaved
-                        ? Icons
-                            .cloud_done_rounded
-                        : Icons
+            icon:
+                _isProcessing
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child:
+                            CircularProgressIndicator(
+                          strokeWidth:
+                              2.5,
+                          color:
+                              Colors.white,
+                        ),
+                      )
+                    : const Icon(
+                        Icons
                             .check_circle_rounded,
-                  ),
-            label: Text(
+                      ),
+            label:
+                Text(
               _isProcessing
                   ? 'Analyzing...'
-                  : _scanSaved
-                      ? 'Saved'
-                      : 'Use Photo',
+                  : 'Use Photo',
               style:
                   const TextStyle(
                 fontWeight:
-                    FontWeight
-                        .w900,
+                    FontWeight.w900,
               ),
             ),
             style:
@@ -3290,7 +2940,7 @@ class _ScanScreenState extends State<ScanScreen> {
   }
 
   // ============================================================
-  // SCREEN
+  // MAIN SCREEN
   // ============================================================
 
   @override
@@ -3299,22 +2949,29 @@ class _ScanScreenState extends State<ScanScreen> {
   ) {
     final bool soilConnected =
         !_soilLoading &&
-        _sensorData['connected'] == true;
+        _sensorData['connected'] ==
+            true;
 
     final String soilValue =
         _soilLoading
             ? 'Loading...'
-            : (_sensorData['soil_value']
-                    ?.toString() ??
-                '--%');
+            : (
+                  _sensorData[
+                          'soil_value'] ??
+                      '--%'
+                )
+                .toString();
 
     final String soilStatus =
         _soilLoading
             ? 'CONNECTING'
-            : (_sensorData['soil_status']
-                    ?.toString()
-                    .toUpperCase() ??
-                'OFFLINE');
+            : (
+                  _sensorData[
+                          'soil_status'] ??
+                      'OFFLINE'
+                )
+                .toString()
+                .toUpperCase();
 
     final String soilConnection =
         _soilLoading
@@ -3338,6 +2995,7 @@ class _ScanScreenState extends State<ScanScreen> {
           const Color(
         0xFFF6FBF7,
       ),
+
       appBar: AppBar(
         backgroundColor:
             const Color(
@@ -3352,9 +3010,11 @@ class _ScanScreenState extends State<ScanScreen> {
             0xFF1E2A1F,
           ),
         ),
-        title: const Text(
+        title:
+            const Text(
           'Lettuce Health Scan',
-          style: TextStyle(
+          style:
+              TextStyle(
             fontWeight:
                 FontWeight.w900,
             fontSize: 21,
@@ -3372,8 +3032,13 @@ class _ScanScreenState extends State<ScanScreen> {
             const EdgeInsets.all(
           22,
         ),
-        child: Column(
+        child:
+            Column(
           children: [
+            // ==================================================
+            // CAMERA
+            // ==================================================
+
             Container(
               height: 320,
               width:
@@ -3385,8 +3050,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 color:
                     Colors.white,
                 borderRadius:
-                    BorderRadius
-                        .circular(
+                    BorderRadius.circular(
                   28,
                 ),
                 border:
@@ -3406,6 +3070,10 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 18,
             ),
 
+            // ==================================================
+            // CAMERA STATUS
+            // ==================================================
+
             Container(
               width:
                   double.infinity,
@@ -3418,12 +3086,12 @@ class _ScanScreenState extends State<ScanScreen> {
                 color:
                     Colors.white,
                 borderRadius:
-                    BorderRadius
-                        .circular(
+                    BorderRadius.circular(
                   22,
                 ),
               ),
-              child: Column(
+              child:
+                  Column(
                 crossAxisAlignment:
                     CrossAxisAlignment
                         .start,
@@ -3438,10 +3106,8 @@ class _ScanScreenState extends State<ScanScreen> {
                                 .wifi_tethering,
                         color:
                             _cameraConnected
-                                ? Colors
-                                    .green
-                                : Colors
-                                    .orange,
+                                ? Colors.green
+                                : Colors.orange,
                       ),
 
                       const SizedBox(
@@ -3449,36 +3115,19 @@ class _ScanScreenState extends State<ScanScreen> {
                       ),
 
                       Expanded(
-                        child: Text(
+                        child:
+                            Text(
                           _cameraConnected
                               ? 'Camera Connected'
                               : 'ESP32-CAM Setup',
                           style:
                               const TextStyle(
-                            fontSize:
-                                18,
+                            fontSize: 18,
                             fontWeight:
-                                FontWeight
-                                    .w900,
+                                FontWeight.w900,
                           ),
                         ),
                       ),
-
-                      if (_cameraSettings !=
-                          null)
-                        Text(
-                          '${_cameraSettings!.xclkMHz} MHz',
-                          style:
-                              const TextStyle(
-                            color:
-                                Color(
-                              0xFF2F6B3B,
-                            ),
-                            fontWeight:
-                                FontWeight
-                                    .w900,
-                          ),
-                        ),
                     ],
                   ),
 
@@ -3499,6 +3148,7 @@ class _ScanScreenState extends State<ScanScreen> {
                     const SizedBox(
                       height: 14,
                     ),
+
                     const Text(
                       '1. Turn ON your phone hotspot\n'
                       '2. Open GreenGuard\n'
@@ -3506,10 +3156,8 @@ class _ScanScreenState extends State<ScanScreen> {
                       '4. Wait for automatic connection',
                       style:
                           TextStyle(
-                        fontSize:
-                            14,
-                        height:
-                            1.6,
+                        fontSize: 14,
+                        height: 1.6,
                       ),
                     ),
                   ],
@@ -3530,7 +3178,8 @@ class _ScanScreenState extends State<ScanScreen> {
                         Icons
                             .refresh_rounded,
                       ),
-                      label: Text(
+                      label:
+                          Text(
                         _cameraConnected
                             ? 'Reconnect'
                             : 'Search Again',
@@ -3541,23 +3190,36 @@ class _ScanScreenState extends State<ScanScreen> {
               ),
             ),
 
-            if (_cameraConnected) ...[
-              const SizedBox(
-                height: 16,
-              ),
-              _buildCameraSettingsCard(),
-            ],
-
             const SizedBox(
               height: 20,
             ),
 
+            // ==================================================
+            // SESSION COUNT
+            // ==================================================
+
+            _buildSessionStatusCard(),
+
+            const SizedBox(
+              height: 16,
+            ),
+
+            // ==================================================
+            // PHOTO BUTTONS
+            // ==================================================
+
             _buildPhotoActions(),
 
-            if (_scanResponse != null) ...[
+            // ==================================================
+            // AI RESULT
+            // ==================================================
+
+            if (_scanResponse !=
+                null) ...[
               const SizedBox(
                 height: 22,
               ),
+
               _buildScanResultCard(),
             ],
 
@@ -3565,15 +3227,24 @@ class _ScanScreenState extends State<ScanScreen> {
               height: 22,
             ),
 
+            // ==================================================
+            // AI INFORMATION
+            // ==================================================
+
             _buildPipelineCard(),
 
             const SizedBox(
               height: 38,
             ),
 
+            // ==================================================
+            // FARM STATUS
+            // ==================================================
+
             const Text(
               'Farm Status',
-              style: TextStyle(
+              style:
+                  TextStyle(
                 fontSize: 24,
                 fontWeight:
                     FontWeight.w900,
@@ -3600,8 +3271,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 color:
                     Colors.white,
                 borderRadius:
-                    BorderRadius
-                        .circular(
+                    BorderRadius.circular(
                   24,
                 ),
               ),
@@ -3617,8 +3287,7 @@ class _ScanScreenState extends State<ScanScreen> {
                         TextStyle(
                       fontSize: 22,
                       fontWeight:
-                          FontWeight
-                              .w900,
+                          FontWeight.w900,
                       color:
                           Color(
                         0xFF2F6B3B,
@@ -3657,14 +3326,14 @@ class _ScanScreenState extends State<ScanScreen> {
                       ),
 
                       Expanded(
-                        child: Text(
+                        child:
+                            Text(
                           'Soil Sensor: $soilConnection',
                           style:
                               TextStyle(
                             fontSize: 17,
                             fontWeight:
-                                FontWeight
-                                    .w900,
+                                FontWeight.w900,
                             color:
                                 soilConnected
                                     ? const Color(
@@ -3687,8 +3356,7 @@ class _ScanScreenState extends State<ScanScreen> {
                         TextStyle(
                       fontSize: 18,
                       fontWeight:
-                          FontWeight
-                              .bold,
+                          FontWeight.bold,
                     ),
                   ),
 
@@ -3702,8 +3370,7 @@ class _ScanScreenState extends State<ScanScreen> {
                         const TextStyle(
                       fontSize: 18,
                       fontWeight:
-                          FontWeight
-                              .bold,
+                          FontWeight.bold,
                     ),
                   ),
 
@@ -3719,8 +3386,7 @@ class _ScanScreenState extends State<ScanScreen> {
                             TextStyle(
                           fontSize: 18,
                           fontWeight:
-                              FontWeight
-                                  .bold,
+                              FontWeight.bold,
                         ),
                       ),
 
@@ -3730,8 +3396,7 @@ class _ScanScreenState extends State<ScanScreen> {
                             TextStyle(
                           fontSize: 18,
                           fontWeight:
-                              FontWeight
-                                  .w900,
+                              FontWeight.w900,
                           color:
                               soilColor,
                         ),
@@ -3753,7 +3418,8 @@ class _ScanScreenState extends State<ScanScreen> {
                     decoration:
                         BoxDecoration(
                       color:
-                          soilColor.withValues(
+                          soilColor
+                              .withValues(
                         alpha: 0.08,
                       ),
                       borderRadius:
@@ -3763,7 +3429,8 @@ class _ScanScreenState extends State<ScanScreen> {
                       border:
                           Border.all(
                         color:
-                            soilColor.withValues(
+                            soilColor
+                                .withValues(
                           alpha: 0.20,
                         ),
                       ),
@@ -3780,8 +3447,7 @@ class _ScanScreenState extends State<ScanScreen> {
                               TextStyle(
                             fontSize: 15,
                             fontWeight:
-                                FontWeight
-                                    .w900,
+                                FontWeight.w900,
                             color:
                                 Color(
                               0xFF1E2A1F,
@@ -3800,8 +3466,7 @@ class _ScanScreenState extends State<ScanScreen> {
                             fontSize: 15,
                             height: 1.5,
                             fontWeight:
-                                FontWeight
-                                    .w600,
+                                FontWeight.w600,
                           ),
                         ),
                       ],
@@ -3814,6 +3479,10 @@ class _ScanScreenState extends State<ScanScreen> {
             const SizedBox(
               height: 16,
             ),
+
+            // ==================================================
+            // HEALTH LOGS
+            // ==================================================
 
             SizedBox(
               width:
@@ -3830,13 +3499,18 @@ class _ScanScreenState extends State<ScanScreen> {
                     ),
                   );
                 },
-                icon: const Icon(
-                  Icons
-                      .history_rounded,
+                icon:
+                    const Icon(
+                  Icons.history_rounded,
                 ),
                 label:
                     const Text(
                   'View All Health Logs',
+                  style:
+                      TextStyle(
+                    fontWeight:
+                        FontWeight.w900,
+                  ),
                 ),
                 style:
                     ElevatedButton
@@ -3847,12 +3521,1439 @@ class _ScanScreenState extends State<ScanScreen> {
                   ),
                   foregroundColor:
                       Colors.white,
+                  shape:
+                      RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.circular(
+                      20,
+                    ),
+                  ),
                 ),
               ),
+            ),
+
+            const SizedBox(
+              height: 20,
             ),
           ],
         ),
       ),
+    );
+  }
+}
+
+// ============================================================
+// FINAL SCAN SESSION REPORT SCREEN
+// ============================================================
+
+
+  class ScanSessionReportScreen
+    extends StatelessWidget {
+  const ScanSessionReportScreen({
+    super.key,
+    required this.scans,
+    required this.startedAt,
+    required this.completedAt,
+  });
+
+  final List<Map<String, dynamic>> scans;
+  final DateTime startedAt;
+  final DateTime completedAt;
+
+  // ============================================================
+  // NORMALIZE
+  // ============================================================
+
+  String _normalize(
+    String value,
+  ) {
+    return value
+        .toLowerCase()
+        .replaceAll('_', ' ')
+        .trim();
+  }
+
+  String _diseaseName(
+    Map<String, dynamic> scan,
+  ) {
+    return (scan['disease_name'] ?? 'Unknown')
+        .toString()
+        .replaceAll('_', ' ')
+        .trim();
+  }
+
+  // ============================================================
+  // CONFIDENCE
+  // ============================================================
+
+  double _confidence(
+    Map<String, dynamic> scan,
+  ) {
+    final dynamic raw =
+        scan['confidence'];
+
+    final double value =
+        raw is num
+            ? raw.toDouble()
+            : double.tryParse(
+                  raw?.toString() ?? '',
+                ) ??
+                0.0;
+
+    return value > 1.0
+        ? value / 100.0
+        : value;
+  }
+
+  // ============================================================
+  // DISEASE MATCH
+  // ============================================================
+
+  bool _matches(
+    Map<String, dynamic> scan,
+    String disease,
+  ) {
+    final String current =
+        _normalize(
+      _diseaseName(scan),
+    );
+
+    final String target =
+        _normalize(disease);
+
+    if (target == 'septoria blight') {
+      return current == 'septoria blight' ||
+          current == 'septoria leaf spot';
+    }
+
+    return current == target;
+  }
+
+  int _count(
+    String disease,
+  ) {
+    return scans
+        .where(
+          (scan) => _matches(
+            scan,
+            disease,
+          ),
+        )
+        .length;
+  }
+
+  // ============================================================
+  // AVERAGE CONFIDENCE
+  // ============================================================
+
+  double _averageConfidence(
+    String disease,
+  ) {
+    final List<Map<String, dynamic>>
+        matching =
+        scans
+            .where(
+              (scan) => _matches(
+                scan,
+                disease,
+              ),
+            )
+            .toList();
+
+    if (matching.isEmpty) {
+      return 0.0;
+    }
+
+    double total = 0.0;
+
+    for (final scan in matching) {
+      total += _confidence(scan);
+    }
+
+    return total / matching.length;
+  }
+
+  double _percent(
+    int count,
+  ) {
+    if (scans.isEmpty) {
+      return 0.0;
+    }
+
+    return count / scans.length * 100;
+  }
+
+  // ============================================================
+  // PATHOGEN NAME
+  // ============================================================
+
+  String _pathogen(
+    String disease,
+  ) {
+    switch (disease) {
+      case 'Healthy':
+        return 'None detected';
+
+      case 'Downy Mildew':
+        return 'Bremia lactucae';
+
+      case 'Powdery Mildew':
+        return 'Erysiphe cichoracearum';
+
+      case 'Septoria Blight':
+        return 'Septoria lactucae';
+
+      default:
+        return 'Not available';
+    }
+  }
+
+  // ============================================================
+  // SIMPLE DISEASE DESCRIPTION
+  // ============================================================
+
+  String _description(
+    String disease,
+  ) {
+    switch (disease) {
+      case 'Healthy':
+        return 'No visible signs of the supported diseases were found. '
+            'The lettuce looks healthy based on this GreenGuard scan.';
+
+      case 'Downy Mildew':
+        return 'This disease can cause yellow or pale spots on the leaves '
+            'and mold-like growth underneath.';
+
+      case 'Powdery Mildew':
+        return 'This disease usually looks like white powder on the leaves '
+            'and can spread across the plant.';
+
+      case 'Septoria Blight':
+        return 'This disease causes small brown or dark spots that may grow '
+            'and damage the lettuce leaves.';
+
+      default:
+        return 'GreenGuard completed the lettuce health scan.';
+    }
+  }
+
+  // ============================================================
+  // WHAT IS THE PATHOGEN?
+  // ============================================================
+
+  String _pathogenDescription(
+    String disease,
+  ) {
+    switch (disease) {
+      case 'Healthy':
+        return 'No supported disease-causing pathogen was detected '
+            'in this lettuce image.';
+
+      case 'Downy Mildew':
+        return 'Bremia lactucae is a disease-causing microorganism '
+            'that infects lettuce leaves. It grows well in cool, '
+            'wet, and humid conditions.';
+
+      case 'Powdery Mildew':
+        return 'Erysiphe cichoracearum is a fungus that grows on '
+            'plant surfaces and can appear like white powder '
+            'on the leaves.';
+
+      case 'Septoria Blight':
+        return 'Septoria lactucae is a fungus that infects lettuce '
+            'leaves and causes brown or dark leaf spots.';
+
+      default:
+        return 'No pathogen information is available.';
+    }
+  }
+
+  // ============================================================
+  // COLOR
+  // ============================================================
+
+  Color _diseaseColor(
+    String disease,
+  ) {
+    switch (disease) {
+      case 'Healthy':
+        return const Color(
+          0xFF5DBB63,
+        );
+
+      case 'Downy Mildew':
+        return Colors.redAccent;
+
+      case 'Powdery Mildew':
+        return Colors.orange;
+
+      case 'Septoria Blight':
+        return Colors.deepOrange;
+
+      default:
+        return Colors.grey;
+    }
+  }
+
+  // ============================================================
+  // SELLABLE
+  // ============================================================
+
+  bool _isHealthy(
+    String disease,
+  ) {
+    return _normalize(disease) ==
+        'healthy';
+  }
+
+  // ============================================================
+  // DATE
+  // ============================================================
+
+  String _formatDateTime(
+    DateTime value,
+  ) {
+    final DateTime local =
+        value.toLocal();
+
+    final String hour =
+        local.hour
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    final String minute =
+        local.minute
+            .toString()
+            .padLeft(
+              2,
+              '0',
+            );
+
+    return '${local.month}/${local.day}/${local.year} '
+        '$hour:$minute';
+  }
+
+  // ============================================================
+  // FINAL REPORT
+  // ============================================================
+
+  @override
+  Widget build(
+    BuildContext context,
+  ) {
+    final int total =
+        scans.length;
+
+    final int healthy =
+        _count('Healthy');
+
+    final int downy =
+        _count('Downy Mildew');
+
+    final int powdery =
+        _count('Powdery Mildew');
+
+    final int septoria =
+        _count('Septoria Blight');
+
+    final int notHealthy =
+        downy +
+        powdery +
+        septoria;
+
+    return Scaffold(
+      backgroundColor:
+          const Color(
+        0xFFF6FBF7,
+      ),
+
+      appBar: AppBar(
+        backgroundColor:
+            const Color(
+          0xFFF6FBF7,
+        ),
+        elevation: 0,
+        centerTitle: true,
+        iconTheme:
+            const IconThemeData(
+          color:
+              Color(
+            0xFF1E2A1F,
+          ),
+        ),
+        title:
+            const Text(
+          'Final Scan Report',
+          style:
+              TextStyle(
+            fontSize: 21,
+            fontWeight:
+                FontWeight.w900,
+            color:
+                Color(
+              0xFF1E2A1F,
+            ),
+          ),
+        ),
+      ),
+
+      body: ListView(
+        padding:
+            const EdgeInsets.all(
+          20,
+        ),
+        children: [
+          // ====================================================
+          // HEADER
+          // ====================================================
+
+          Container(
+            width:
+                double.infinity,
+            padding:
+                const EdgeInsets.all(
+              24,
+            ),
+            decoration:
+                BoxDecoration(
+              gradient:
+                  const LinearGradient(
+                begin:
+                    Alignment.topLeft,
+                end:
+                    Alignment.bottomRight,
+                colors: [
+                  Color(
+                    0xFF1E2A1F,
+                  ),
+                  Color(
+                    0xFF2F6B3B,
+                  ),
+                ],
+              ),
+              borderRadius:
+                  BorderRadius.circular(
+                28,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.assessment_rounded,
+                  size: 42,
+                  color: Colors.white,
+                ),
+
+                const SizedBox(
+                  height: 14,
+                ),
+
+                const Text(
+                  'Lettuce Scan Summary',
+                  style:
+                      TextStyle(
+                    fontSize: 25,
+                    fontWeight:
+                        FontWeight.w900,
+                    color: Colors.white,
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 8,
+                ),
+
+                Text(
+                  'Started: ${_formatDateTime(startedAt)}\n'
+                  'Completed: ${_formatDateTime(completedAt)}',
+                  style:
+                      const TextStyle(
+                    fontSize: 14,
+                    height: 1.5,
+                    fontWeight:
+                        FontWeight.w600,
+                    color:
+                        Color(
+                      0xFFDDE9DF,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(
+            height: 20,
+          ),
+
+          // ====================================================
+          // TOTAL
+          // ====================================================
+
+          _summaryCard(
+            title:
+                'Total Lettuce Scanned',
+            value:
+                '$total',
+            subtitle:
+                '100% of this scan session',
+            icon:
+                Icons.inventory_2_rounded,
+            color:
+                const Color(
+              0xFF2F6B3B,
+            ),
+          ),
+
+          const SizedBox(
+            height: 12,
+          ),
+
+          Row(
+            children: [
+              Expanded(
+                child:
+                    _summaryCard(
+                  title:
+                      'Healthy / Sellable',
+                  value:
+                      '$healthy',
+                  subtitle:
+                      '${_percent(healthy).toStringAsFixed(1)}%',
+                  icon:
+                      Icons
+                          .check_circle_rounded,
+                  color:
+                      const Color(
+                    0xFF5DBB63,
+                  ),
+                ),
+              ),
+
+              const SizedBox(
+                width: 12,
+              ),
+
+              Expanded(
+                child:
+                    _summaryCard(
+                  title:
+                      'Not Healthy',
+                  value:
+                      '$notHealthy',
+                  subtitle:
+                      '${_percent(notHealthy).toStringAsFixed(1)}%',
+                  icon:
+                      Icons
+                          .warning_amber_rounded,
+                  color:
+                      Colors.redAccent,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 28,
+          ),
+
+          // ====================================================
+          // HEALTH BREAKDOWN
+          // ====================================================
+
+          const Text(
+            'Health Breakdown',
+            style:
+                TextStyle(
+              fontSize: 23,
+              fontWeight:
+                  FontWeight.w900,
+              color:
+                  Color(
+                0xFF1E2A1F,
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 6,
+          ),
+
+          const Text(
+            'GreenGuard counted every successfully saved lettuce scan.',
+            style:
+                TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+              fontWeight:
+                  FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          _diseaseCard(
+            name: 'Healthy',
+            count: healthy,
+          ),
+
+          _diseaseCard(
+            name: 'Downy Mildew',
+            count: downy,
+          ),
+
+          _diseaseCard(
+            name: 'Powdery Mildew',
+            count: powdery,
+          ),
+
+          _diseaseCard(
+            name: 'Septoria Blight',
+            count: septoria,
+          ),
+
+          const SizedBox(
+            height: 20,
+          ),
+
+          // ====================================================
+          // INDIVIDUAL CAPTURED LETTUCE
+          // ====================================================
+
+          const Text(
+            'Captured Lettuce',
+            style:
+                TextStyle(
+              fontSize: 22,
+              fontWeight:
+                  FontWeight.w900,
+              color:
+                  Color(
+                0xFF1E2A1F,
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 6,
+          ),
+
+          Text(
+            '$total saved ${total == 1 ? 'capture' : 'captures'} in this report.',
+            style:
+                const TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+              fontWeight:
+                  FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(
+            height: 14,
+          ),
+
+          ...scans.asMap().entries.map(
+            (entry) {
+              final int index =
+                  entry.key;
+
+              final Map<String, dynamic>
+                  scan =
+                  entry.value;
+
+              return _lettuceScanCard(
+                scan:
+                    scan,
+                number:
+                    index + 1,
+              );
+            },
+          ),
+
+          const SizedBox(
+            height: 12,
+          ),
+
+          // ====================================================
+          // IMPORTANT NOTE
+          // ====================================================
+
+          Container(
+            padding:
+                const EdgeInsets.all(
+              17,
+            ),
+            decoration:
+                BoxDecoration(
+              color:
+                  const Color(
+                0xFFEAF4EB,
+              ),
+              borderRadius:
+                  BorderRadius.circular(
+                18,
+              ),
+            ),
+            child:
+                const Text(
+              'Healthy / Sellable is an estimate based only on the '
+              'lettuce diseases supported by GreenGuard. Other plant '
+              'quality problems may still require visual inspection.',
+              style:
+                  TextStyle(
+                fontSize: 14,
+                height: 1.5,
+                fontWeight:
+                    FontWeight.w700,
+                color:
+                    Color(
+                  0xFF2F6B3B,
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 24,
+          ),
+
+          // ====================================================
+          // NEW SESSION
+          // ====================================================
+
+          SizedBox(
+            height: 64,
+            child:
+                ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(
+                  context,
+                  true,
+                );
+              },
+              icon:
+                  const Icon(
+                Icons.restart_alt_rounded,
+              ),
+              label:
+                  const Text(
+                'Start New Scan Session',
+                style:
+                    TextStyle(
+                  fontSize: 17,
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+              style:
+                  ElevatedButton
+                      .styleFrom(
+                backgroundColor:
+                    const Color(
+                  0xFF2F6B3B,
+                ),
+                foregroundColor:
+                    Colors.white,
+                shape:
+                    RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.circular(
+                    20,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 12,
+          ),
+
+          // ====================================================
+          // CANCEL / CLOSE REPORT
+          // ====================================================
+
+          SizedBox(
+            height: 58,
+            child:
+                OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(
+                  context,
+                  false,
+                );
+              },
+              icon:
+                  const Icon(
+                Icons.close_rounded,
+              ),
+              label:
+                  const Text(
+                'Cancel / Close Report',
+                style:
+                    TextStyle(
+                  fontWeight:
+                      FontWeight.w900,
+                ),
+              ),
+              style:
+                  OutlinedButton.styleFrom(
+                foregroundColor:
+                    const Color(
+                  0xFF1E2A1F,
+                ),
+                side:
+                    const BorderSide(
+                  color:
+                      Color(
+                    0xFF1E2A1F,
+                  ),
+                ),
+                shape:
+                    RoundedRectangleBorder(
+                  borderRadius:
+                      BorderRadius.circular(
+                    18,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 20,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // SUMMARY CARD
+  // ============================================================
+
+  Widget _summaryCard({
+    required String title,
+    required String value,
+    required String subtitle,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Container(
+      constraints:
+          const BoxConstraints(
+        minHeight: 150,
+      ),
+      padding:
+          const EdgeInsets.all(
+        18,
+      ),
+      decoration:
+          BoxDecoration(
+        color: Colors.white,
+        borderRadius:
+            BorderRadius.circular(
+          22,
+        ),
+        border:
+            Border.all(
+          color:
+              color.withValues(
+            alpha: 0.18,
+          ),
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment:
+            MainAxisAlignment.center,
+        children: [
+          Icon(
+            icon,
+            size: 31,
+            color: color,
+          ),
+
+          const SizedBox(
+            height: 9,
+          ),
+
+          Text(
+            value,
+            textAlign:
+                TextAlign.center,
+            style:
+                const TextStyle(
+              fontSize: 28,
+              fontWeight:
+                  FontWeight.w900,
+              color:
+                  Color(
+                0xFF1E2A1F,
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 4,
+          ),
+
+          Text(
+            title,
+            textAlign:
+                TextAlign.center,
+            style:
+                const TextStyle(
+              fontSize: 13,
+              fontWeight:
+                  FontWeight.w800,
+              color:
+                  Color(
+                0xFF68736A,
+              ),
+            ),
+          ),
+
+          const SizedBox(
+            height: 4,
+          ),
+
+          Text(
+            subtitle,
+            textAlign:
+                TextAlign.center,
+            style:
+                TextStyle(
+              fontSize: 13,
+              fontWeight:
+                  FontWeight.w900,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // DISEASE CARD
+  // ============================================================
+
+  Widget _diseaseCard({
+    required String name,
+    required int count,
+  }) {
+    final Color color =
+        _diseaseColor(
+      name,
+    );
+
+    final double average =
+        _averageConfidence(
+      name,
+    );
+
+    return Container(
+      width:
+          double.infinity,
+      margin:
+          const EdgeInsets.only(
+        bottom: 14,
+      ),
+      padding:
+          const EdgeInsets.all(
+        20,
+      ),
+      decoration:
+          BoxDecoration(
+        color: Colors.white,
+        borderRadius:
+            BorderRadius.circular(
+          23,
+        ),
+        border:
+            Border.all(
+          color:
+              color.withValues(
+            alpha: 0.18,
+          ),
+        ),
+      ),
+      child:
+          Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      color.withValues(
+                    alpha: 0.10,
+                  ),
+                  borderRadius:
+                      BorderRadius.circular(
+                    15,
+                  ),
+                ),
+                child:
+                    Icon(
+                  name == 'Healthy'
+                      ? Icons
+                          .verified_rounded
+                      : Icons
+                          .warning_amber_rounded,
+                  color: color,
+                ),
+              ),
+
+              const SizedBox(
+                width: 13,
+              ),
+
+              Expanded(
+                child: Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style:
+                          const TextStyle(
+                        fontSize: 19,
+                        fontWeight:
+                            FontWeight.w900,
+                        color:
+                            Color(
+                          0xFF1E2A1F,
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(
+                      height: 3,
+                    ),
+
+                    Text(
+                      name == 'Healthy'
+                          ? 'Pathogen: None detected'
+                          : 'Pathogen: ${_pathogen(name)}',
+                      style:
+                          const TextStyle(
+                        fontSize: 13,
+                        fontStyle:
+                            FontStyle.italic,
+                        color:
+                            Colors.grey,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          Row(
+            children: [
+              Expanded(
+                child:
+                    _metric(
+                  'Count',
+                  '$count',
+                ),
+              ),
+
+              Expanded(
+                child:
+                    _metric(
+                  'Percentage',
+                  '${_percent(count).toStringAsFixed(1)}%',
+                ),
+              ),
+
+              Expanded(
+                child:
+                    _metric(
+                  'Avg. Confidence',
+                  count == 0
+                      ? 'N/A'
+                      : '${(average * 100).toStringAsFixed(1)}%',
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(
+            height: 16,
+          ),
+
+          // ====================================================
+          // WHAT DOES THIS MEAN?
+          // ====================================================
+
+          Container(
+            width:
+                double.infinity,
+            padding:
+                const EdgeInsets.all(
+              14,
+            ),
+            decoration:
+                BoxDecoration(
+              color:
+                  color.withValues(
+                alpha: 0.06,
+              ),
+              borderRadius:
+                  BorderRadius.circular(
+                14,
+              ),
+            ),
+            child:
+                Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'What does this mean?',
+                  style:
+                      TextStyle(
+                    fontSize: 15,
+                    fontWeight:
+                        FontWeight.w900,
+                    color:
+                        Color(
+                      0xFF1E2A1F,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 6,
+                ),
+
+                Text(
+                  _description(
+                    name,
+                  ),
+                  style:
+                      const TextStyle(
+                    fontSize: 15,
+                    height: 1.5,
+                    fontWeight:
+                        FontWeight.w600,
+                    color:
+                        Color(
+                      0xFF68736A,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 14,
+                ),
+
+                const Text(
+                  'What is this pathogen?',
+                  style:
+                      TextStyle(
+                    fontSize: 15,
+                    fontWeight:
+                        FontWeight.w900,
+                    color:
+                        Color(
+                      0xFF1E2A1F,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 6,
+                ),
+
+                Text(
+                  _pathogenDescription(
+                    name,
+                  ),
+                  style:
+                      const TextStyle(
+                    fontSize: 15,
+                    height: 1.5,
+                    fontWeight:
+                        FontWeight.w600,
+                    color:
+                        Color(
+                      0xFF68736A,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // INDIVIDUAL LETTUCE CARD
+  // ============================================================
+
+  Widget _lettuceScanCard({
+    required Map<String, dynamic> scan,
+    required int number,
+  }) {
+    final String disease =
+        _diseaseName(
+      scan,
+    );
+
+    final double confidence =
+        _confidence(
+      scan,
+    );
+
+    final bool healthy =
+        _isHealthy(
+      disease,
+    );
+
+    final Color color =
+        healthy
+            ? const Color(
+                0xFF5DBB63,
+              )
+            : _diseaseColor(
+                disease,
+              );
+
+    final dynamic rawImage =
+        scan['image_bytes'];
+
+    final Uint8List? image =
+        rawImage is Uint8List
+            ? rawImage
+            : null;
+
+    return Container(
+      width:
+          double.infinity,
+      margin:
+          const EdgeInsets.only(
+        bottom: 12,
+      ),
+      padding:
+          const EdgeInsets.all(
+        14,
+      ),
+      decoration:
+          BoxDecoration(
+        color: Colors.white,
+        borderRadius:
+            BorderRadius.circular(
+          20,
+        ),
+        border:
+            Border.all(
+          color:
+              color.withValues(
+            alpha: 0.20,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius:
+                BorderRadius.circular(
+              14,
+            ),
+            child:
+                image == null
+                    ? Container(
+                        width: 88,
+                        height: 88,
+                        color:
+                            const Color(
+                          0xFFEAF4EB,
+                        ),
+                        child:
+                            const Icon(
+                          Icons.eco_rounded,
+                          color:
+                              Color(
+                            0xFF2F6B3B,
+                          ),
+                          size: 40,
+                        ),
+                      )
+                    : Image.memory(
+                        image,
+                        width: 88,
+                        height: 88,
+                        fit:
+                            BoxFit.cover,
+                      ),
+          ),
+
+          const SizedBox(
+            width: 14,
+          ),
+
+          Expanded(
+            child:
+                Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Lettuce #$number',
+                  style:
+                      const TextStyle(
+                    fontSize: 14,
+                    fontWeight:
+                        FontWeight.w800,
+                    color:
+                        Colors.grey,
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 3,
+                ),
+
+                Text(
+                  disease,
+                  style:
+                      TextStyle(
+                    fontSize: 18,
+                    fontWeight:
+                        FontWeight.w900,
+                    color: color,
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 4,
+                ),
+
+                Text(
+                  'Confidence: ${(confidence * 100).toStringAsFixed(1)}%',
+                  style:
+                      const TextStyle(
+                    fontSize: 13,
+                    fontWeight:
+                        FontWeight.w700,
+                    color:
+                        Color(
+                      0xFF68736A,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(
+                  height: 6,
+                ),
+
+                Container(
+                  padding:
+                      const EdgeInsets
+                          .symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration:
+                      BoxDecoration(
+                    color:
+                        color.withValues(
+                      alpha: 0.10,
+                    ),
+                    borderRadius:
+                        BorderRadius.circular(
+                      20,
+                    ),
+                  ),
+                  child:
+                      Text(
+                    healthy
+                        ? 'SELLABLE ESTIMATE'
+                        : 'NOT HEALTHY',
+                    style:
+                        TextStyle(
+                      fontSize: 11,
+                      fontWeight:
+                          FontWeight.w900,
+                      color: color,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // SMALL METRIC
+  // ============================================================
+
+  Widget _metric(
+    String label,
+    String value,
+  ) {
+    return Column(
+      children: [
+        Text(
+          value,
+          textAlign:
+              TextAlign.center,
+          style:
+              const TextStyle(
+            fontSize: 17,
+            fontWeight:
+                FontWeight.w900,
+            color:
+                Color(
+              0xFF1E2A1F,
+            ),
+          ),
+        ),
+
+        const SizedBox(
+          height: 3,
+        ),
+
+        Text(
+          label,
+          textAlign:
+              TextAlign.center,
+          style:
+              const TextStyle(
+            fontSize: 11,
+            fontWeight:
+                FontWeight.w700,
+            color:
+                Colors.grey,
+          ),
+        ),
+      ],
     );
   }
 }

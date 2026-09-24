@@ -116,7 +116,11 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
       _currentIndex = 2;
     });
 
-    await _loadOrders();
+          await Future.wait([
+        _loadOrders(),
+        _loadProducts(),
+      ]);
+
 
     _showMessage(
       result.orderCount > 1
@@ -305,132 +309,19 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     );
   }
 
-  Future<_CheckoutInfo?> _showCheckoutDialog() async {
-    final nameController = TextEditingController();
-    final phoneController = TextEditingController();
-    final addressController = TextEditingController();
-    String paymentMethod = 'Cash on Delivery';
-
-    try {
-      return await showDialog<_CheckoutInfo>(
-        context: context,
-        builder: (context) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              return AlertDialog(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                title: const Text(
-                  'Checkout',
-                  style: TextStyle(fontWeight: FontWeight.w900),
-                ),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE8F3EA),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: Text(
-                          'Total: ₱${_subtotal.toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            color: Color(0xFF2F6B3B),
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: nameController,
-                        decoration: const InputDecoration(
-                          labelText: 'Recipient Name',
-                          prefixIcon: Icon(Icons.person_rounded),
-                        ),
-                      ),
-                      TextField(
-                        controller: phoneController,
-                        keyboardType: TextInputType.phone,
-                        decoration: const InputDecoration(
-                          labelText: 'Phone Number',
-                          prefixIcon: Icon(Icons.phone_rounded),
-                        ),
-                      ),
-                      TextField(
-                        controller: addressController,
-                        maxLines: 2,
-                        decoration: const InputDecoration(
-                          labelText: 'Delivery Address',
-                          prefixIcon: Icon(Icons.location_on_rounded),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: paymentMethod,
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'Cash on Delivery',
-                            child: Text('Cash on Delivery'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'GCash',
-                            child: Text('GCash'),
-                          ),
-                        ],
-                        onChanged: (value) {
-                          setDialogState(() {
-                            paymentMethod = value ?? 'Cash on Delivery';
-                          });
-                        },
-                        decoration: const InputDecoration(
-                          labelText: 'Payment Method',
-                          prefixIcon: Icon(Icons.payments_rounded),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel'),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.pop(
-                        context,
-                        _CheckoutInfo(
-                          shippingName: nameController.text,
-                          shippingPhone: phoneController.text,
-                          shippingAddress: addressController.text,
-                          paymentMethod: paymentMethod,
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.check_circle_rounded),
-                    label: const Text('Place Order'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF2F6B3B),
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                ],
-              );
-            },
-          );
-        },
+ 
+Future<_CheckoutInfo?> _showCheckoutDialog() {
+  return showDialog<_CheckoutInfo>(
+    context: context,
+    builder: (context) {
+      return _CheckoutDialog(
+        total: _subtotal,
       );
-    } finally {
-      nameController.dispose();
-      phoneController.dispose();
-      addressController.dispose();
-    }
-  }
+    },
+  );
+}
+
+
 
   double _toDouble(dynamic value) {
     if (value is double) return value;
@@ -1640,6 +1531,205 @@ Widget _buildSearchAndFilters() {
     );
   }
 }
+
+class _CheckoutDialog extends StatefulWidget {
+  const _CheckoutDialog({
+    required this.total,
+  });
+
+  final double total;
+
+  @override
+  State<_CheckoutDialog> createState() =>
+      _CheckoutDialogState();
+}
+
+class _CheckoutDialogState extends State<_CheckoutDialog> {
+  final TextEditingController _nameController =
+      TextEditingController();
+
+  final TextEditingController _phoneController =
+      TextEditingController();
+
+  final TextEditingController _addressController =
+      TextEditingController();
+
+  String _paymentMethod = 'Cash on Delivery';
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+
+    super.dispose();
+  }
+
+  void _placeOrder() {
+    final name = _nameController.text.trim();
+    final phone = _phoneController.text.trim();
+    final address = _addressController.text.trim();
+
+    if (name.isEmpty ||
+        phone.isEmpty ||
+        address.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Please complete all checkout details.',
+          ),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+
+      return;
+    }
+
+    Navigator.pop(
+      context,
+      _CheckoutInfo(
+        shippingName: name,
+        shippingPhone: phone,
+        shippingAddress: address,
+        paymentMethod: _paymentMethod,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+      ),
+      title: const Text(
+        'Checkout',
+        style: TextStyle(
+          fontWeight: FontWeight.w900,
+        ),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F3EA),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Text(
+                'Total: ₱${widget.total.toStringAsFixed(2)}',
+                style: const TextStyle(
+                  color: Color(0xFF2F6B3B),
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            TextField(
+              controller: _nameController,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'Recipient Name',
+                prefixIcon: Icon(
+                  Icons.person_rounded,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              textInputAction: TextInputAction.next,
+              decoration: const InputDecoration(
+                labelText: 'Phone Number',
+                prefixIcon: Icon(
+                  Icons.phone_rounded,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller: _addressController,
+              maxLines: 2,
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(
+                labelText: 'Delivery Address',
+                prefixIcon: Icon(
+                  Icons.location_on_rounded,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            DropdownButtonFormField<String>(
+              initialValue: _paymentMethod,
+              items: const [
+                DropdownMenuItem(
+                  value: 'Cash on Delivery',
+                  child: Text(
+                    'Cash on Delivery',
+                  ),
+                ),
+                DropdownMenuItem(
+                  value: 'GCash',
+                  child: Text('GCash'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value == null) return;
+
+                setState(() {
+                  _paymentMethod = value;
+                });
+              },
+              decoration: const InputDecoration(
+                labelText: 'Payment Method',
+                prefixIcon: Icon(
+                  Icons.payments_rounded,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.pop(context);
+          },
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton.icon(
+          onPressed: _placeOrder,
+          icon: const Icon(
+            Icons.check_circle_rounded,
+          ),
+          label: const Text(
+            'Place Order',
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(
+              0xFF2F6B3B,
+            ),
+            foregroundColor: Colors.white,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 
 class _CheckoutInfo {
   final String shippingName;

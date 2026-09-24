@@ -130,7 +130,33 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 final createdAt = notification['created_at']?.toString() ?? '';
 
                 return InkWell(
-                  onTap: id.isEmpty ? null : () => _markAsRead(id),
+onTap: id.isEmpty
+    ? null
+    : () async {
+        final orderId =
+            notification['order_id']?.toString();
+
+        final error =
+            await _notificationService.markAsRead(id);
+
+        if (!mounted) return;
+
+        if (error != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(error),
+            ),
+          );
+          return;
+        }
+
+        if (orderId != null && orderId.isNotEmpty) {
+          Navigator.pop(context, orderId);
+          return;
+        }
+
+        await _refreshNotifications();
+      },
                   borderRadius: BorderRadius.circular(24),
                   child: Container(
                     margin: const EdgeInsets.only(bottom: 14),

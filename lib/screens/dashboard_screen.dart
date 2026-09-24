@@ -7,6 +7,7 @@ import '../services/auth_service.dart';
 import '../services/order_service.dart';
 import 'scan_screen.dart';
 import 'sell_crop_screen.dart';
+
 import 'shared/health_logs_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -22,6 +23,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final ImagePicker _imagePicker = ImagePicker();
 
   late Future<List<Map<String, dynamic>>> _recentOrders;
+  final Map<String, GlobalKey> _orderKeys = {};
+String? _highlightedOrderId;
 
   @override
   void initState() {
@@ -38,6 +41,65 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<int> _loadUnreadNotifications() async {
     return _notificationService.getUnreadCount();
   }
+
+
+Future<void> _openNotificationsAndFocusOrder() async {
+  final orderId = await Navigator.push<String>(
+    context,
+    MaterialPageRoute(
+      builder: (_) => const NotificationsScreen(),
+    ),
+  );
+
+  if (!mounted) return;
+
+  setState(() {});
+
+  if (orderId == null || orderId.isEmpty) return;
+
+  final orders = await _orderService.getFarmerOrders();
+
+  if (!mounted) return;
+
+  setState(() {
+    _recentOrders =
+        Future<List<Map<String, dynamic>>>.value(orders);
+
+    _highlightedOrderId = orderId;
+  });
+
+  await Future.delayed(
+    const Duration(milliseconds: 200),
+  );
+
+  if (!mounted) return;
+
+  final targetContext =
+      _orderKeys[orderId]?.currentContext;
+
+  if (targetContext != null) {
+    await Scrollable.ensureVisible(
+      targetContext,
+      duration: const Duration(milliseconds: 650),
+      curve: Curves.easeInOut,
+      alignment: 0.15,
+    );
+  }
+
+  await Future.delayed(
+    const Duration(seconds: 2),
+  );
+
+  if (!mounted) return;
+
+  if (_highlightedOrderId == orderId) {
+    setState(() {
+      _highlightedOrderId = null;
+    });
+  }
+}
+
+
 
   Future<void> _logout(BuildContext context) async {
     await AuthService().signOut();
@@ -248,19 +310,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           ),
                                           child: IconButton(
                                             tooltip: 'Notifications',
-                                            onPressed: () async {
-                                              await Navigator.push(
-                                                context,
-                                                MaterialPageRoute(
-                                                  builder: (_) =>
-                                                      const NotificationsScreen(),
-                                                ),
-                                              );
-
-                                              if (mounted) {
-                                                setState(() {});
-                                              }
-                                            },
+                                            onPressed: _openNotificationsAndFocusOrder,
                                             icon: Badge(
                                               isLabelVisible: unreadCount > 0,
                                               label: Text(
@@ -441,6 +491,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                 ),
+
+
                 const SizedBox(height: 38),
                 _fadeUp(
                   delay: 280,
@@ -609,28 +661,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             0;
 
                         final orderId = order['id']?.toString() ?? '';
+                        final orderKey = _orderKeys.putIfAbsent(
+                          orderId,
+                          () => GlobalKey(),
+                        );
+
+                        final isHighlighted =
+                            _highlightedOrderId == orderId;
 
                      final imageUrl = _getOrderProductImage(order);
 
                         final isNewest = orders.isNotEmpty && order == orders.first;
 
                         return _fadeUp(
-                          delay: 340 + (index * 70),
-                          child: Container(
+                                    delay: 340 + (index * 70),
+                                    child: Container(
+                                      key: orderKey,
                             margin: const EdgeInsets.only(
                               bottom: 20,
                             ),
                             padding: const EdgeInsets.all(22),
                             decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(30),
-                              border: Border.all(
-                                color: isNewest
+                           color: isHighlighted
+                              ? const Color(0xFFE8F8EB)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(30),
+                          border: Border.all(
+                            color: isHighlighted
+                                ? const Color(0xFF2F6B3B)
+                                : isNewest
                                     ? const Color(0xFF5DBB63)
                                         .withValues(alpha: 0.35)
                                     : const Color(0xFFE8EFE9),
-                                width: isNewest ? 1.5 : 1,
-                              ),
+                            width: isHighlighted
+                                ? 3
+                                : isNewest
+                                    ? 1.5
+                                    : 1,
+                          ),
                               boxShadow: [
                                 BoxShadow(
                                   color: const Color(0xFF1E2A1F)

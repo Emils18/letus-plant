@@ -530,9 +530,36 @@ const [sellForm, setSellForm] = useState({
     showNotification(`Added ${product.name} to cart`);
   }
 
-  function updateQuantity(productId: number, delta: number) {
-    setCart((prev) => prev.map((item) => item.id === productId ? { ...item, quantity: item.quantity + delta } : item).filter((item) => item.quantity > 0));
-  }
+  function updateQuantity(
+  productId: number,
+  delta: number
+) {
+  setCart((prev) =>
+    prev
+      .map((item) => {
+        if (item.id !== productId) {
+          return item;
+        }
+
+        const newQuantity =
+          Math.max(
+            0,
+            Math.min(
+              item.quantity + delta,
+              item.stock
+            )
+          );
+
+        return {
+          ...item,
+          quantity: newQuantity,
+        };
+      })
+      .filter(
+        (item) => item.quantity > 0
+      )
+  );
+}
 
   function showNotification(msg: string) {
     setMessage(msg);
@@ -907,13 +934,25 @@ const [sellForm, setSellForm] = useState({
         body: JSON.stringify(payload),
       });
       const json = await res.json();
-      if (json.success) {
-        setCart([]);
-        await loadOrders();
-        showNotification("Order placed successfully! 🎉");
-        setCurrentView("orders");
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      } else {
+     if (json.success) {
+ setCart([]);
+
+await Promise.all([
+  loadOrders(),
+  loadProducts(),
+]);
+
+  showNotification(
+    "Order placed successfully! 🎉"
+  );
+
+  setCurrentView("orders");
+
+  window.scrollTo({
+    top: 0,
+    behavior: "smooth",
+  });
+} else {
         showNotification(json.message || "Checkout failed. Check database.");
       }
     } catch {
@@ -1658,7 +1697,7 @@ const renderHome = () => (
                     <div className="flex flex-1 flex-col">
                       <h3 className="text-base font-bold text-gray-900">{item.name}</h3>
                       <p className="text-xs font-medium text-gray-500">{item.farmer}</p>
-                      <p className="mt-1 text-lg font-black text-[#2F6B3B]">₱{item.price}</p>
+                      <p className="mt-1 text-lg font-black text-[#2F6B3B]">₱{formatMoney(item.price)}</p>
                     </div>
                     <div className="flex flex-col items-center gap-2 rounded-xl bg-gray-50 p-1 sm:flex-row sm:gap-4 sm:px-2 sm:py-1">
                       <button onClick={() => updateQuantity(item.id, -1)} className="flex h-7 w-7 items-center justify-center rounded-lg bg-white font-bold text-gray-600 shadow-sm ring-1 ring-black/5 transition-all hover:bg-gray-100 hover:text-gray-900 active:scale-95">-</button>
@@ -1716,14 +1755,14 @@ const renderHome = () => (
         <div className="h-fit rounded-[32px] bg-white p-8 shadow-xl shadow-green-900/5 ring-1 ring-black/5">
           <h2 className="text-2xl font-black text-gray-900">Order Summary</h2>
           <div className="mt-6 space-y-4">
-            <div className="flex justify-between text-sm text-gray-500"><span>Subtotal</span><span className="font-bold text-gray-900">₱{subtotal}</span></div>
-            <div className="flex justify-between text-sm text-gray-500"><span>Shipping</span><span className="font-bold text-gray-900">₱{shipping}</span></div>
+            <div className="flex justify-between text-sm text-gray-500"><span>Subtotal</span><span className="font-bold text-gray-900">₱{formatMoney(subtotal)}</span></div>
+            <div className="flex justify-between text-sm text-gray-500"><span>Shipping</span><span className="font-bold text-gray-900">₱{formatMoney(shipping)}</span></div>
             <div className="flex justify-between text-sm text-gray-500"><span>Delivery Method</span><span className="font-bold text-gray-900">{checkoutForm.deliveryMethod}</span></div>
             <div className="flex justify-between text-sm text-gray-500"><span>Payment Method</span><span className="font-bold text-gray-900">{checkoutForm.paymentMethod}</span></div>
             <div className="border-t border-gray-100 pt-4">
               <div className="flex items-end justify-between">
                 <span className="font-black text-gray-900">Total</span>
-                <span className="text-4xl font-black text-[#2F6B3B]">₱{total}</span>
+                <span className="text-4xl font-black text-[#2F6B3B]">₱{formatMoney(total)}</span>
               </div>
             </div>
           </div>
