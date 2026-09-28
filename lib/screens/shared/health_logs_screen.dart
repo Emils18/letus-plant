@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'scan_session_report_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HealthLogsScreen extends StatefulWidget {
@@ -363,6 +364,67 @@ class _HealthLogsScreenState
       _logs.length -
       _healthyCount;
 
+
+      Map<String, List<Map<String, dynamic>>> get _sessionGroups {
+  final Map<String, List<Map<String, dynamic>>> groups = {};
+
+  for (final log in _logs) {
+    final String sessionId =
+        log['scan_session_id']?.toString().trim() ?? '';
+
+    if (sessionId.isEmpty) {
+      continue;
+    }
+
+    groups.putIfAbsent(
+      sessionId,
+      () => <Map<String, dynamic>>[],
+    );
+
+    groups[sessionId]!.add(log);
+  }
+
+  return groups;
+}
+
+List<Map<String, dynamic>> get _legacyLogs {
+  return _logs.where((log) {
+    final String sessionId =
+        log['scan_session_id']?.toString().trim() ?? '';
+
+    return sessionId.isEmpty;
+  }).toList();
+}
+
+String _normalizeDisease(String value) {
+  return value
+      .toLowerCase()
+      .replaceAll('_', ' ')
+      .trim();
+}
+
+int _sessionDiseaseCount(
+  List<Map<String, dynamic>> logs,
+  String target,
+) {
+  final String normalizedTarget =
+      _normalizeDisease(target);
+
+  return logs.where((log) {
+    final String disease =
+        _normalizeDisease(
+      _getDiseaseName(log),
+    );
+
+    if (normalizedTarget == 'septoria blight') {
+      return disease == 'septoria blight' ||
+          disease == 'septoria leaf spot';
+    }
+
+    return disease == normalizedTarget;
+  }).length;
+}
+
   void _showSnack(
     String message, {
     bool isError = false,
@@ -619,9 +681,43 @@ class _HealthLogsScreenState
                       ),
                     )
                   else
-                    ..._logs.map(
-                      _buildLogCard,
-                    ),
+                  if (!widget.readOnlyBuyer &&
+    _sessionGroups.isNotEmpty) ...[
+  const Text(
+    'Previous Scan Sessions',
+    style: TextStyle(
+      fontSize: 22,
+      fontWeight: FontWeight.w900,
+      color: Color(0xFF1E2A1F),
+    ),
+  ),
+
+  const SizedBox(height: 14),
+
+  ..._sessionGroups.entries.map(
+    (entry) => _buildSessionCard(
+      entry.key,
+      entry.value,
+    ),
+  ),
+
+  if (_legacyLogs.isNotEmpty) ...[
+    const SizedBox(height: 12),
+    const Text(
+      'Older / Individual Scans',
+      style: TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.w900,
+        color: Color(0xFF1E2A1F),
+      ),
+    ),
+    const SizedBox(height: 14),
+  ],
+],
+
+..._legacyLogs.map(
+  _buildLogCard,
+),
                 ],
               ),
       ),
@@ -699,6 +795,214 @@ class _HealthLogsScreenState
       ),
     );
   }
+
+
+
+
+Future<void> _openSessionReport(
+  String sessionId,
+  List<Map<String, dynamic>> logs,
+) async {
+  if (logs.isEmpty) {
+    return;
+  }
+
+  final List<Map<String, dynamic>> reportLogs =
+      List<Map<String, dynamic>>.from(
+    logs,
+  );
+
+  DateTime readDate(
+    Map<String, dynamic> log,
+  ) {
+    final dynamic raw =
+        log['captured_at'] ??
+        log['created_at'];
+
+    return DateTime.tryParse(
+          raw?.toString() ?? '',
+        ) ??
+        DateTime.now();
+  }
+
+  reportLogs.sort(
+    (a, b) => readDate(a).compareTo(
+      readDate(b),
+    ),
+  );
+
+  final DateTime startedAt =
+      readDate(
+    reportLogs.first,
+  );
+
+  final DateTime completedAt =
+      readDate(
+    reportLogs.last,
+  );
+
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) =>
+          ScanSessionReportScreen(
+        scans: reportLogs,
+        startedAt: startedAt,
+        completedAt: completedAt,
+        historyMode: true,
+      ),
+    ),
+  );
+}
+
+
+
+
+
+
+Widget _buildSessionCard(
+  String sessionId,
+  List<Map<String, dynamic>> logs,
+) {
+  final int healthy =
+      _sessionDiseaseCount(logs, 'Healthy');
+
+  final int downy =
+      _sessionDiseaseCount(logs, 'Downy Mildew');
+
+  final int powdery =
+      _sessionDiseaseCount(logs, 'Powdery Mildew');
+
+  final int septoria =
+      _sessionDiseaseCount(logs, 'Septoria Blight');
+
+  final String date =
+      logs.isNotEmpty
+          ? _getDate(logs.first)
+          : 'No date';
+
+  return Container(
+    margin: const EdgeInsets.only(bottom: 18),
+    padding: const EdgeInsets.all(22),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(26),
+      border: Border.all(
+        color: const Color(0xFF5DBB63)
+            .withValues(alpha: 0.25),
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              height: 50,
+              width: 50,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F3EA),
+                borderRadius:
+                    BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.analytics_rounded,
+                color: Color(0xFF2F6B3B),
+                size: 30,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Scan Session Report',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF1E2A1F),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    date,
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 18),
+
+        _infoRow(
+          'Total Lettuce',
+          logs.length.toString(),
+        ),
+
+        _infoRow(
+          'Healthy',
+          healthy.toString(),
+        ),
+
+        _infoRow(
+          'Downy',
+          downy.toString(),
+        ),
+
+        _infoRow(
+          'Powdery',
+          powdery.toString(),
+        ),
+
+        _infoRow(
+          'Septoria',
+          septoria.toString(),
+        ),
+
+        const SizedBox(height: 12),
+
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: ElevatedButton.icon(
+            onPressed: () {
+              _openSessionReport(
+                sessionId,
+                logs,
+              );
+            },
+            icon: const Icon(
+              Icons.description_rounded,
+            ),
+            label: const Text(
+              'View Full Report',
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor:
+                  const Color(0xFF2F6B3B),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius:
+                    BorderRadius.circular(18),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildLogCard(
     Map<String, dynamic> log,
