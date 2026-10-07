@@ -417,13 +417,13 @@ packages:
     source: hosted
     version: "4.1.2"
   image:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: image
-      sha256: f9881ff4998044947ec38d098bc7c8316ae1186fa786eddffdb867b9bc94dfce
+      sha256: a1e7f4951e538a568e14b856702afc9ae1d2f4b202daced8d22c1b9cd211ce89
       url: "https://pub.dev"
     source: hosted
-    version: "4.8.0"
+    version: "4.10.1"
   image_picker:
     dependency: "direct main"
     description:
@@ -752,6 +752,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
+  quiver:
+    dependency: transitive
+    description:
+      name: quiver
+      sha256: ea0b925899e64ecdfbf9c7becb60d5b50e706ade44a85b2363be2a22d88117d2
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.2"
   realtime_client:
     dependency: transitive
     description:
@@ -909,6 +917,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.10"
+  tflite_flutter:
+    dependency: "direct main"
+    description:
+      name: tflite_flutter
+      sha256: "0bba9040d8decda0960d7abf8eabf32243bf092bc7d0084e8e19681866b0bdbe"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.12.1"
   typed_data:
     dependency: transitive
     description:
@@ -917,6 +933,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.4.0"
+  ultralytics_yolo:
+    dependency: "direct main"
+    description:
+      name: ultralytics_yolo
+      sha256: "5599ab85eca27b8e8f69e985194f6bdc365891649da32fd519c34179fb71438c"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.6.15"
   url_launcher:
     dependency: transitive
     description:
@@ -1005,6 +1029,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "15.0.2"
+  wakelock_plus:
+    dependency: transitive
+    description:
+      name: wakelock_plus
+      sha256: "7253bca0fcf40d8413ddfcf4d2a1fa0a82475e79be25a4f2c564b695c9351486"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.7.0"
+  wakelock_plus_platform_interface:
+    dependency: transitive
+    description:
+      name: wakelock_plus_platform_interface
+      sha256: "0618d1799f0b28bcf98255b4ee8313e6fc4d38589dc4ee5fe5840d57d1aff6da"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.6.0"
   web:
     dependency: transitive
     description:
@@ -1071,4 +1111,4 @@ packages:
     version: "2.1.0"
 sdks:
   dart: ">=3.11.4 <4.0.0"
-  flutter: ">=3.38.4"
+  flutter: ">=3.41.0"

@@ -41,6 +41,9 @@ dependencies:
   flutter_animate: ^4.5.2
   http: ^1.6.0
   geolocator: ^14.0.3
+  ultralytics_yolo: ^0.6.15
+  tflite_flutter: ^0.12.1
+  image: ^4.10.1
 
 dev_dependencies:
   flutter_test:
@@ -72,6 +75,7 @@ flutter:
   # Assets
   assets:
     - assets/images/Greenguard.png
+    - assets/models/greenguard_best.tflite
 
 
 
