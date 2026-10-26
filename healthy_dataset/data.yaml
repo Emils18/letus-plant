@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['healthy']
+
+roboflow:
+  workspace: danzai14s-workspace-tyilb
+  project: healthy-lettuce-comuf-qgk1h
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/danzai14s-workspace-tyilb/healthy-lettuce-comuf-qgk1h/dataset/1

@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 4
+names: ['H', 'Healthy Lettuce', 'Viral', 'healthy']
+
+roboflow:
+  workspace: danzai14s-workspace-tyilb
+  project: healthy-lettuce-kv7di-hpkfs
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/danzai14s-workspace-tyilb/healthy-lettuce-kv7di-hpkfs/dataset/1

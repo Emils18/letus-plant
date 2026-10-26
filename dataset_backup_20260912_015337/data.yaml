@@ -1,0 +1,6 @@
+path: C:/Capstone/GreenGuard_AI_Model/dataset
+train: train/images
+val: val/images
+
+nc: 4
+names: ['Healthy', 'Downy_Mildew', 'Powdery_Mildew', 'Septoria_Blight']
