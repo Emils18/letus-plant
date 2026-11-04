@@ -1,0 +1,5 @@
+KNOWN-GOOD LOCAL CHECKPOINT
+Created: 2026-11-05 04:08:26
+Model: runs\detect\greenguard_full\weights\best.pt
+Verified: /health succeeds; /scan returned expected predictions for all 4 classes.
+Keep developing in the main project folder. Do not edit this checkpoint.
