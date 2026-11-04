@@ -1,8 +1,10 @@
 from pathlib import Path
+import os
 
 import cv2
 import numpy as np
 from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
 from ultralytics import YOLO
 
 from image_enhancer import enhance_image
@@ -14,13 +16,14 @@ from image_enhancer import enhance_image
 
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PATH = BASE_DIR / "runs" / "detect" / "greenguard_full" / "weights" / "best.pt"
-
-# Safe fallback if weights are in train-6
-if not MODEL_PATH.exists():
-    fallback = BASE_DIR / "runs" / "detect" / "train-6" / "weights" / "best.pt"
-    if fallback.exists():
-        MODEL_PATH = fallback
+MODEL_PATH = (
+    BASE_DIR
+    / "runs"
+    / "detect"
+    / "greenguard_full"
+    / "weights"
+    / "best.pt"
+)
 
 
 # ============================================================
@@ -28,19 +31,11 @@ if not MODEL_PATH.exists():
 # ============================================================
 
 YOLO_IMAGE_SIZE = 320
-YOLO_CONFIDENCE = 0.25
+YOLO_CONFIDENCE = 0.35
 
-# Provisional lettuce confirmation.
-#
-# This is NOT a replacement for a future
-# dedicated lettuce-vs-other-plant classifier.
-# The trained lettuce model is the primary evidence.
-#
-# Lettuce confirmation requires BOTH plant-like visual evidence
-# and a sufficiently confident GreenGuard YOLO detection.
-# This prevents a face or random object from being accepted as
-# lettuce only because the four-class model produced a match.
-LETTUCE_CONFIRM_CONFIDENCE = 0.55
+# Strict thresholds:
+LETTUCE_CONFIRM_CONFIDENCE = 0.50
+STRONG_LETTUCE_CONFIDENCE = 0.60
 
 EXPECTED_MODEL_CLASSES = {
     "Healthy",
@@ -49,12 +44,60 @@ EXPECTED_MODEL_CLASSES = {
     "Septoria_Blight",
 }
 
+SERVER_VERSION = "GREENGUARD_LOCAL_PC_V2"
+
 
 # ============================================================
 # FLASK APP
 # ============================================================
 
 app = Flask(__name__)
+
+# Maximum uploaded image size: 25 MB.
+app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
+
+
+# ============================================================
+# GLOBAL ERROR HANDLERS
+# ============================================================
+
+@app.errorhandler(HTTPException)
+def handle_http_error(error):
+    """Return JSON instead of Flask HTML error pages."""
+
+    status_code = error.code or 500
+
+    return jsonify(
+        {
+            "success": False,
+            "error": error.name.lower().replace(" ", "_"),
+            "message": error.description,
+            "http_status": status_code,
+            "server_version": SERVER_VERSION,
+        }
+    ), status_code
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    """Log unexpected server errors and return JSON."""
+
+    app.logger.exception(
+        "Unhandled GreenGuard server error"
+    )
+
+    return jsonify(
+        {
+            "success": False,
+            "error": "internal_server_error",
+            "message": (
+                "Unexpected server error. "
+                "Check the GreenGuard server terminal."
+            ),
+            "http_status": 500,
+            "server_version": SERVER_VERSION,
+        }
+    ), 500
 
 
 # ============================================================
@@ -83,28 +126,35 @@ print("GreenGuard AI model loaded.")
 print(f"Classes: {model.names}")
 
 if isinstance(model.names, dict):
+
     loaded_classes = {
         str(value)
         for value in model.names.values()
     }
+
 else:
+
     loaded_classes = {
         str(value)
         for value in model.names
     }
 
+
 if loaded_classes != EXPECTED_MODEL_CLASSES:
+
     raise RuntimeError(
         "Wrong GreenGuard model classes loaded. "
         f"Expected {sorted(EXPECTED_MODEL_CLASSES)}, "
         f"got {sorted(loaded_classes)}"
     )
 
+
 print(
     "Dataset/model classes verified: "
     "Healthy, Downy_Mildew, "
     "Powdery_Mildew, Septoria_Blight"
 )
+
 print()
 
 
@@ -121,8 +171,6 @@ def check_plant_likelihood(
     Determines whether enough of the image
     visually resembles plant material.
 
-    This is the first subject-identification gate:
-
     Unknown / Non-Plant
         ↓
     Plant
@@ -135,9 +183,7 @@ def check_plant_likelihood(
         cv2.COLOR_BGR2HSV,
     )
 
-    # --------------------------------------------------------
     # GREEN VEGETATION
-    # --------------------------------------------------------
 
     green_lower = np.array(
         [25, 35, 25],
@@ -155,12 +201,7 @@ def check_plant_likelihood(
         green_upper,
     )
 
-    # --------------------------------------------------------
     # YELLOW / YELLOW-GREEN
-    #
-    # Important because diseased lettuce
-    # may not remain strongly green.
-    # --------------------------------------------------------
 
     yellow_lower = np.array(
         [15, 30, 40],
@@ -193,6 +234,7 @@ def check_plant_likelihood(
     )
 
     if total_pixels <= 0:
+
         return {
             "plant_like": False,
             "vegetation_ratio": 0.0,
@@ -204,34 +246,32 @@ def check_plant_likelihood(
     )
 
     plant_like = (
-        ratio >= 0.035
+        ratio >= 0.06
     )
 
     return {
-        "plant_like":
-            plant_like,
+        "plant_like": plant_like,
 
-        "vegetation_ratio":
-            round(
-                ratio,
-                4,
-            ),
+        "vegetation_ratio": round(
+            ratio,
+            4,
+        ),
 
-        "vegetation_percent":
-            round(
-                ratio * 100,
-                2,
-            ),
+        "vegetation_percent": round(
+            ratio * 100,
+            2,
+        ),
     }
 
 
 # ============================================================
-# YOLO
+# YOLO INFERENCE
 # ============================================================
 
 def run_yolo(
     image: np.ndarray,
 ):
+
     results = model.predict(
         source=image,
         imgsz=YOLO_IMAGE_SIZE,
@@ -250,6 +290,7 @@ def run_yolo(
         return detections
 
     for box in result.boxes:
+
         class_id = int(
             box.cls[0].item()
         )
@@ -264,95 +305,72 @@ def run_yolo(
             .tolist()
         )
 
-        if isinstance(
-            model.names,
-            dict,
-        ):
-            class_name = (
-                model.names.get(
-                    class_id,
-                    str(class_id),
-                )
-            )
-        else:
-            class_name = (
-                model.names[
-                    class_id
-                ]
+        if isinstance(model.names, dict):
+
+            class_name = model.names.get(
+                class_id,
+                str(class_id),
             )
 
-        display_name = (
-            str(class_name)
-            .replace(
-                "_",
-                " ",
-            )
+        else:
+
+            class_name = model.names[
+                class_id
+            ]
+
+        display_name = str(
+            class_name
+        ).replace(
+            "_",
+            " ",
         )
 
         detections.append(
             {
-                "class_id":
-                    class_id,
+                "class_id": class_id,
 
-                "class_name":
-                    str(
-                        class_name
-                    ),
+                "class_name": str(
+                    class_name
+                ),
 
-                "display_name":
-                    display_name,
+                "display_name": display_name,
 
-                "confidence":
-                    round(
-                        confidence,
-                        4,
-                    ),
+                "confidence": round(
+                    confidence,
+                    4,
+                ),
 
-                "confidence_percent":
-                    round(
-                        confidence * 100,
+                "confidence_percent": round(
+                    confidence * 100,
+                    2,
+                ),
+
+                "bbox": {
+                    "x1": round(
+                        float(coordinates[0]),
                         2,
                     ),
 
-                "bbox": {
-                    "x1":
-                        round(
-                            float(
-                                coordinates[0]
-                            ),
-                            2,
-                        ),
+                    "y1": round(
+                        float(coordinates[1]),
+                        2,
+                    ),
 
-                    "y1":
-                        round(
-                            float(
-                                coordinates[1]
-                            ),
-                            2,
-                        ),
+                    "x2": round(
+                        float(coordinates[2]),
+                        2,
+                    ),
 
-                    "x2":
-                        round(
-                            float(
-                                coordinates[2]
-                            ),
-                            2,
-                        ),
-
-                    "y2":
-                        round(
-                            float(
-                                coordinates[3]
-                            ),
-                            2,
-                        ),
+                    "y2": round(
+                        float(coordinates[3]),
+                        2,
+                    ),
                 },
             }
         )
 
     detections.sort(
-        key=lambda item:
-        item["confidence"],
+        key=lambda item: item["confidence"],
         reverse=True,
     )
 
@@ -367,26 +385,6 @@ def identify_subject(
     plant_check,
     detections,
 ):
-    """
-    GreenGuard subject hierarchy:
-
-    Unknown / Non-Plant
-        ↓
-    Plant
-        ↓
-    Lettuce
-        ↓
-    Healthy / Disease
-
-    IMPORTANT:
-
-    The four-class YOLO model only knows GreenGuard lettuce
-    classes, so YOLO alone must NOT confirm the subject as lettuce.
-
-    Lettuce confirmation requires both:
-    1. plant-like visual evidence, and
-    2. a sufficiently confident GreenGuard YOLO detection.
-    """
 
     plant_like = bool(
         plant_check.get(
@@ -402,11 +400,10 @@ def identify_subject(
         )
     )
 
-    # --------------------------------------------------------
     # YOLO FOUND A GREEN GUARD CLASS
-    # --------------------------------------------------------
 
     if detections:
+
         best = detections[0]
 
         class_name = str(
@@ -428,10 +425,18 @@ def identify_subject(
             in EXPECTED_MODEL_CLASSES
         )
 
-        # IMPORTANT:
-        # YOLO alone cannot confirm lettuce because the model
-        # only knows four lettuce classes and may force unrelated
-        # images toward the closest learned class.
+        # Strong YOLO evidence can confirm lettuce
+        # even when disease symptoms reduce vegetation color.
+
+        strong_model_evidence = (
+            valid_green_guard_class
+            and
+            detection_confidence
+            >= STRONG_LETTUCE_CONFIDENCE
+        )
+
+        # Normal plant-looking images.
+
         supported_model_evidence = (
             valid_green_guard_class
             and
@@ -441,42 +446,41 @@ def identify_subject(
             >= LETTUCE_CONFIRM_CONFIDENCE
         )
 
-        if supported_model_evidence:
+        if (
+            strong_model_evidence
+            or supported_model_evidence
+        ):
+
             return {
-                "type":
-                    "lettuce",
+                "type": "lettuce",
 
-                "label":
-                    "Lettuce",
+                "label": "Lettuce",
 
-                "is_plant":
-                    True,
+                "is_plant": True,
 
-                "is_lettuce":
-                    True,
+                "is_lettuce": True,
 
-                "confidence":
-                    round(
-                        detection_confidence,
-                        4,
-                    ),
+                "confidence": round(
+                    detection_confidence,
+                    4,
+                ),
 
-                "confidence_percent":
-                    round(
-                        detection_confidence
-                        * 100,
-                        2,
-                    ),
+                "confidence_percent": round(
+                    detection_confidence * 100,
+                    2,
+                ),
 
-                "evidence":
-                    "vegetation_plus_yolo",
+                "evidence": (
+                    "strong_yolo"
+                    if strong_model_evidence
+                    else "vegetation_plus_yolo"
+                ),
             }
 
-    # --------------------------------------------------------
-    # PLANT, BUT LETTUCE MODEL NOT CONFIDENT ENOUGH
-    # --------------------------------------------------------
+    # PLANT BUT NOT CONFIRMED LETTUCE
 
     if plant_like:
+
         best_confidence = (
             float(
                 detections[0].get(
@@ -489,60 +493,45 @@ def identify_subject(
         )
 
         return {
-            "type":
-                "plant",
+            "type": "plant",
 
-            "label":
-                "Plant",
+            "label": "Plant",
 
-            "is_plant":
-                True,
+            "is_plant": True,
 
-            "is_lettuce":
-                False,
+            "is_lettuce": False,
 
-            "confidence":
-                round(
-                    best_confidence,
-                    4,
-                ),
+            "confidence": round(
+                best_confidence,
+                4,
+            ),
 
-            "confidence_percent":
-                round(
-                    best_confidence
-                    * 100,
-                    2,
-                ),
+            "confidence_percent": round(
+                best_confidence * 100,
+                2,
+            ),
 
-            "evidence":
-                "vegetation_only",
+            "evidence": "vegetation_only",
         }
 
-    # --------------------------------------------------------
     # UNKNOWN / NON-PLANT
-    # --------------------------------------------------------
 
     return {
-        "type":
-            "unknown",
+        "type": "unknown",
 
-        "label":
-            "Unknown / Non-Plant",
+        "label": "Unknown / Non-Plant",
 
-        "is_plant":
-            False,
+        "is_plant": False,
 
-        "is_lettuce":
-            False,
+        "is_lettuce": False,
 
-        "confidence":
-            0.0,
+        "confidence": 0.0,
 
-        "confidence_percent":
-            0.0,
+        "confidence_percent": 0.0,
 
-        "evidence":
-            "no_reliable_plant_or_lettuce_evidence",
+        "evidence": (
+            "no_reliable_plant_or_lettuce_evidence"
+        ),
     }
 
 
@@ -555,24 +544,20 @@ def identify_subject(
     methods=["GET"],
 )
 def test_page():
-    """
-    Simple local browser test.
-
-    Open:
-        http://127.0.0.1:5000/test
-
-    Choose a lettuce image from the PC and submit it.
-    The same /scan pipeline used by Flutter will run:
-    enhancer -> subject identification -> trained YOLO model.
-    """
 
     return """
     <!doctype html>
+
     <html>
+
       <head>
+
         <meta charset="utf-8">
+
         <title>GreenGuard AI Test</title>
+
         <style>
+
           body {
             font-family: Arial, sans-serif;
             max-width: 720px;
@@ -581,18 +566,22 @@ def test_page():
             background: #f6fbf7;
             color: #1e2a1f;
           }
+
           .card {
             background: white;
             padding: 28px;
             border-radius: 22px;
             border: 1px solid #cfe4d1;
           }
+
           h1 {
             margin-top: 0;
           }
+
           input {
             margin: 18px 0;
           }
+
           button {
             background: #2f6b3b;
             color: white;
@@ -602,11 +591,17 @@ def test_page():
             font-weight: bold;
             cursor: pointer;
           }
+
         </style>
+
       </head>
+
       <body>
+
         <div class="card">
+
           <h1>GreenGuard AI Local Test</h1>
+
           <p>
             Upload a lettuce image. This uses the same trained
             GreenGuard model and the same /scan pipeline as the
@@ -618,19 +613,26 @@ def test_page():
             method="post"
             enctype="multipart/form-data"
           >
+
             <input
               type="file"
               name="image"
               accept="image/*"
               required
             >
+
             <br>
+
             <button type="submit">
               Run GreenGuard AI
             </button>
+
           </form>
+
         </div>
+
       </body>
+
     </html>
     """
 
@@ -644,22 +646,20 @@ def test_page():
     methods=["GET"],
 )
 def root():
+
     return jsonify(
         {
-            "service":
-                "GreenGuard AI Server",
+            "service": "GreenGuard AI Server",
 
-            "online":
-                True,
+            "server_version": SERVER_VERSION,
 
-            "model":
-                MODEL_PATH.name,
+            "online": True,
 
-            "classes":
-                model.names,
+            "model": MODEL_PATH.name,
 
-            "model_classes_verified":
-                True,
+            "classes": model.names,
+
+            "model_classes_verified": True,
 
             "dataset_classes": [
                 "Healthy",
@@ -699,27 +699,22 @@ def root():
     methods=["GET"],
 )
 def health():
+
     return jsonify(
         {
-            "online":
-                True,
+            "online": True,
 
-            "model_loaded":
-                True,
+            "model_loaded": True,
 
-            "image_enhancer":
-                True,
+            "image_enhancer": True,
 
-            "subject_identification":
-                True,
+            "subject_identification": True,
 
-            "model_classes_verified":
-                True,
+            "model_classes_verified": True,
 
-            "model_path":
-                str(
-                    MODEL_PATH
-                ),
+            "model_path": str(MODEL_PATH),
+
+            "server_version": SERVER_VERSION,
         }
     )
 
@@ -734,414 +729,447 @@ def health():
 )
 def scan():
 
-    # ========================================================
-    # CHECK IMAGE UPLOAD
-    # ========================================================
-
-    if "image" not in request.files:
-        return jsonify(
-            {
-                "success":
-                    False,
-
-                "error":
-                    "image_missing",
-
-                "message":
-                    "No image was provided.",
-            }
-        ), 400
-
-    uploaded_file = (
-        request.files[
-            "image"
-        ]
-    )
-
-    image_bytes = (
-        uploaded_file.read()
-    )
-
-    if not image_bytes:
-        return jsonify(
-            {
-                "success":
-                    False,
-
-                "error":
-                    "empty_image",
-
-                "message":
-                    "The uploaded image is empty.",
-            }
-        ), 400
-
-    # ========================================================
-    # DECODE JPEG
-    # ========================================================
-
-    np_buffer = np.frombuffer(
-        image_bytes,
-        dtype=np.uint8,
-    )
-
-    image = cv2.imdecode(
-        np_buffer,
-        cv2.IMREAD_COLOR,
-    )
-
-    if image is None:
-        return jsonify(
-            {
-                "success":
-                    False,
-
-                "error":
-                    "invalid_image",
-
-                "message":
-                    "The uploaded file could not be decoded as an image.",
-            }
-        ), 400
-
-    # ========================================================
-    # IMAGE ENHANCER SYSTEM
-    # ========================================================
+    stage = "request_validation"
 
     try:
-        (
-            processing_image,
-            enhancement,
-        ) = enhance_image(
+
+        # CHECK IMAGE UPLOAD
+
+        if "image" not in request.files:
+
+            return jsonify(
+                {
+                    "success": False,
+
+                    "error": "image_missing",
+
+                    "message": (
+                        "No image was provided. "
+                        "Expected multipart field 'image'."
+                    ),
+
+                    "http_status": 400,
+                }
+            ), 400
+
+        uploaded_file = request.files["image"]
+
+        image_bytes = uploaded_file.read()
+
+        if not image_bytes:
+
+            return jsonify(
+                {
+                    "success": False,
+
+                    "error": "empty_image",
+
+                    "message": "The uploaded image is empty.",
+
+                    "http_status": 400,
+                }
+            ), 400
+
+        # DECODE IMAGE
+
+        stage = "image_decode"
+
+        np_buffer = np.frombuffer(
+            image_bytes,
+            dtype=np.uint8,
+        )
+
+        image = cv2.imdecode(
+            np_buffer,
+            cv2.IMREAD_COLOR,
+        )
+
+        if image is None:
+
+            return jsonify(
+                {
+                    "success": False,
+
+                    "error": "invalid_image",
+
+                    "message": (
+                        "The uploaded file could not "
+                        "be decoded as an image."
+                    ),
+
+                    "http_status": 400,
+                }
+            ), 400
+
+        # IMAGE ENHANCER
+
+        stage = "image_enhancement"
+
+        processing_image, enhancement = enhance_image(
             image
         )
 
-    except Exception as error:
-        return jsonify(
-            {
-                "success":
-                    False,
+        if processing_image is None:
 
-                "error":
-                    "enhancement_failed",
-
-                "message":
-                    str(error),
-            }
-        ), 500
-
-    # ========================================================
-    # RETAKE: IMAGE QUALITY TOO POOR
-    # ========================================================
-
-    if enhancement[
-        "retake_required"
-    ]:
-        reason = enhancement[
-            "reason"
-        ]
-
-        if (
-            reason
-            == "image_too_dark"
-        ):
-            message = (
-                "The photo is too dark. "
-                "Increase lighting or use "
-                "the ESP32-CAM flash, then retake."
+            raise RuntimeError(
+                "image_enhancer_returned_no_image"
             )
 
-        elif (
-            reason
-            == "image_too_blurry"
-        ):
-            message = (
-                "The photo is too blurry. "
-                "Keep the camera steady "
-                "and retake the photo."
+        if not isinstance(enhancement, dict):
+
+            raise TypeError(
+                "image_enhancer_returned_an_invalid_report"
             )
 
-        else:
-            message = (
-                "The image quality is not sufficient. "
-                "Please retake the photo."
+        # IMAGE QUALITY / RETAKE CHECK
+
+        if enhancement.get("retake_required", False):
+
+            reason = str(
+                enhancement.get(
+                    "reason",
+                    "image_quality_insufficient",
+                )
             )
 
-        return jsonify(
-            {
-                "success":
-                    False,
+            if reason == "image_too_dark":
 
-                "diagnosis_available":
-                    False,
+                message = (
+                    "The photo is too dark. "
+                    "Increase lighting or use "
+                    "the ESP32-CAM flash, then retake."
+                )
 
-                "retake_required":
-                    True,
+            elif reason == "image_too_blurry":
 
-                "error":
-                    reason,
+                message = (
+                    "The photo is too blurry. "
+                    "Keep the camera steady "
+                    "and retake the photo."
+                )
 
-                "message":
-                    message,
+            else:
 
-                "enhancement":
-                    enhancement,
-            }
-        ), 422
+                message = (
+                    "The image quality is not sufficient. "
+                    "Please retake the photo."
+                )
 
-    # ========================================================
-    # PLANT VALIDATION
-    # ========================================================
+            return jsonify(
+                {
+                    "success": False,
 
-    plant_check = (
-        check_plant_likelihood(
+                    "diagnosis_available": False,
+
+                    "retake_required": True,
+
+                    "retake_recommended": True,
+
+                    "error": reason,
+
+                    "message": message,
+
+                    "enhancement": enhancement,
+
+                    "http_status": 422,
+                }
+            ), 422
+
+        # PLANT VALIDATION
+
+        stage = "plant_validation"
+
+        plant_check = check_plant_likelihood(
             processing_image
         )
-    )
 
-    # ========================================================
-    # YOLO
-    # ========================================================
+        # YOLO INFERENCE
 
-    # Always run the trained GreenGuard YOLO model.
-    #
-    # YOLO is allowed to inspect every valid photo,
-    # but its result alone cannot confirm lettuce.
-    detections = (
-        run_yolo(
+        stage = "yolo_inference"
+
+        detections = run_yolo(
             processing_image
         )
-    )
 
-    # ========================================================
-    # UNKNOWN / PLANT / LETTUCE
-    # ========================================================
+        # SUBJECT IDENTIFICATION
 
-    subject = identify_subject(
-        plant_check,
-        detections,
-    )
+        stage = "subject_identification"
 
-    # ========================================================
-    # UNKNOWN / NON-PLANT
-    # ========================================================
+        subject = identify_subject(
+            plant_check,
+            detections,
+        )
 
-    if subject[
-        "type"
-    ] == "unknown":
+        subject_type = subject.get("type")
+
+        # UNKNOWN / NON-PLANT
+
+        if subject_type == "unknown":
+
+            return jsonify(
+                {
+                    "success": True,
+
+                    "diagnosis_available": False,
+
+                    "retake_required": False,
+
+                    "retake_recommended": True,
+
+                    "message": (
+                        "GreenGuard could not identify "
+                        "a visible plant in the image."
+                    ),
+
+                    "subject": subject,
+
+                    "enhancement": enhancement,
+
+                    "plant_validation": plant_check,
+
+                    "detections": detections,
+
+                    "http_status": 200,
+                }
+            ), 200
+
+        # PLANT BUT NOT CONFIRMED LETTUCE
+
+        if subject_type == "plant":
+
+            return jsonify(
+                {
+                    "success": True,
+
+                    "diagnosis_available": False,
+
+                    "retake_required": False,
+
+                    "retake_recommended": True,
+
+                    "message": (
+                        "A plant was detected, but GreenGuard "
+                        "could not confidently confirm "
+                        "that it is lettuce."
+                    ),
+
+                    "subject": subject,
+
+                    "enhancement": enhancement,
+
+                    "plant_validation": plant_check,
+
+                    "detections": detections,
+
+                    "http_status": 200,
+                }
+            ), 200
+
+        # DEFENSIVE CHECK
+
+        if not detections:
+
+            return jsonify(
+                {
+                    "success": True,
+
+                    "diagnosis_available": False,
+
+                    "retake_required": False,
+
+                    "retake_recommended": True,
+
+                    "message": (
+                        "No reliable GreenGuard detection "
+                        "was produced. Please retake the photo."
+                    ),
+
+                    "subject": subject,
+
+                    "enhancement": enhancement,
+
+                    "plant_validation": plant_check,
+
+                    "detections": [],
+
+                    "http_status": 200,
+                }
+            ), 200
+
+        # LETTUCE DIAGNOSIS
+
+        stage = "diagnosis_formatting"
+
+        best_detection = detections[0]
+
+        class_name = str(
+            best_detection.get(
+                "class_name",
+                "Unknown",
+            )
+        )
+
+        normalized_class = (
+            class_name
+            .strip()
+            .lower()
+            .replace(
+                " ",
+                "_",
+            )
+        )
+
+        is_healthy = (
+            normalized_class == "healthy"
+        )
+
+        display_name = (
+            class_name.replace(
+                "_",
+                " ",
+            )
+        )
+
+        # SUCCESS
 
         return jsonify(
             {
-                "success":
-                    True,
+                "success": True,
 
-                "diagnosis_available":
-                    False,
+                "diagnosis_available": True,
 
-                "retake_required":
-                    False,
+                "retake_required": False,
 
-                "retake_recommended":
-                    True,
+                "retake_recommended": False,
 
-                "message":
-                    "GreenGuard could not identify a visible plant in the image.",
+                "message": (
+                    "GreenGuard lettuce scan completed."
+                ),
 
-                "subject":
-                    subject,
+                "subject": subject,
 
-                "enhancement":
-                    enhancement,
+                "enhancement": enhancement,
 
-                "plant_validation":
-                    plant_check,
+                "plant_validation": plant_check,
 
-                "detections":
-                    [],
-            }
-        ), 200
+                "result": {
+                    "class_name": class_name,
 
-    # ========================================================
-    # PLANT BUT NOT CONFIRMED LETTUCE
-    # ========================================================
+                    "display_name": display_name,
 
-    if subject[
-        "type"
-    ] == "plant":
+                    "confidence": best_detection.get(
+                        "confidence",
+                        0.0,
+                    ),
 
-        return jsonify(
-            {
-                "success":
-                    True,
+                    "confidence_percent": best_detection.get(
+                        "confidence_percent",
+                        0.0,
+                    ),
 
-                "diagnosis_available":
-                    False,
+                    "healthy": is_healthy,
 
-                "retake_required":
-                    False,
-
-                "retake_recommended":
-                    True,
-
-                "message":
-                    "A plant was detected, but GreenGuard could not confidently confirm that it is lettuce.",
-
-                "subject":
-                    subject,
-
-                "enhancement":
-                    enhancement,
-
-                "plant_validation":
-                    plant_check,
-
-                "detections":
-                    detections,
-            }
-        ), 200
-
-    # ========================================================
-    # LETTUCE CONFIRMED
-    # ========================================================
-
-    best_detection = (
-        detections[0]
-    )
-
-    class_name = str(
-        best_detection[
-            "class_name"
-        ]
-    )
-
-    normalized_class = (
-        class_name
-        .strip()
-        .lower()
-        .replace(
-            " ",
-            "_",
-        )
-    )
-
-    is_healthy = (
-        normalized_class
-        == "healthy"
-    )
-
-    display_name = (
-        class_name
-        .replace(
-            "_",
-            " ",
-        )
-    )
-
-    # ========================================================
-    # SUCCESS
-    # ========================================================
-
-    return jsonify(
-        {
-            "success":
-                True,
-
-            "diagnosis_available":
-                True,
-
-            "retake_required":
-                False,
-
-            "retake_recommended":
-                False,
-
-            "message":
-                "GreenGuard lettuce scan completed.",
-
-            # ------------------------------------------------
-            # SUBJECT
-            # ------------------------------------------------
-
-            "subject":
-                subject,
-
-            # ------------------------------------------------
-            # IMAGE ENHANCER REPORT
-            # ------------------------------------------------
-
-            "enhancement":
-                enhancement,
-
-            # ------------------------------------------------
-            # PLANT VALIDATION
-            # ------------------------------------------------
-
-            "plant_validation":
-                plant_check,
-
-            # ------------------------------------------------
-            # FINAL LETTUCE RESULT
-            # ------------------------------------------------
-
-            "result": {
-                "class_name":
-                    class_name,
-
-                "display_name":
-                    display_name,
-
-                "confidence":
-                    best_detection[
-                        "confidence"
-                    ],
-
-                "confidence_percent":
-                    best_detection[
-                        "confidence_percent"
-                    ],
-
-                "healthy":
-                    is_healthy,
-
-                "status":
-                    (
+                    "status": (
                         "healthy"
                         if is_healthy
                         else "disease_detected"
                     ),
-            },
+                },
 
-            # ------------------------------------------------
-            # ALL YOLO DETECTIONS
-            # ------------------------------------------------
+                "detections": detections,
 
-            "detections":
-                detections,
-        }
-    ), 200
+                "http_status": 200,
+
+                "server_version": SERVER_VERSION,
+            }
+        ), 200
+
+    except Exception as error:
+
+        # FULL TRACEBACK IS PRINTED IN THE PC CMD WINDOW.
+
+        app.logger.exception(
+            "GreenGuard /scan failed during stage: %s",
+            stage,
+        )
+
+        # FLUTTER RECEIVES JSON INSTEAD OF HTML.
+
+        return jsonify(
+            {
+                "success": False,
+
+                "diagnosis_available": False,
+
+                "retake_required": False,
+
+                "error": "scan_processing_failed",
+
+                "stage": stage,
+
+                "message": (
+                    f"GreenGuard AI failed during {stage}. "
+                    "Check the PC terminal for the exact error."
+                ),
+
+                "debug_error": str(error),
+
+                "http_status": 500,
+
+                "server_version": SERVER_VERSION,
+            }
+        ), 500
 
 
 # ============================================================
-# START SERVER
+# START LOCAL PC SERVER
 # ============================================================
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
+
+    PORT = int(
+        os.environ.get(
+            "PORT",
+            "5000",
+        )
+    )
 
     print()
+
     print("================================")
-    print("GreenGuard AI Server (Cloud Ready)")
+    print("GreenGuard AI Local PC Server")
     print("================================")
+
     print(f"Model: {MODEL_PATH}")
+
     print("Image Enhancer: READY")
+
     print("Subject Identification: READY")
-    print(f"Listening on port: {port}")
+
+    print(
+        f"Local test: http://127.0.0.1:{PORT}/health"
+    )
+
+    print(
+        f"Phone/LAN test: http://<YOUR_PC_IPV4>:{PORT}/health"
+    )
+
+    print(
+        "Listening on all network interfaces (0.0.0.0)"
+    )
+
+    print()
+
+    print(
+        "Keep this CMD window open while scanning from the APK."
+    )
+
     print()
 
     app.run(
         host="0.0.0.0",
-        port=port,
+        port=PORT,
         debug=False,
         threaded=True,
+        use_reloader=False,
     )
