@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -460,13 +459,18 @@ class EspCamService {
   factory EspCamService() =>
       _instance;
 
-  static const int discoveryPort =
-      8765;
+  static const int discoveryPort = 8765;
 
-  // GreenGuard AI Flask server running on the laptop.
-  // Change only this value if the laptop IPv4 address changes.
-  static const String aiServerBaseUrl =
-    'http://10.237.27.234:5000';
+  // Laptop-hosted GreenGuard AI server (phone and laptop must be on
+  // the same Wi-Fi/hotspot network). Update this when the laptop IPv4 changes.
+  static const String aiServerBaseUrl = 'http://192.168.254.192:5000';
+
+  // Kept as compatibility methods for any existing startup/settings calls.
+  // The AI endpoint is intentionally pinned to the laptop, never Hugging Face.
+  static Future<void> loadEmergencyUrl() async {}
+
+  @Deprecated('GreenGuard AI scans are pinned to the laptop server.')
+  static Future<void> setEmergencyUrl(String _) async {}
 
   HttpServer? _discoveryServer;
 
@@ -1253,7 +1257,7 @@ class EspCamService {
               )
               .timeout(
                 const Duration(
-                  seconds: 8,
+                  seconds: 20,
                 ),
               );
 
@@ -1439,90 +1443,157 @@ class EspCamService {
 // GREENGUARD AI SCAN
 // ============================================================
 
+// ============================================================
+// GREENGUARD AI SCAN (LAPTOP SERVER)
+// ============================================================
+
   Future<Map<String, dynamic>> scanPhotoWithAi(
-    Uint8List imageBytes,
-  ) async {
-    final Uri uri = Uri.parse(
-      '$aiServerBaseUrl/scan',
-    );
+  Uint8List imageBytes,
+) async {
+  final Uri uri = Uri.parse(
+    '$aiServerBaseUrl/scan',
+  );
 
-    try {
-      final http.MultipartRequest request =
-          http.MultipartRequest(
-        'POST',
-        uri,
-      );
+  // Print long responses in manageable chunks.
+  void logLongText(String label, String value) {
+    const int chunkSize = 800;
 
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'image',
-          imageBytes,
-          filename:
-              'greenguard_capture.jpg',
-        ),
-      );
+    debugPrint(label);
 
-      final http.StreamedResponse
-          streamedResponse =
-          await request.send().timeout(
-                const Duration(
-                  seconds: 45,
-                ),
-              );
+    if (value.isEmpty) {
+      debugPrint('<EMPTY>');
+      return;
+    }
 
-      final http.Response response =
-          await http.Response.fromStream(
-        streamedResponse,
-      );
+    // Limit logs to avoid flooding the console.
+    final String output = value.length > 12000
+        ? '${value.substring(0, 12000)}\n[LOG TRUNCATED]'
+        : value;
 
-      dynamic decoded;
+    for (int i = 0; i < output.length; i += chunkSize) {
+      final int end = i + chunkSize < output.length
+          ? i + chunkSize
+          : output.length;
 
-      try {
-        decoded = jsonDecode(
-          response.body,
-        );
-      } catch (_) {
-        return {
-          'success': false,
-          'http_status':
-              response.statusCode,
-          'message':
-              'GreenGuard AI server returned an invalid response.',
-          'raw_response':
-              response.body,
-        };
-      }
-
-      if (decoded
-          is Map<String, dynamic>) {
-        return {
-          ...decoded,
-          'http_status':
-              response.statusCode,
-        };
-      }
-
-      return {
-        'success': false,
-        'http_status':
-            response.statusCode,
-        'message':
-            'Invalid AI server response.',
-      };
-    } catch (e) {
-      debugPrint(
-        'GreenGuard AI scan error: $e',
-      );
-
-      return {
-        'success': false,
-        'network_error': true,
-        'message':
-            'Unable to connect to GreenGuard AI server at $aiServerBaseUrl.',
-      };
+      debugPrint(output.substring(i, end));
     }
   }
 
+  debugPrint('');
+  debugPrint('==========================================');
+  debugPrint('GREENGUARD AI SCAN STARTED');
+  debugPrint('==========================================');
+
+  debugPrint('LAPTOP AI SERVER URL: $uri');
+  debugPrint('IMAGE SIZE: ${imageBytes.length} bytes');
+
+  if (imageBytes.isEmpty) {
+    return {
+      'success': false,
+      'network_error': false,
+      'message': 'Cannot scan an empty image. Capture the photo again.',
+    };
+  }
+
+  try {
+    final http.MultipartRequest request =
+        http.MultipartRequest(
+      'POST',
+      uri,
+    );
+
+    request.headers['Accept'] = 'application/json';
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'image',
+        imageBytes,
+        filename: 'greenguard_capture.jpg',
+      ),
+    );
+
+    debugPrint('Sending image to AI server...');
+
+    final http.StreamedResponse streamedResponse =
+        await request.send().timeout(
+      const Duration(seconds: 90),
+    );
+
+    debugPrint('HTTP STATUS: ${streamedResponse.statusCode}');
+    debugPrint('RESPONSE HEADERS: ${streamedResponse.headers}');
+
+    final http.Response response =
+        await http.Response.fromStream(
+      streamedResponse,
+    ).timeout(
+      const Duration(seconds: 90),
+    );
+
+    debugPrint('FINAL HTTP STATUS: ${response.statusCode}');
+    debugPrint(
+      'CONTENT TYPE: ${response.headers['content-type'] ?? 'UNKNOWN'}',
+    );
+
+    logLongText(
+      '========== RAW SERVER RESPONSE ==========',
+      response.body,
+    );
+
+    dynamic decoded;
+
+    try {
+      decoded = jsonDecode(response.body);
+    } catch (error) {
+      debugPrint('========== JSON DECODE FAILED ==========');
+      debugPrint('ERROR: $error');
+
+      return {
+        'success': false,
+        'http_status': response.statusCode,
+        'message':
+            'GreenGuard AI server returned a non-JSON response. Check Debug Console.',
+        'raw_response': response.body,
+        'content_type': response.headers['content-type'],
+      };
+    }
+
+    if (decoded is Map<String, dynamic>) {
+      debugPrint('JSON RESPONSE: VALID');
+      debugPrint('SCAN SUCCESS: ${decoded['success']}');
+      debugPrint(
+        'DIAGNOSIS AVAILABLE: ${decoded['diagnosis_available']}',
+      );
+
+      debugPrint('==========================================');
+      debugPrint('GREENGUARD AI SCAN COMPLETED');
+      debugPrint('==========================================');
+
+      return {
+        ...decoded,
+        'http_status': response.statusCode,
+      };
+    }
+
+    debugPrint('INVALID JSON RESPONSE TYPE: ${decoded.runtimeType}');
+
+    return {
+      'success': false,
+      'http_status': response.statusCode,
+      'message': 'Invalid AI server response format.',
+    };
+
+  } catch (error, stackTrace) {
+    debugPrint('========== AI CONNECTION FAILED ==========');
+    debugPrint('ERROR: $error');
+    debugPrint('STACK TRACE: $stackTrace');
+
+    return {
+      'success': false,
+      'network_error': true,
+      'message': 'Unable to connect to GreenGuard AI server: $error',
+    };
+  }
+}
 
   void forgetCamera() {
     unawaited(
