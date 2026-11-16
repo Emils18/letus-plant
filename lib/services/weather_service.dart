@@ -30,7 +30,7 @@ class WeatherService {
     for (final loc in locationsToTry) {
       try {
         final url = Uri.parse(
-          'https://api.weatherapi.com/v1/current.json?key=$apiKey&q=$loc&aqi=no',
+          'https://api.weatherapi.com/v1/forecast.json?key=$apiKey&q=$loc&days=1&aqi=no&alerts=no',
         );
 
         final response = await http.get(url).timeout(const Duration(seconds: 10));
@@ -41,7 +41,8 @@ class WeatherService {
           final temp = (data['current']['temp_c'] as num).round();
           final humidity = data['current']['humidity'];
           final conditionText = data['current']['condition']['text'] ?? 'Unknown';
-          final windKph = data['current']['wind_kph'] ?? 0;
+          final rainChance = data['forecast']?['forecastday']?[0]?['day']?['daily_chance_of_rain'] ?? 0;
+          final updatedAt = data['current']?['last_updated']?.toString();
 
           final condition = conditionText.split(' ').first;
           final description = conditionText;
@@ -50,7 +51,8 @@ class WeatherService {
             'temp': '$temp°C',
             'humidity': '$humidity%',
             'condition': condition,
-            'rain_chance': '${(windKph / 3.6).round()}%',
+            'rain_chance': '$rainChance%',
+            'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
             'recommendation': _getRecommendation(temp, humidity, condition, description),
             'planted_weather': '$temp°C $condition',
           };

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HealthLogSaveResult {
@@ -23,8 +24,21 @@ class MonitoringService {
   // SOIL SENSOR ESP32
   // ============================================================
 
-  static const String soilEsp32Ip =
-      '10.175.35.214';
+  static const String defaultSoilEsp32Ip = '10.175.35.214';
+  static const String _soilIpPreference = 'soil_esp32_ip';
+  static String soilEsp32Ip = defaultSoilEsp32Ip;
+
+  static Future<void> loadSavedSoilAddress() async {
+    final preferences = await SharedPreferences.getInstance();
+    soilEsp32Ip = preferences.getString(_soilIpPreference) ?? defaultSoilEsp32Ip;
+  }
+
+  static Future<void> setSoilAddress(String address) async {
+    final cleaned = address.trim().replaceFirst(RegExp(r'^https?://'), '').replaceAll(RegExp(r'/$'), '');
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_soilIpPreference, cleaned);
+    soilEsp32Ip = cleaned;
+  }
 
   static const String soilDeviceName =
       'GreenGuard-SOIL-01';
@@ -76,6 +90,8 @@ class MonitoringService {
           _readInt(
         decoded['soil_moisture'],
       );
+      if (moisture < 0 || moisture > 100) return _offlineData();
+      final int rawValue = _readInt(decoded['soil_raw']);
 
       final String status =
           decoded['soil_status']
@@ -101,6 +117,7 @@ class MonitoringService {
         'device': deviceName,
         'device_ip': deviceIp,
         'soil_moisture': moisture,
+        'soil_raw': rawValue,
         'soil_value': '$moisture%',
         'soil_status': status,
         'last_sync':
@@ -123,6 +140,7 @@ class MonitoringService {
       'device': soilDeviceName,
       'device_ip': soilEsp32Ip,
       'soil_moisture': null,
+      'soil_raw': null,
       'soil_value': '--%',
       'soil_status': 'OFFLINE',
       'last_sync':

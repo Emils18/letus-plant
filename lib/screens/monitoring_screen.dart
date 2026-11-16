@@ -1,8 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
-import '../config/app_config.dart';
 import '../services/monitoring_service.dart';
-import 'scan_screen.dart';
+import 'scan_mode_screen.dart';
 import 'sell_crop_screen.dart';
 
 class MonitoringScreen extends StatefulWidget {
@@ -19,11 +19,22 @@ class _MonitoringScreenState
       MonitoringService();
 
   Map<String, dynamic>? data;
+  Timer? _refreshTimer;
+  bool _loading = true;
+
+  bool get _connected => data?['connected'] == true;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    unawaited(_loadData());
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) => unawaited(_loadData()));
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -34,7 +45,35 @@ class _MonitoringScreenState
 
     setState(() {
       data = result;
+      _loading = false;
     });
+  }
+
+  Future<void> _editSensorAddress() async {
+    final controller = TextEditingController(text: MonitoringService.soilEsp32Ip);
+    final address = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Soil sensor address'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            labelText: 'ESP32 IP address',
+            hintText: 'For example: 192.168.43.120',
+            helperText: 'Use the “Soil ESP32 IP” shown in Serial Monitor.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (address == null || address.trim().isEmpty) return;
+    await MonitoringService.setSoilAddress(address);
+    await _loadData();
   }
 
   @override
@@ -60,7 +99,7 @@ class _MonitoringScreenState
           color: Color(0xFF1E2A1F),
         ),
       ),
-      body: data == null
+      body: _loading
           ? const Center(
               child:
                   CircularProgressIndicator(
@@ -107,9 +146,9 @@ class _MonitoringScreenState
                           MainAxisAlignment
                               .spaceBetween,
                       children: [
-                        const Text(
-                          'All Sensors Online',
-                          style: TextStyle(
+                        Text(
+                          _connected ? 'Soil Sensor Connected' : 'Soil Sensor Offline',
+                          style: const TextStyle(
                             fontSize: 16,
                             fontWeight:
                                 FontWeight.bold,
@@ -124,20 +163,17 @@ class _MonitoringScreenState
                           ),
                           decoration:
                               BoxDecoration(
-                            color: Colors
-                                .green.shade50,
+                            color: _connected ? Colors.green.shade50 : Colors.orange.shade50,
                             borderRadius:
                                 BorderRadius
                                     .circular(
                               20,
                             ),
                           ),
-                          child:
-                              const Text(
-                            'LIVE',
+                          child: Text(
+                            _connected ? 'LIVE' : 'OFFLINE',
                             style: TextStyle(
-                              color:
-                                  Colors.green,
+                              color: _connected ? Colors.green : Colors.deepOrange,
                               fontWeight:
                                   FontWeight.bold,
                             ),
@@ -147,9 +183,13 @@ class _MonitoringScreenState
                     ),
                   ),
 
-                  const SizedBox(
-                    height: 32,
-                  ),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    Expanded(child: Text('ESP32: ${MonitoringService.soilEsp32Ip}', style: const TextStyle(color: Colors.black54))),
+                    TextButton.icon(onPressed: _editSensorAddress, icon: const Icon(Icons.edit, size: 16), label: const Text('Set IP')),
+                    IconButton(onPressed: _loadData, tooltip: 'Refresh now', icon: const Icon(Icons.refresh)),
+                  ]),
+                  const SizedBox(height: 20),
 
                   // ============================================================
                   // CURRENT READINGS
@@ -186,12 +226,9 @@ class _MonitoringScreenState
                       ),
                       Expanded(
                         child: _bigCard(
-                          'Light Level',
-                          data?[
-                                  'light_value'] ??
-                              'N/A',
-                          Icons
-                              .light_mode_rounded,
+                          'Raw Sensor Value',
+                          data?['soil_raw']?.toString() ?? 'N/A',
+                          Icons.sensors_rounded,
                           Colors.orange,
                         ),
                       ),
@@ -206,10 +243,8 @@ class _MonitoringScreenState
                     children: [
                       Expanded(
                         child: _bigCard(
-                          'Plant Health',
-                          data?[
-                                  'plant_health'] ??
-                              'N/A',
+                          'Soil Status',
+                          data?['soil_status']?.toString() ?? 'N/A',
                           Icons.eco_rounded,
                           const Color(
                             0xFF2F6B3B,
@@ -221,10 +256,8 @@ class _MonitoringScreenState
                       ),
                       Expanded(
                         child: _bigCard(
-                          'Crop Stage',
-                          data?[
-                                  'crop_stage'] ??
-                              'N/A',
+                          'Last Update',
+                          data?['last_sync']?.toString().split('T').last.split('.').first ?? 'N/A',
                           Icons.grass_rounded,
                           Colors.teal,
                         ),
@@ -267,7 +300,7 @@ class _MonitoringScreenState
                               context,
                               MaterialPageRoute(
                                 builder: (_) =>
-                                    const ScanScreen(),
+                                    const ScanModeScreen(),
                               ),
                             );
                           },

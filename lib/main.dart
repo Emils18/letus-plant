@@ -10,6 +10,7 @@ import 'screens/buyer_home_screen.dart';
 
 import 'services/auth_service.dart';
 import 'services/Esp_Cam.dart';
+import 'services/monitoring_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +23,8 @@ Future<void> main() async {
     url: SupabaseConfig.supabaseUrl,
     anonKey: SupabaseConfig.supabaseAnonKey,
   );
+
+  await MonitoringService.loadSavedSoilAddress();
 
   // Start listening immediately for GreenGuard ESP32-CAM.
   //

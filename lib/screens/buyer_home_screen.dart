@@ -1554,7 +1554,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   final TextEditingController _addressController =
       TextEditingController();
 
-  String _paymentMethod = 'Cash on Delivery';
+  static const String _paymentMethod = 'To be agreed in person';
 
   @override
   void dispose() {
@@ -1672,33 +1672,9 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
 
             const SizedBox(height: 12),
 
-            DropdownButtonFormField<String>(
-              initialValue: _paymentMethod,
-              items: const [
-                DropdownMenuItem(
-                  value: 'Cash on Delivery',
-                  child: Text(
-                    'Cash on Delivery',
-                  ),
-                ),
-                DropdownMenuItem(
-                  value: 'GCash',
-                  child: Text('GCash'),
-                ),
-              ],
-              onChanged: (value) {
-                if (value == null) return;
-
-                setState(() {
-                  _paymentMethod = value;
-                });
-              },
-              decoration: const InputDecoration(
-                labelText: 'Payment Method',
-                prefixIcon: Icon(
-                  Icons.payments_rounded,
-                ),
-              ),
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('Payment will be agreed directly with the farmer in person.'),
             ),
           ],
         ),

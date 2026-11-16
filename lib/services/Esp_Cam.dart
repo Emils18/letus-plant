@@ -463,7 +463,58 @@ class EspCamService {
 
   // Laptop-hosted GreenGuard AI server (phone and laptop must be on
   // the same Wi-Fi/hotspot network). Update this when the laptop IPv4 changes.
-  static const String aiServerBaseUrl = 'http://192.168.254.192:5000';
+// ============================================================
+// DYNAMIC GREENGUARD AI SERVERS
+// ============================================================
+
+static const String primaryAiServer =
+    'http://192.168.254.192:5000';
+
+static const String backupAiServer =
+    'http://192.168.254.143:5000';
+
+static String _activeAiServer = primaryAiServer;
+
+static String get aiServerBaseUrl => _activeAiServer;
+
+static String get activeAiServerName =>
+    _activeAiServer == primaryAiServer
+        ? 'Primary PC'
+        : 'Backup Laptop';
+
+static Future<String?> refreshAiServer() async {
+  // Always prioritize the primary when it recovers.
+  for (final String server in [
+    primaryAiServer,
+    backupAiServer,
+  ]) {
+    try {
+      final response = await http
+          .get(Uri.parse('$server/health'))
+          .timeout(const Duration(seconds: 4));
+
+      if (response.statusCode != 200) continue;
+
+      final data = jsonDecode(response.body);
+
+      if (data is Map &&
+          data['online'] == true &&
+          data['model_loaded'] == true) {
+        _activeAiServer = server;
+
+        debugPrint('AI SERVER ACTIVE: $server');
+
+        return server;
+      }
+    } catch (e) {
+      debugPrint('AI SERVER UNAVAILABLE: $server');
+    }
+  }
+
+  debugPrint('ALL AI SERVERS OFFLINE');
+
+  return null;
+}
 
   // Kept as compatibility methods for any existing startup/settings calls.
   // The AI endpoint is intentionally pinned to the laptop, never Hugging Face.
@@ -1447,152 +1498,114 @@ class EspCamService {
 // GREENGUARD AI SCAN (LAPTOP SERVER)
 // ============================================================
 
-  Future<Map<String, dynamic>> scanPhotoWithAi(
+Future<Map<String, dynamic>> scanPhotoWithAi(
   Uint8List imageBytes,
 ) async {
-  final Uri uri = Uri.parse(
-    '$aiServerBaseUrl/scan',
-  );
-
-  // Print long responses in manageable chunks.
-  void logLongText(String label, String value) {
-    const int chunkSize = 800;
-
-    debugPrint(label);
-
-    if (value.isEmpty) {
-      debugPrint('<EMPTY>');
-      return;
-    }
-
-    // Limit logs to avoid flooding the console.
-    final String output = value.length > 12000
-        ? '${value.substring(0, 12000)}\n[LOG TRUNCATED]'
-        : value;
-
-    for (int i = 0; i < output.length; i += chunkSize) {
-      final int end = i + chunkSize < output.length
-          ? i + chunkSize
-          : output.length;
-
-      debugPrint(output.substring(i, end));
-    }
-  }
-
-  debugPrint('');
-  debugPrint('==========================================');
-  debugPrint('GREENGUARD AI SCAN STARTED');
-  debugPrint('==========================================');
-
-  debugPrint('LAPTOP AI SERVER URL: $uri');
-  debugPrint('IMAGE SIZE: ${imageBytes.length} bytes');
-
   if (imageBytes.isEmpty) {
     return {
       'success': false,
       'network_error': false,
-      'message': 'Cannot scan an empty image. Capture the photo again.',
+      'message': 'Cannot scan an empty image.',
     };
   }
 
-  try {
-    final http.MultipartRequest request =
-        http.MultipartRequest(
-      'POST',
-      uri,
-    );
+  // Check primary first, then backup.
+  final String? selectedServer = await refreshAiServer();
 
-    request.headers['Accept'] = 'application/json';
-
-    request.files.add(
-      http.MultipartFile.fromBytes(
-        'image',
-        imageBytes,
-        filename: 'greenguard_capture.jpg',
-      ),
-    );
-
-    debugPrint('Sending image to AI server...');
-
-    final http.StreamedResponse streamedResponse =
-        await request.send().timeout(
-      const Duration(seconds: 90),
-    );
-
-    debugPrint('HTTP STATUS: ${streamedResponse.statusCode}');
-    debugPrint('RESPONSE HEADERS: ${streamedResponse.headers}');
-
-    final http.Response response =
-        await http.Response.fromStream(
-      streamedResponse,
-    ).timeout(
-      const Duration(seconds: 90),
-    );
-
-    debugPrint('FINAL HTTP STATUS: ${response.statusCode}');
-    debugPrint(
-      'CONTENT TYPE: ${response.headers['content-type'] ?? 'UNKNOWN'}',
-    );
-
-    logLongText(
-      '========== RAW SERVER RESPONSE ==========',
-      response.body,
-    );
-
-    dynamic decoded;
-
-    try {
-      decoded = jsonDecode(response.body);
-    } catch (error) {
-      debugPrint('========== JSON DECODE FAILED ==========');
-      debugPrint('ERROR: $error');
-
-      return {
-        'success': false,
-        'http_status': response.statusCode,
-        'message':
-            'GreenGuard AI server returned a non-JSON response. Check Debug Console.',
-        'raw_response': response.body,
-        'content_type': response.headers['content-type'],
-      };
-    }
-
-    if (decoded is Map<String, dynamic>) {
-      debugPrint('JSON RESPONSE: VALID');
-      debugPrint('SCAN SUCCESS: ${decoded['success']}');
-      debugPrint(
-        'DIAGNOSIS AVAILABLE: ${decoded['diagnosis_available']}',
-      );
-
-      debugPrint('==========================================');
-      debugPrint('GREENGUARD AI SCAN COMPLETED');
-      debugPrint('==========================================');
-
-      return {
-        ...decoded,
-        'http_status': response.statusCode,
-      };
-    }
-
-    debugPrint('INVALID JSON RESPONSE TYPE: ${decoded.runtimeType}');
-
-    return {
-      'success': false,
-      'http_status': response.statusCode,
-      'message': 'Invalid AI server response format.',
-    };
-
-  } catch (error, stackTrace) {
-    debugPrint('========== AI CONNECTION FAILED ==========');
-    debugPrint('ERROR: $error');
-    debugPrint('STACK TRACE: $stackTrace');
-
+  if (selectedServer == null) {
     return {
       'success': false,
       'network_error': true,
-      'message': 'Unable to connect to GreenGuard AI server: $error',
+      'message': 'Both GreenGuard AI servers are offline.',
     };
   }
+
+  final List<String> servers = [
+    selectedServer,
+    if (selectedServer != primaryAiServer)
+      primaryAiServer
+    else
+      backupAiServer,
+  ];
+
+  for (final String server in servers) {
+    try {
+      // Verify this server before uploading.
+      final health = await http
+          .get(Uri.parse('$server/health'))
+          .timeout(const Duration(seconds: 4));
+
+      if (health.statusCode != 200) continue;
+
+      final healthData = jsonDecode(health.body);
+
+      if (healthData is! Map ||
+          healthData['online'] != true ||
+          healthData['model_loaded'] != true) {
+        continue;
+      }
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$server/scan'),
+      );
+
+      request.headers['Accept'] = 'application/json';
+
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'image',
+          imageBytes,
+          filename: 'greenguard_capture.jpg',
+        ),
+      );
+
+      debugPrint('SCANNING WITH: $server');
+
+      final streamed = await request.send().timeout(
+        const Duration(seconds: 90),
+      );
+
+      final response = await http.Response.fromStream(
+        streamed,
+      ).timeout(const Duration(seconds: 90));
+
+      if (response.statusCode != 200) {
+        debugPrint('SCAN HTTP ${response.statusCode} FROM: $server');
+        continue;
+      }
+
+      final decoded = jsonDecode(response.body);
+
+      if (decoded is Map<String, dynamic>) {
+        _activeAiServer = server;
+
+        debugPrint('SCAN SERVER USED: $server');
+
+        return {
+          ...decoded,
+          'http_status': response.statusCode,
+          'active_server': server,
+          'active_server_name': activeAiServerName,
+        };
+      }
+
+      debugPrint('INVALID SCAN RESPONSE FROM: $server');
+      continue;
+    } catch (e) {
+      debugPrint('SERVER FAILED: $server');
+      debugPrint('ERROR: $e');
+
+      // Try the other server.
+      continue;
+    }
+  }
+
+  return {
+    'success': false,
+    'network_error': true,
+    'message': 'Both AI servers failed to process the scan.',
+  };
 }
 
   void forgetCamera() {

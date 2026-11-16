@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -19,16 +20,24 @@ class _WeatherScreenState extends State<WeatherScreen> {
   DateTime? _lastUpdated;
   bool _isLoading = true;
   String _locationSource = '';
+  Timer? _weatherRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     _loadWeatherWithFallback();
+    _weatherRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) => _loadWeatherWithFallback(showSpinner: false));
+  }
+
+  @override
+  void dispose() {
+    _weatherRefreshTimer?.cancel();
+    super.dispose();
   }
 
   /// Main method: Try farmer location → GPS fallback
-  Future<void> _loadWeatherWithFallback() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadWeatherWithFallback({bool showSpinner = true}) async {
+    if (showSpinner && mounted) setState(() => _isLoading = true);
 
     String? locationToUse;
 
@@ -36,14 +45,19 @@ class _WeatherScreenState extends State<WeatherScreen> {
     final user = _supabase.auth.currentUser;
     if (user != null) {
       // Try Products first
-      final product = await _supabase
-          .from('products')
-          .select('location')
-          .eq('farmer_id', user.id)
-          .not('location', 'is', null)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
+      Map<String, dynamic>? product;
+      try {
+        product = await _supabase
+            .from('products')
+            .select('location')
+            .eq('farmer_id', user.id)
+            .not('location', 'is', null)
+            .order('created_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+      } catch (e) {
+        debugPrint('Weather product location lookup failed: $e');
+      }
 
       if (product != null && product['location'] != null) {
         locationToUse = product['location'].toString().trim();
@@ -52,7 +66,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
       // If still no location, try Health Logs
       if (locationToUse == null || locationToUse.isEmpty) {
-        final log = await _supabase
+        Map<String, dynamic>? log;
+        try {
+          log = await _supabase
             .from('diagnostic_logs')
             .select('location')
             .eq('user_id', user.id)
@@ -60,6 +76,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
             .order('created_at', ascending: false)
             .limit(1)
             .maybeSingle();
+        } catch (e) {
+          debugPrint('Weather health log location lookup failed: $e');
+        }
 
         if (log != null && log['location'] != null) {
           locationToUse = log['location'].toString().trim();
@@ -83,9 +102,10 @@ class _WeatherScreenState extends State<WeatherScreen> {
 
     // 3. Load weather
     final result = await _service.fetchWeather(location: locationToUse);
+    if (!mounted) return;
     setState(() {
       data = result;
-      _lastUpdated = DateTime.now();
+      _lastUpdated = DateTime.tryParse(result['updated_at']?.toString() ?? '') ?? DateTime.now();
       _isLoading = false;
     });
   }

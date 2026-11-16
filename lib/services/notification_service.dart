@@ -58,7 +58,14 @@ class NotificationService {
               order_code,
               status,
               delivery_status,
-              total_amount
+              total_amount,
+              shipping_name,
+              shipping_phone,
+              shipping_address,
+              city,
+              postal_code,
+              payment_status,
+              delivery_method
             )
           ''')
           .eq('user_id', user.id)

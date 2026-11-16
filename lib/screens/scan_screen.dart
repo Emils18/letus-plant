@@ -13,7 +13,10 @@ import 'shared/health_logs_screen.dart';
 class ScanScreen extends StatefulWidget {
   const ScanScreen({
     super.key,
+    this.droneManual = false,
   });
+
+  final bool droneManual;
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
@@ -27,6 +30,7 @@ class _ScanScreenState extends State<ScanScreen> {
   StreamSubscription<Uint8List>? _mjpegSubscription;
 
   Timer? _soilTimer;
+  Timer? _aiHealthTimer;
 
   Uint8List? _liveFrame;
   Uint8List? _capturedImage;
@@ -83,6 +87,11 @@ class _ScanScreenState extends State<ScanScreen> {
     _startSoilMonitoring();
     _warmUpAi();
 
+    _aiHealthTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => _warmUpAi(),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeCamera();
     });
@@ -90,35 +99,35 @@ class _ScanScreenState extends State<ScanScreen> {
 
   // Check Laptop Server status via /health
   Future<void> _warmUpAi() async {
+    if (!mounted) return;
+
+    if (!_aiReady) {
     setState(() {
       _aiInitializing = true;
-      _aiStatusMessage = 'Connecting to Laptop AI Server...';
+      _aiStatusMessage = 'Checking AI servers...';
     });
-
-    bool ok = false;
-    try {
-      final response = await http
-          .get(
-            Uri.parse('${EspCamService.aiServerBaseUrl}/health'),
-          )
-          .timeout(const Duration(seconds: 4));
-      ok = response.statusCode == 200;
-    } catch (_) {
-      ok = false;
     }
+
+    final String? server = await EspCamService.refreshAiServer();
 
     if (!mounted) return;
     setState(() {
       _aiInitializing = false;
-      _aiReady = ok;
-      _aiStatusMessage =
-          ok ? 'AI Server Online (Laptop)' : 'AI Server Offline (Start server.py)';
+      _aiReady = server != null;
+      if (server == EspCamService.primaryAiServer) {
+        _aiStatusMessage = 'AI Online — Primary PC';
+      } else if (server == EspCamService.backupAiServer) {
+        _aiStatusMessage = 'AI Online — Backup Laptop';
+      } else {
+        _aiStatusMessage = 'All AI Servers Offline';
+      }
     });
   }
 
   @override
   void dispose() {
     _soilTimer?.cancel();
+    _aiHealthTimer?.cancel();
     _mjpegSubscription?.cancel();
     _cameraSubscription?.cancel();
     unawaited(_espCamService.stopMjpegStream());
@@ -127,7 +136,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   void _startSoilMonitoring() {
     unawaited(_loadSoilData());
-    _soilTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    _soilTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       unawaited(_loadSoilData());
     });
   }
@@ -1344,9 +1353,9 @@ Future<void> _takePhoto() async {
         elevation: 0,
         centerTitle: true,
         iconTheme: const IconThemeData(color: Color(0xFF1E2A1F)),
-        title: const Text(
-          'Lettuce Health Scan',
-          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 21, color: Color(0xFF1E2A1F)),
+        title: Text(
+          widget.droneManual ? 'Drone Manual Scan' : 'Lettuce Health Scan',
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 21, color: Color(0xFF1E2A1F)),
         ),
       ),
       body: SingleChildScrollView(
