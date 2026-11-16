@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -115,6 +115,7 @@ type WeatherData = {
   description: string;
   humidity: number;
   windSpeed: number;
+  rainChance: number;
   updatedAt: string;
 };
 
@@ -217,7 +218,7 @@ export default function HomePage() {
   const [authLoading, setAuthLoading] = useState(false);
   const [account, setAccount] = useState<AccountUser | null>(null);
   const [checkoutForm, setCheckoutForm] = useState({
-    fullName: "", email: "", phone: "", address: "", city: "", postalCode: "", paymentMethod: "Cash on Delivery", deliveryMethod: "Delivery",
+    fullName: "", email: "", phone: "", address: "", city: "", postalCode: "", paymentMethod: "To be agreed in person", deliveryMethod: "Delivery",
   });
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [message, setMessage] = useState("");
@@ -242,6 +243,11 @@ const [farmerLoading, setFarmerLoading] =
 
 const [savingProduct, setSavingProduct] =
   useState(false);
+const [scanImage, setScanImage] = useState<File | null>(null);
+const [scanPreview, setScanPreview] = useState("");
+const [scanLoading, setScanLoading] = useState(false);
+const [scanResult, setScanResult] = useState("");
+const scanInputRef = useRef<HTMLInputElement>(null);
 
 /* PRODUCT IMAGE SELECTED FROM PC */
 const [selectedProductImage, setSelectedProductImage] =
@@ -466,6 +472,39 @@ const [sellForm, setSellForm] = useState({
     }
   }
 
+  async function handleFarmerScan() {
+    if (!scanImage || !account?.id) {
+      showNotification("Choose a clear lettuce photo first.");
+      return;
+    }
+    setScanLoading(true);
+    setScanResult("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("Your session expired. Please sign in again.");
+      const form = new FormData();
+      form.set("image", scanImage);
+      form.set("location", farmerWeatherLocation);
+      const response = await fetch("/api/scan", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: form,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.message || "The disease scan failed.");
+      setScanResult(`${result.disease_name} · ${(Number(result.confidence_score) * 100).toFixed(1)}% confidence`);
+      setScanImage(null);
+      setScanPreview("");
+      if (scanInputRef.current) scanInputRef.current.value = "";
+      await loadFarmerToolsData(account.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to scan this photo.";
+      setScanResult(message);
+    } finally {
+      setScanLoading(false);
+    }
+  }
+
   const filteredProducts = useMemo(() => {
     let data = [...products];
     if (search.trim()) data = data.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
@@ -487,8 +526,6 @@ const [sellForm, setSellForm] = useState({
   }, 0);
   const farmerPendingOrders = farmerOrders.filter((order) => String(order.status || "").toLowerCase() === "pending").length;
   const latestHealthLog = healthLogs[0];
-
-  const paymentMethods = checkoutForm.deliveryMethod === "Pickup" ? ["Cash", "GCash", "Card"] : ["Cash on Delivery", "GCash", "Card"];
 
   const farmerNotices = useMemo<FarmerNotice[]>(() => {
     const notices: FarmerNotice[] = [];
@@ -879,7 +916,7 @@ const [sellForm, setSellForm] = useState({
     setCheckoutForm((previous) => ({
       ...previous,
       deliveryMethod: method,
-      paymentMethod: method === "Pickup" && previous.paymentMethod === "Cash on Delivery" ? "Cash" : method === "Delivery" && previous.paymentMethod === "Cash" ? "Cash on Delivery" : previous.paymentMethod,
+      paymentMethod: "To be agreed in person",
     }));
   }
 
@@ -1386,6 +1423,32 @@ const renderFarmerSellForm = () => {
 
   const renderFarmerHealth = () => (
     <div className="space-y-6">
+      <section className="rounded-[28px] border border-green-100 bg-white p-6 shadow-sm">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">GreenGuard AI</p>
+          <h3 className="mt-2 text-2xl font-black text-[#1E2A1F]">Scan a lettuce leaf</h3>
+          <p className="mt-2 text-sm leading-6 text-[#5C6B5D]">Choose a clear photo to check for Healthy, Downy Mildew, Powdery Mildew, or Septoria Blight. Saved results appear in your health logs.</p>
+        </div>
+        <input
+          ref={scanInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="sr-only"
+          onChange={(event) => {
+            const file = event.target.files?.[0] || null;
+            setScanImage(file);
+            setScanPreview(file ? URL.createObjectURL(file) : "");
+            setScanResult("");
+          }}
+        />
+        {scanPreview && <img src={scanPreview} alt="Selected lettuce for scanning" className="mt-5 max-h-80 w-full rounded-2xl object-contain bg-[#F7FBF6]" />}
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button type="button" onClick={() => scanInputRef.current?.click()} className="rounded-full border border-green-200 px-6 py-3 text-sm font-black text-[#2F6B3B] hover:bg-green-50">{scanImage ? "Choose another photo" : "Choose / Take Photo"}</button>
+          <button type="button" onClick={handleFarmerScan} disabled={!scanImage || scanLoading} className="rounded-full bg-[#2F6B3B] px-6 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{scanLoading ? "Scanning…" : "Scan and Save Result"}</button>
+        </div>
+        {scanResult && <p role="status" className="mt-4 rounded-2xl bg-[#F7FBF6] p-4 text-sm font-bold text-[#2F6B3B]">{scanResult}</p>}
+      </section>
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <div className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6">
           <h3 className="text-2xl font-black text-[#1E2A1F]">Health Logs / Monitoring</h3>
@@ -1451,6 +1514,7 @@ const renderFarmerSellForm = () => {
               <WeatherMetric label="Condition" value={weather.condition} />
               <WeatherMetric label="Humidity" value={`${weather.humidity}%`} />
               <WeatherMetric label="Wind Speed" value={`${weather.windSpeed.toFixed(1)} m/s`} />
+              <WeatherMetric label="Rain Chance" value={`${weather.rainChance}%`} />
               <WeatherMetric label="Description" value={weather.description} />
               <WeatherMetric label="Updated" value={formatWeatherTime(weather.updatedAt)} />
             </div>
@@ -1740,14 +1804,7 @@ const renderHome = () => (
             )}
 
             <div className="mt-6">
-              <p className="mb-3 text-xs font-black uppercase tracking-[2px] text-gray-500">Payment Method</p>
-              <div className="grid gap-3 sm:grid-cols-3">
-                {paymentMethods.map((method) => (
-                  <button key={method} type="button" onClick={() => setCheckoutForm({ ...checkoutForm, paymentMethod: method })} className={`rounded-2xl border px-4 py-4 text-sm font-black transition ${checkoutForm.paymentMethod === method ? "border-[#2F6B3B] bg-green-50 text-[#2F6B3B]" : "border-gray-100 bg-gray-50 text-gray-600"}`}>
-                    {method}
-                  </button>
-                ))}
-              </div>
+              <p className="rounded-2xl bg-green-50 px-5 py-4 text-sm font-bold text-[#2F6B3B]">Payment will be agreed directly with the farmer in person.</p>
             </div>
           </div>
         </div>
@@ -1758,7 +1815,7 @@ const renderHome = () => (
             <div className="flex justify-between text-sm text-gray-500"><span>Subtotal</span><span className="font-bold text-gray-900">₱{formatMoney(subtotal)}</span></div>
             <div className="flex justify-between text-sm text-gray-500"><span>Shipping</span><span className="font-bold text-gray-900">₱{formatMoney(shipping)}</span></div>
             <div className="flex justify-between text-sm text-gray-500"><span>Delivery Method</span><span className="font-bold text-gray-900">{checkoutForm.deliveryMethod}</span></div>
-            <div className="flex justify-between text-sm text-gray-500"><span>Payment Method</span><span className="font-bold text-gray-900">{checkoutForm.paymentMethod}</span></div>
+            <div className="flex justify-between text-sm text-gray-500"><span>Payment</span><span className="font-bold text-gray-900">Agree in person</span></div>
             <div className="border-t border-gray-100 pt-4">
               <div className="flex items-end justify-between">
                 <span className="font-black text-gray-900">Total</span>

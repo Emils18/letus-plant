@@ -30,10 +30,12 @@ export async function GET(request: NextRequest) {
 
   for (const location of locationsToTry) {
     try {
-      const url = new URL("https://api.weatherapi.com/v1/current.json");
+      const url = new URL("https://api.weatherapi.com/v1/forecast.json");
       url.searchParams.set("key", apiKey);
       url.searchParams.set("q", location);
+      url.searchParams.set("days", "1");
       url.searchParams.set("aqi", "no");
+      url.searchParams.set("alerts", "no");
 
       const response = await fetch(url.toString(), { cache: "no-store" });
 
@@ -55,7 +57,8 @@ export async function GET(request: NextRequest) {
           description: fullText,
           humidity: Number(data.current?.humidity || 0),
           windSpeed: Number(data.current?.wind_kph || 0) / 3.6, // to m/s
-          updatedAt: new Date().toISOString(),
+          rainChance: Number(data.forecast?.forecastday?.[0]?.day?.daily_chance_of_rain || 0),
+          updatedAt: data.current?.last_updated || new Date().toISOString(),
         },
       });
     } catch (error) {

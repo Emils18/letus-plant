@@ -148,7 +148,7 @@ export const initialOrders: Order[] = [
     address: "Sample Street",
     city: "Cebu City",
     postalCode: "6000",
-    paymentMethod: "Cash on Delivery",
+    paymentMethod: "To be agreed in person",
     items: [
       {
         productId: 1,
@@ -170,7 +170,7 @@ export const initialOrders: Order[] = [
     address: "Sample Street",
     city: "Cebu City",
     postalCode: "6000",
-    paymentMethod: "GCash",
+    paymentMethod: "To be agreed in person",
     items: [
       {
         productId: 5,

@@ -96,7 +96,7 @@ export async function GET(request: NextRequest) {
         deliveryMethod: order.delivery_method,
         total_amount: Number(order.total_amount || 0),
         status: order.status || "Pending",
-        items: (order.order_items || []).map((item: any) => ({
+        items: (order.order_items || []).map((item: { product_id?: number; product_name?: string; price?: number | string; quantity?: number | string; subtotal?: number | string }) => ({
           productId: item.product_id,
           productName: item.product_name,
           price: Number(item.price || 0),
@@ -136,10 +136,10 @@ export async function POST(request: NextRequest) {
         address,
         city,
         postalCode,
-        paymentMethod,
         deliveryMethod,
         items,
       } = body;
+      const agreedPaymentMethod = "To be agreed in person";
 
       const accessToken = getBearerToken(request);
 
@@ -195,7 +195,6 @@ export async function POST(request: NextRequest) {
         !fullName ||
         !email ||
         !phone ||
-        !paymentMethod ||
         !deliveryMethod ||
         !Array.isArray(items) ||
         items.length === 0
@@ -214,24 +213,6 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             message: "Invalid delivery method.",
-          },
-          400
-        );
-      }
-
-      const allowedPaymentMethods =
-        deliveryMethod === "Pickup"
-          ? ["Cash", "GCash", "Card"]
-          : ["Cash on Delivery", "GCash", "Card"];
-
-      if (!allowedPaymentMethods.includes(paymentMethod)) {
-        return json(
-          {
-            success: false,
-            message:
-              deliveryMethod === "Pickup"
-                ? "Pickup orders can only use Cash, GCash, or Card."
-                : "Delivery orders can only use Cash on Delivery, GCash, or Card.",
           },
           400
         );
@@ -362,10 +343,7 @@ export async function POST(request: NextRequest) {
       );
       const shipping = deliveryMethod === "Delivery" ? 50 : 0;
       const totalAmount = subtotal + shipping;
-      const paymentStatus =
-        paymentMethod === "Cash on Delivery" || paymentMethod === "Cash"
-          ? "Unpaid"
-          : "Pending Verification";
+      const paymentStatus = "To be agreed in person";
 
       const { data: orderData, error: orderError } = await supabase
         .from("orders")
@@ -381,7 +359,7 @@ export async function POST(request: NextRequest) {
               deliveryMethod === "Pickup" ? "Farm Pickup" : address,
             city: deliveryMethod === "Pickup" ? "Farm Pickup" : city,
             postal_code: deliveryMethod === "Pickup" ? "0000" : postalCode,
-            payment_method: paymentMethod,
+            payment_method: agreedPaymentMethod,
             delivery_method: deliveryMethod,
             payment_status: paymentStatus,
             total_amount: totalAmount,
