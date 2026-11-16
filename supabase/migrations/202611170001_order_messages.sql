@@ -31,6 +31,8 @@ create policy "Order participants can send chat"
       select 1 from public.orders o
       where o.id::text = order_messages.order_id
         and (o.user_id = auth.uid() or o.farmer_id = auth.uid())
+        and lower(coalesce(o.status, '')) not in ('delivered', 'received', 'completed')
+        and lower(coalesce(o.delivery_status, '')) not in ('delivered', 'received', 'completed')
     )
   );
 

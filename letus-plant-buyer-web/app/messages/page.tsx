@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-type Order = { id: string; order_code?: string; user_id?: string; farmer_id?: string; shipping_name?: string; created_at?: string };
+type Order = { id: string; order_code?: string; user_id?: string; farmer_id?: string; shipping_name?: string; status?: string; delivery_status?: string; created_at?: string };
 type Message = { id: string; order_id: string; sender_id: string; message: string; created_at: string };
 
 export default function MessagesPage() {
@@ -37,7 +37,7 @@ export default function MessagesPage() {
       if (!user) { setError("Please sign in to message a farmer or buyer."); setLoading(false); return; }
       setUserId(user.id);
       const { data, error: orderError } = await supabase.from("orders")
-        .select("id, order_code, user_id, farmer_id, shipping_name, created_at")
+        .select("id, order_code, user_id, farmer_id, shipping_name, status, delivery_status, created_at")
         .or(`user_id.eq.${user.id},farmer_id.eq.${user.id}`)
         .order("created_at", { ascending: false });
       if (!alive) return;
@@ -62,10 +62,26 @@ export default function MessagesPage() {
     return () => { void supabase.removeChannel(channel); };
   }, [activeOrder, loadMessages]);
 
+  useEffect(() => {
+    if (!activeOrder) return;
+    const refreshOrderStatus = async () => {
+      const { data } = await supabase.from("orders")
+        .select("status, delivery_status")
+        .eq("id", activeOrder)
+        .maybeSingle();
+      if (!data) return;
+      setOrders((previous) => previous.map((order) => order.id === activeOrder
+        ? { ...order, status: data.status, delivery_status: data.delivery_status }
+        : order));
+    };
+    const timer = window.setInterval(() => void refreshOrderStatus(), 12000);
+    return () => window.clearInterval(timer);
+  }, [activeOrder]);
+
   async function sendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
-    if (!message || !activeOrder || sending || !userId) return;
+    if (!message || !activeOrder || sending || !userId || isClosed) return;
     setSending(true); setError("");
     const { error: sendError } = await supabase.from("order_messages").insert({ order_id: activeOrder, sender_id: userId, message });
     if (sendError) setError("Message not sent. Check your internet and try again.");
@@ -75,6 +91,8 @@ export default function MessagesPage() {
 
   const current = orders.find((order) => order.id === activeOrder);
   const otherName = current?.user_id === userId ? "Farmer" : (current?.shipping_name || "Buyer");
+  const terminalStatuses = new Set(["delivered", "received", "completed"]);
+  const isClosed = terminalStatuses.has((current?.status || "").toLowerCase()) || terminalStatuses.has((current?.delivery_status || "").toLowerCase());
 
   return <main className="min-h-screen bg-[#F5F9F4] px-4 py-8 text-[#1E2A1F] sm:px-8">
     <div className="mx-auto max-w-6xl">
@@ -89,9 +107,16 @@ export default function MessagesPage() {
           {orders.length ? orders.map((order) => <button key={order.id} onClick={() => setActiveOrder(order.id)} className={`block w-full border-b border-green-50 p-4 text-left hover:bg-green-50 ${activeOrder === order.id ? "bg-green-50" : ""}`}><span className="block font-bold">Order {order.order_code || order.id.slice(0, 8)}</span><span className="mt-1 block text-sm text-gray-600">{order.user_id === userId ? "Farmer" : order.shipping_name || "Buyer"}</span></button>) : <p className="p-5 text-sm text-gray-600">Your order conversations will appear here.</p>}
         </aside>
         <section className="flex min-h-[65vh] flex-col">
-          <header className="border-b border-green-100 px-5 py-4"><h2 className="font-black">{current ? `${otherName} · Order ${current.order_code || current.id.slice(0, 8)}` : "Choose an order"}</h2><p className="text-sm text-gray-600">Messages update live when both people are online.</p></header>
+          <header className="flex items-center justify-between gap-4 border-b border-green-100 px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#EAF5EB] text-lg font-black text-[#2F6B3B]">{otherName.slice(0, 1).toUpperCase()}</div>
+              <div className="min-w-0"><h2 className="truncate font-black">{current ? `${otherName} · Order ${current.order_code || current.id.slice(0, 8)}` : "Choose an order"}</h2><p className="text-sm text-gray-600">{isClosed ? "Conversation history" : "Order conversation"}</p></div>
+            </div>
+            <span className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-black ${isClosed ? "bg-amber-100 text-amber-900" : "bg-green-100 text-green-800"}`}>{isClosed ? "ORDER COMPLETE" : "IN PROGRESS"}</span>
+          </header>
+          {isClosed && <div className="mx-5 mt-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"><span aria-hidden="true">🔒</span><p><strong>Chat closed.</strong> This order has been delivered or completed. You can still read past messages, but neither person can send new ones.</p></div>}
           <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto p-5">{messages.length ? messages.map((item) => <div key={item.id} className={`flex ${item.sender_id === userId ? "justify-end" : "justify-start"}`}><p className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-4 py-3 ${item.sender_id === userId ? "bg-[#2F6B3B] text-white" : "bg-[#F1F5F0] text-[#1E2A1F]"}`}>{item.message}</p></div>) : <p className="pt-10 text-center text-gray-500">No messages yet. Start the conversation.</p>}</div>
-          <form onSubmit={sendMessage} className="flex gap-3 border-t border-green-100 p-4"><input value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!activeOrder || sending} placeholder="Write a message…" className="min-w-0 flex-1 rounded-full border border-green-200 px-5 py-3 text-[#1E2A1F] placeholder:text-gray-500 outline-none focus:border-[#2F6B3B]"/><button disabled={!activeOrder || !draft.trim() || sending} className="rounded-full bg-[#2F6B3B] px-6 py-3 font-black text-white disabled:opacity-50">{sending ? "Sending…" : "Send"}</button></form>
+          {!isClosed && <form onSubmit={sendMessage} className="flex gap-3 border-t border-green-100 bg-[#FCFDFC] p-4"><input value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!activeOrder || sending} placeholder="Write a message…" className="min-w-0 flex-1 rounded-full border border-green-200 bg-white px-5 py-3 text-[#1E2A1F] placeholder:text-gray-500 outline-none focus:border-[#2F6B3B]"/><button disabled={!activeOrder || !draft.trim() || sending} className="rounded-full bg-[#2F6B3B] px-6 py-3 font-black text-white transition hover:bg-[#1E2A1F] disabled:opacity-50">{sending ? "Sending…" : "Send"}</button></form>}
         </section>
       </div>}
     </div>
