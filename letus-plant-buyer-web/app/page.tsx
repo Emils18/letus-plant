@@ -23,7 +23,7 @@ type Product = {
 type CartItem = Product & { quantity: number };
 
 type OrderItem = {
-  productId: number;
+  productId: number | string;
   productName: string;
   price: number;
   quantity: number;
@@ -44,6 +44,12 @@ type Order = {
   items: OrderItem[];
   total_amount: number;
   status: string;
+  farmerId?: string;
+  orderCode?: string;
+  deliveryStatus?: string;
+  paymentStatus?: string;
+  proofImageUrl?: string | null;
+  confirmedReceived?: boolean;
 };
 
 type UserRole = "buyer" | "farmer";
@@ -88,6 +94,12 @@ type FarmerOrder = {
   total_amount?: number | string | null;
   proof_image_url?: string | null;
   delivery_proof_url?: string | null;
+  order_items?: Array<{
+    product_name?: string | null;
+    quantity?: number | string | null;
+    price?: number | string | null;
+    subtotal?: number | string | null;
+  }>;
   created_at?: string | null;
 };
 
@@ -126,16 +138,6 @@ type FarmerNotice = {
   tone: "warning" | "danger" | "info" | "success";
 };
 
-const statusColors: Record<string, string> = {
-  Pending: "bg-amber-100 text-amber-700",
-  Confirmed: "bg-blue-100 text-blue-700",
-  Preparing: "bg-orange-100 text-orange-700",
-  Shipped: "bg-purple-100 text-purple-700",
-  Delivered: "bg-green-100 text-green-700",
-  Completed: "bg-green-100 text-green-700",
-  Cancelled: "bg-red-100 text-red-700",
-};
-
 const defaultProductImage =
   "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop";
 
@@ -144,6 +146,43 @@ function formatMoney(value: number | string | null | undefined) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+function mapBuyerOrder(row: Record<string, unknown>): Order {
+  const rawItems = Array.isArray(row.order_items)
+    ? row.order_items as Record<string, unknown>[]
+    : [];
+  return {
+    id: String(row.id || ""),
+    date: String(row.created_at || ""),
+    fullName: String(row.shipping_name || "Customer"),
+    email: String(row.email || ""),
+    phone: String(row.shipping_phone || ""),
+    address: String(row.shipping_address || ""),
+    city: String(row.city || ""),
+    postalCode: String(row.postal_code || ""),
+    paymentMethod: String(row.payment_method || ""),
+    deliveryMethod: String(row.delivery_method || ""),
+    items: rawItems.map((item) => ({
+      productId: (item.product_id as number | string | undefined) || "unknown",
+      productName: String(item.product_name || "Product"),
+      price: Number(item.price || 0),
+      quantity: Number(item.quantity || 0),
+      subtotal: Number(item.subtotal || 0),
+    })),
+    total_amount: Number(row.total_amount || 0),
+    status: String(row.status || "Pending"),
+    farmerId: row.farmer_id ? String(row.farmer_id) : undefined,
+    orderCode: row.order_code ? String(row.order_code) : undefined,
+    deliveryStatus: String(row.delivery_status || row.status || "Pending"),
+    paymentStatus: String(row.payment_status || "Unpaid"),
+    proofImageUrl: row.proof_image_url
+      ? String(row.proof_image_url)
+      : row.delivery_proof_url
+        ? String(row.delivery_proof_url)
+        : null,
+    confirmedReceived: row.confirmed_received === true,
+  };
 }
 
 function formatDate(value?: string | null) {
@@ -202,6 +241,15 @@ function statusTone(status?: string | null) {
   return "border-gray-200 bg-gray-50 text-gray-600";
 }
 
+function nextFarmerOrderAction(status?: string | null) {
+  switch ((status || "").toLowerCase()) {
+    case "pending": return { next: "Confirmed", label: "Accept order" };
+    case "confirmed": return { next: "Preparing", label: "Mark as preparing" };
+    case "preparing": return { next: "Shipped", label: "Mark as shipped" };
+    default: return null;
+  }
+}
+
 export default function HomePage() {
   const router = useRouter();
 
@@ -223,6 +271,7 @@ export default function HomePage() {
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [message, setMessage] = useState("");
   const [loadingOrder, setLoadingOrder] = useState(false);
+const [confirmingReceivedOrderId, setConfirmingReceivedOrderId] = useState("");
 
  const [farmerToolsOpen, setFarmerToolsOpen] = useState(false);
 
@@ -234,6 +283,12 @@ const [farmerProducts, setFarmerProducts] =
 
 const [farmerOrders, setFarmerOrders] =
   useState<FarmerOrder[]>([]);
+const [expandedFarmerOrderId, setExpandedFarmerOrderId] =
+  useState<string>("");
+const [savingFarmerOrderId, setSavingFarmerOrderId] =
+  useState<string>("");
+const [selectedDeliveryProof, setSelectedDeliveryProof] =
+  useState<File | null>(null);
 
 const [healthLogs, setHealthLogs] =
   useState<HealthLog[]>([]);
@@ -377,6 +432,38 @@ const [sellForm, setSellForm] = useState({
   }, [account]);
 
   useEffect(() => {
+    if (!account?.id) return;
+    let active = true;
+    const ownerColumn = account.role === "farmer" ? "farmer_id" : "user_id";
+    const refreshOrderRows = async () => {
+      const { data, error } = await supabase.from("orders")
+        .select("*, order_items(*)")
+        .eq(ownerColumn, account.id)
+        .order("created_at", { ascending: false });
+      if (!active || error || !data) return;
+      if (account.role === "farmer") {
+        setFarmerOrders(data as FarmerOrder[]);
+      } else {
+        setOrders(data.map((row) => mapBuyerOrder(row as Record<string, unknown>)));
+      }
+    };
+    const channel = supabase.channel(`order-status-${account.id}`)
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "orders",
+        filter: `${ownerColumn}=eq.${account.id}`,
+      }, () => void refreshOrderRows())
+      .subscribe();
+    const timer = window.setInterval(() => void refreshOrderRows(), 15000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      void supabase.removeChannel(channel);
+    };
+  }, [account?.id, account?.role]);
+
+  useEffect(() => {
     if (isFarmer && (currentView === "checkout" || currentView === "orders")) {
       setCurrentView("shop");
     }
@@ -415,11 +502,60 @@ const [sellForm, setSellForm] = useState({
   async function loadOrders() {
     if (!account?.id) return;
     try {
-      const res = await fetch(`/api?type=orders&userId=${account.id}`);
-      const json = await res.json();
-      if (json.success) setOrders(json.data);
-    } catch (e) {
-      console.error("Failed to load orders:", e);
+      const { data, error } = await supabase.from("orders")
+        .select("*, order_items(*)")
+        .eq("user_id", account.id)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setOrders((data || []).map((row) => mapBuyerOrder(row as Record<string, unknown>)));
+    } catch (error) {
+      console.error("Failed to load orders:", error);
+      showNotification(error instanceof Error ? error.message : "Failed to load orders.");
+    }
+  }
+
+  async function confirmBuyerOrderReceived(order: Order) {
+    if (!account || account.role !== "buyer" || confirmingReceivedOrderId) return;
+    if (!order.status.toLowerCase().includes("delivered")) {
+      showNotification("You can confirm receipt after the order is marked Delivered.");
+      return;
+    }
+    setConfirmingReceivedOrderId(order.id);
+    try {
+      const { data: updated, error } = await supabase.from("orders")
+        .update({
+          status: "Completed",
+          delivery_status: "Received",
+          payment_status: "Paid",
+          confirmed_received: true,
+          received_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", order.id)
+        .eq("user_id", account.id)
+        .eq("status", order.status)
+        .select("id, farmer_id, order_code")
+        .maybeSingle();
+      if (error) throw error;
+      if (!updated) throw new Error("This order could not be confirmed. Refresh and try again.");
+
+      if (updated.farmer_id) {
+        const { error: notificationError } = await supabase.from("notifications").insert({
+          user_id: updated.farmer_id,
+          order_id: order.id,
+          title: "Order Received",
+          message: `The buyer confirmed receiving order ${updated.order_code || order.orderCode || order.id}.`,
+          type: "confirm_received",
+          is_read: false,
+        });
+        if (notificationError) console.warn("Farmer receipt notification could not be created:", notificationError.message);
+      }
+      showNotification("Order marked as received. Thank you!");
+      await loadOrders();
+    } catch (error) {
+      showNotification(error instanceof Error ? error.message : "Could not confirm this order.");
+    } finally {
+      setConfirmingReceivedOrderId("");
     }
   }
 
@@ -456,7 +592,7 @@ const [sellForm, setSellForm] = useState({
     try {
       const [productsResult, ordersResult, logsResult] = await Promise.all([
         supabase.from("products").select("*").eq("farmer_id", farmerId).order("created_at", { ascending: false }),
-        supabase.from("orders").select("*").eq("farmer_id", farmerId).order("created_at", { ascending: false }),
+        supabase.from("orders").select("*, order_items(*)").eq("farmer_id", farmerId).order("created_at", { ascending: false }),
         supabase.from("diagnostic_logs").select("*").eq("user_id", farmerId).order("created_at", { ascending: false }),
       ]);
       if (productsResult.error) throw new Error(productsResult.error.message);
@@ -469,6 +605,130 @@ const [sellForm, setSellForm] = useState({
       showNotification(error instanceof Error ? error.message : "Failed to load farmer tools data.");
     } finally {
       setFarmerLoading(false);
+    }
+  }
+
+  async function refreshFarmerOrders(farmerId: string) {
+    const { data, error } = await supabase.from("orders")
+      .select("*, order_items(*)")
+      .eq("farmer_id", farmerId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    setFarmerOrders((data || []) as FarmerOrder[]);
+  }
+
+  async function updateFarmerOrderStatus(order: FarmerOrder, status: string) {
+    if (!account || account.role !== "farmer" || savingFarmerOrderId) return;
+    if (nextFarmerOrderAction(order.status)?.next !== status) {
+      showNotification("This order status changed. Refresh and use the next available step.");
+      return;
+    }
+    setSavingFarmerOrderId(order.id);
+    try {
+      const { data: updated, error } = await supabase.from("orders")
+        .update({ status, delivery_status: status, updated_at: new Date().toISOString() })
+        .eq("id", order.id)
+        .eq("farmer_id", account.id)
+        .eq("status", order.status || "Pending")
+        .select("id, user_id, order_code")
+        .maybeSingle();
+      if (error) throw error;
+      if (!updated) throw new Error("This order could not be updated. Refresh and try again.");
+
+      setFarmerOrders((previous) => previous.map((item) => item.id === order.id
+        ? { ...item, status, delivery_status: status }
+        : item));
+      if (updated.user_id) {
+        const { error: notificationError } = await supabase.from("notifications").insert({
+          user_id: updated.user_id,
+          order_id: order.id,
+          title: "Order Update",
+          message: `Your order ${updated.order_code || order.order_code || order.id} is now ${status}.`,
+          type: "delivery_update",
+          is_read: false,
+        });
+        if (notificationError) console.warn("Buyer notification could not be created:", notificationError.message);
+      }
+      showNotification(`Order status updated to ${status}.`);
+      try { await refreshFarmerOrders(account.id); }
+      catch (refreshError) { console.warn("Order saved; refresh failed:", refreshError); }
+    } catch (error) {
+      showNotification(error instanceof Error ? error.message : "Could not update this order.");
+    } finally {
+      setSavingFarmerOrderId("");
+    }
+  }
+
+  async function submitFarmerDeliveryProof(order: FarmerOrder) {
+    if (!account || account.role !== "farmer" || !selectedDeliveryProof || savingFarmerOrderId) return;
+    if ((order.status || "").toLowerCase() !== "shipped") {
+      showNotification("Mark this order as Shipped before submitting delivery proof.");
+      return;
+    }
+    if (!selectedDeliveryProof.type.startsWith("image/")) {
+      showNotification("Choose a photo file for delivery proof.");
+      return;
+    }
+    if (selectedDeliveryProof.size > 10 * 1024 * 1024) {
+      showNotification("Choose a photo smaller than 10 MB.");
+      return;
+    }
+
+    setSavingFarmerOrderId(order.id);
+    let uploadedPath = "";
+    try {
+      const extension = selectedDeliveryProof.name.split(".").pop()?.toLowerCase() || "jpg";
+      uploadedPath = `${account.id}/${order.id}-${Date.now()}.${extension}`;
+      const { error: uploadError } = await supabase.storage
+        .from("delivery-proofs")
+        .upload(uploadedPath, selectedDeliveryProof, {
+          upsert: false,
+          contentType: selectedDeliveryProof.type || "image/jpeg",
+        });
+      if (uploadError) throw new Error(`Photo upload failed: ${uploadError.message}`);
+
+      const proofUrl = supabase.storage.from("delivery-proofs").getPublicUrl(uploadedPath).data.publicUrl;
+      const { data: updated, error } = await supabase.from("orders")
+        .update({
+          proof_image_url: proofUrl,
+          delivery_proof_url: proofUrl,
+          status: "Delivered",
+          delivery_status: "Delivered",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", order.id)
+        .eq("farmer_id", account.id)
+        .eq("status", order.status || "Shipped")
+        .select("id, user_id, order_code")
+        .maybeSingle();
+      if (error) throw error;
+      if (!updated) throw new Error("The photo uploaded, but the order could not be updated.");
+
+      setFarmerOrders((previous) => previous.map((item) => item.id === order.id
+        ? { ...item, status: "Delivered", delivery_status: "Delivered", proof_image_url: proofUrl, delivery_proof_url: proofUrl }
+        : item));
+      if (updated.user_id) {
+        const { error: notificationError } = await supabase.from("notifications").insert({
+          user_id: updated.user_id,
+          order_id: order.id,
+          title: "Order Delivered",
+          message: `Your order ${updated.order_code || order.order_code || order.id} has been marked as delivered.`,
+          type: "delivery_update",
+          is_read: false,
+        });
+        if (notificationError) console.warn("Buyer delivery notification could not be created:", notificationError.message);
+      }
+      setSelectedDeliveryProof(null);
+      showNotification("Delivery photo submitted. The buyer can now see the proof and status.");
+      try { await refreshFarmerOrders(account.id); }
+      catch (refreshError) { console.warn("Proof saved; order refresh failed:", refreshError); }
+    } catch (error) {
+      if (uploadedPath) {
+        await supabase.storage.from("delivery-proofs").remove([uploadedPath]).catch(() => undefined);
+      }
+      showNotification(error instanceof Error ? error.message : "Could not submit delivery proof.");
+    } finally {
+      setSavingFarmerOrderId("");
     }
   }
 
@@ -1555,30 +1815,128 @@ const renderFarmerSellForm = () => {
         {farmerOrders.length === 0 ? (
           <div className="flex min-h-[220px] items-center justify-center rounded-3xl border border-dashed border-green-200 bg-[#F7FBF6] text-sm font-bold text-[#5C6B5D]">No buyer orders yet.</div>
         ) : (
-          farmerOrders.map((order) => (
-            <div key={order.id} className="rounded-[26px] border border-green-100 bg-[#F7FBF6] p-5">
-              <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">{order.order_code || order.id}</p>
-                  <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">{order.shipping_name || order.email || "Customer"}</h4>
-                  <p className="mt-1 text-sm text-[#5C6B5D]">{formatDate(order.created_at)}</p>
-                  <p className="mt-1 text-sm text-[#5C6B5D]">{order.shipping_address || "No address"}</p>
-                  <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-3 rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white hover:bg-[#1E2A1F]">Message buyer</button>
-                </div>
-                <div className="text-left md:text-right">
-                  <p className="text-3xl font-black text-[#2F6B3B]">₱{formatMoney(order.total_amount)}</p>
-                  <div className="mt-3 flex flex-wrap gap-2 md:justify-end">
-                    <StatusPill text={order.status || "Pending"} />
-                    <StatusPill text={order.payment_status || "Unpaid"} />
-                    <StatusPill text={order.delivery_status || "Pending"} />
+          farmerOrders.map((order) => {
+            const expanded = expandedFarmerOrderId === order.id;
+            const action = nextFarmerOrderAction(order.status);
+            const proofUrl = order.proof_image_url || order.delivery_proof_url;
+            const status = order.status || "Pending";
+            const isSaving = savingFarmerOrderId === order.id;
+            return (
+              <article key={order.id} className={`overflow-hidden rounded-[26px] border bg-white shadow-sm transition ${expanded ? "border-[#5DBB63] ring-2 ring-green-100" : "border-green-100 hover:border-green-200"}`}>
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => {
+                    setExpandedFarmerOrderId(expanded ? "" : order.id);
+                    setSelectedDeliveryProof(null);
+                  }}
+                  className="w-full p-5 text-left transition hover:bg-[#F7FBF6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2F6B3B]"
+                >
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">Order {order.order_code || order.id.slice(0, 8).toUpperCase()}</p>
+                      <h4 className="mt-1 truncate text-xl font-black text-[#1E2A1F]">{order.shipping_name || order.email || "Customer"}</h4>
+                      <p className="mt-1 text-sm text-[#5C6B5D]">{formatDate(order.created_at)} · {order.shipping_address || "No address"}</p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3 sm:justify-end">
+                      <p className="text-2xl font-black text-[#2F6B3B]">₱{formatMoney(order.total_amount)}</p>
+                      <StatusPill text={status} />
+                      <span className="text-sm font-black text-[#2F6B3B]">{expanded ? "Hide details ↑" : "Open order →"}</span>
+                    </div>
                   </div>
-                  {(order.proof_image_url || order.delivery_proof_url) && (
-                    <a href={order.proof_image_url || order.delivery_proof_url || "#"} target="_blank" rel="noreferrer" className="mt-4 inline-flex rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">View Proof</a>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))
+                </button>
+
+                {expanded && (
+                  <div className="border-t border-green-100 bg-[#FBFDFB] p-5 sm:p-6">
+                    <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
+                      <div className="rounded-2xl border border-green-100 bg-white p-4">
+                        <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Buyer and delivery details</p>
+                        <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                          <div><dt className="font-bold text-[#718075]">Buyer</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_name || "Customer"}</dd></div>
+                          <div><dt className="font-bold text-[#718075]">Phone</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_phone || "Not provided"}</dd></div>
+                          <div><dt className="font-bold text-[#718075]">Delivery address</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_address || "Farm pickup"}</dd></div>
+                          <div><dt className="font-bold text-[#718075]">Payment</dt><dd className="font-semibold text-[#1E2A1F]">{order.payment_status || "Unpaid"}</dd></div>
+                        </dl>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <StatusPill text={`Order: ${status}`} />
+                          <StatusPill text={`Delivery: ${order.delivery_status || status}`} />
+                        </div>
+                        <div className="mt-5 border-t border-green-100 pt-4">
+                          <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Items in this order</p>
+                          <div className="mt-2 divide-y divide-green-50">
+                            {(order.order_items || []).length ? order.order_items?.map((item, index) => (
+                              <div key={`${order.id}-item-${index}`} className="flex items-center justify-between gap-3 py-2 text-sm">
+                                <span className="min-w-0 truncate font-semibold text-[#1E2A1F]">{item.product_name || "Product"} × {item.quantity || 0}</span>
+                                <span className="shrink-0 font-black text-[#2F6B3B]">₱{formatMoney(item.subtotal ?? Number(item.price || 0) * Number(item.quantity || 0))}</span>
+                              </div>
+                            )) : <p className="py-2 text-sm text-[#718075]">No item details are available.</p>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-green-100 bg-white p-4">
+                        <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Current status action</p>
+                        <p className="mt-2 text-sm leading-6 text-[#5C6B5D]">
+                          {action
+                            ? `The buyer will see this order move to ${action.next} after you confirm.`
+                            : status.toLowerCase() === "shipped"
+                              ? "Submit a delivery photo to mark this order Delivered and show the proof to the buyer."
+                              : status.toLowerCase() === "delivered"
+                                ? "The buyer can view the delivery proof and confirm receipt from their orders page."
+                                : "This order has no further farmer status action."}
+                        </p>
+                        {action && (
+                          <button
+                            type="button"
+                            disabled={isSaving || Boolean(savingFarmerOrderId)}
+                            onClick={() => void updateFarmerOrderStatus(order, action.next)}
+                            className="mt-4 w-full rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white transition hover:bg-[#1E2A1F] disabled:cursor-wait disabled:opacity-60"
+                          >
+                            {isSaving ? "Updating…" : action.label}
+                          </button>
+                        )}
+                        {status.toLowerCase() === "shipped" && (
+                          <div className="mt-4 space-y-3">
+                            <label className="block text-sm font-bold text-[#1E2A1F]" htmlFor={`delivery-proof-${order.id}`}>Delivery photo</label>
+                            <input
+                              id={`delivery-proof-${order.id}`}
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              disabled={isSaving || Boolean(savingFarmerOrderId)}
+                              onChange={(event) => setSelectedDeliveryProof(event.target.files?.[0] || null)}
+                              className="block w-full rounded-xl border border-green-200 bg-[#F7FBF6] p-2 text-sm file:mr-3 file:rounded-full file:border-0 file:bg-green-100 file:px-4 file:py-2 file:font-bold file:text-[#2F6B3B]"
+                            />
+                            {selectedDeliveryProof && (
+                              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-green-50 p-3">
+                                <span className="min-w-0 truncate text-sm font-semibold text-[#375C3B]">Ready: {selectedDeliveryProof.name}</span>
+                                <button
+                                  type="button"
+                                  disabled={isSaving}
+                                  onClick={() => void submitFarmerDeliveryProof(order)}
+                                  className="rounded-full bg-[#2F6B3B] px-5 py-2.5 text-sm font-black text-white disabled:opacity-60"
+                                >
+                                  {isSaving ? "Uploading…" : "Submit photo"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {proofUrl && (
+                          <a href={proofUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex rounded-full border border-green-200 px-5 py-2.5 text-sm font-black text-[#2F6B3B] hover:bg-green-50">View submitted delivery photo</a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)}
+                          className="mt-3 block w-full rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] hover:bg-green-50"
+                        >Message buyer</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </article>
+            );
+          })
         )}
       </div>
     </div>
@@ -1847,13 +2205,17 @@ const renderHome = () => (
             <div key={order.id} className="rounded-[32px] border border-green-100 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">Order #{order.id}</p>
+                  <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">Order #{order.orderCode || order.id.slice(0, 8).toUpperCase()}</p>
                   <h3 className="mt-1 text-xl font-black text-[#1E2A1F]">{order.fullName}</h3>
                   <p className="mt-1 text-sm text-[#5C6B5D]">{formatDate(order.date)}</p>
                 </div>
                 <div className="lg:text-right">
                   <p className="text-3xl font-black text-[#2F6B3B]">₱{formatMoney(order.total_amount)}</p>
-                  <span className={`mt-2 inline-flex rounded-full px-3 py-1 text-xs font-black ${statusColors[order.status] || "bg-gray-100 text-gray-600"}`}>{order.status}</span>
+                  <div className="mt-2 flex flex-wrap gap-2 lg:justify-end">
+                    <StatusPill text={order.status} />
+                    <StatusPill text={`Delivery: ${order.deliveryStatus || order.status}`} />
+                    <StatusPill text={`Payment: ${order.paymentStatus || "Unpaid"}`} />
+                  </div>
                 </div>
               </div>
 
@@ -1866,6 +2228,19 @@ const renderHome = () => (
                   </div>
                 ))}
               </div>
+              {order.proofImageUrl && (
+                <a href={order.proofImageUrl} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full border border-green-200 bg-green-50 px-5 py-2.5 text-sm font-black text-[#2F6B3B] hover:bg-green-100">View delivery proof photo</a>
+              )}
+              {order.status.toLowerCase() === "delivered" && !order.confirmedReceived && (
+                <button
+                  type="button"
+                  disabled={confirmingReceivedOrderId === order.id || Boolean(confirmingReceivedOrderId)}
+                  onClick={() => void confirmBuyerOrderReceived(order)}
+                  className="mt-5 rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white hover:bg-[#1E2A1F] disabled:opacity-60"
+                >
+                  {confirmingReceivedOrderId === order.id ? "Confirming…" : "Confirm received"}
+                </button>
+              )}
               <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-5 rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white hover:bg-[#1E2A1F]">Message farmer</button>
             </div>
           ))

@@ -85,6 +85,7 @@ export async function GET(request: NextRequest) {
 
       const orders = (data || []).map((order) => ({
         id: order.id,
+        orderCode: order.order_code || null,
         date: order.created_at,
         fullName: order.shipping_name,
         email: order.email,
@@ -96,6 +97,9 @@ export async function GET(request: NextRequest) {
         deliveryMethod: order.delivery_method,
         total_amount: Number(order.total_amount || 0),
         status: order.status || "Pending",
+        delivery_status: order.delivery_status || "Pending",
+        payment_status: order.payment_status || "Unpaid",
+        proof_image_url: order.proof_image_url || order.delivery_proof_url || null,
         items: (order.order_items || []).map((item: { product_id?: number; product_name?: string; price?: number | string; quantity?: number | string; subtotal?: number | string }) => ({
           productId: item.product_id,
           productName: item.product_name,
@@ -353,6 +357,7 @@ export async function POST(request: NextRequest) {
             farmer_id: farmerId,
             email,
             status: "Pending",
+            delivery_status: "Pending",
             shipping_name: fullName,
             shipping_phone: phone,
             shipping_address:
