@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { supabase } from "@/lib/supabase";
 import Link from "next/link";
 
@@ -8,14 +8,10 @@ export default function ResetPasswordPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [isSuccess, setIsSuccess] = useState(false);
-
-  // Force sign out on page load to prevent admin redirect
-  useEffect(() => {
-    supabase.auth.signOut();
-  }, []);
 
   const isLengthValid = password.length >= 6;
   const doPasswordsMatch = password.length > 0 && password === confirmPassword;
@@ -33,7 +29,7 @@ export default function ResetPasswordPage() {
     setMessage("");
 
     const { error } = await supabase.auth.updateUser({
-      password: password.trim(),
+      password,
     });
 
     if (error) {
@@ -81,9 +77,9 @@ export default function ResetPasswordPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={loading || isSuccess}
-                  className="w-full rounded-2xl border border-gray-200 bg-white px-5 py-4 focus:border-[#2F6B3B] outline-none"
+                  className="w-full rounded-2xl border border-gray-200 bg-white px-5 py-4 pr-20 text-[#1E2A1F] placeholder:text-gray-400 caret-[#2F6B3B] focus:border-[#2F6B3B] outline-none"
                 />
-                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-4 text-gray-400">
+                <button type="button" aria-label={showPassword ? "Hide new password" : "Show new password"} onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-4 text-sm font-bold text-[#2F6B3B]">
                   {showPassword ? "Hide" : "Show"}
                 </button>
               </div>
@@ -91,14 +87,17 @@ export default function ResetPasswordPage() {
 
             <div>
               <label className="block text-xs font-bold uppercase tracking-widest text-gray-500 mb-2">Confirm New Password</label>
-              <input
-                type={showPassword ? "text" : "password"}
+                <div className="relative">
+                <input
+                type={showConfirmPassword ? "text" : "password"}
                 placeholder="••••••••"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 disabled={loading || isSuccess}
-                className="w-full rounded-2xl border border-gray-200 bg-white px-5 py-4 focus:border-[#2F6B3B] outline-none"
+                className="w-full rounded-2xl border border-gray-200 bg-white px-5 py-4 pr-20 text-[#1E2A1F] placeholder:text-gray-400 caret-[#2F6B3B] focus:border-[#2F6B3B] outline-none"
               />
+                <button type="button" aria-label={showConfirmPassword ? "Hide confirmation password" : "Show confirmation password"} onClick={() => setShowConfirmPassword(!showConfirmPassword)} className="absolute right-4 top-4 text-sm font-bold text-[#2F6B3B]">{showConfirmPassword ? "Hide" : "Show"}</button>
+                </div>
             </div>
 
             <button

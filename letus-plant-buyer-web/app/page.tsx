@@ -1563,6 +1563,7 @@ const renderFarmerSellForm = () => {
                   <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">{order.shipping_name || order.email || "Customer"}</h4>
                   <p className="mt-1 text-sm text-[#5C6B5D]">{formatDate(order.created_at)}</p>
                   <p className="mt-1 text-sm text-[#5C6B5D]">{order.shipping_address || "No address"}</p>
+                  <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-3 rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white hover:bg-[#1E2A1F]">Message buyer</button>
                 </div>
                 <div className="text-left md:text-right">
                   <p className="text-3xl font-black text-[#2F6B3B]">₱{formatMoney(order.total_amount)}</p>
@@ -1865,6 +1866,7 @@ const renderHome = () => (
                   </div>
                 ))}
               </div>
+              <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-5 rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white hover:bg-[#1E2A1F]">Message farmer</button>
             </div>
           ))
         )}
@@ -1936,6 +1938,7 @@ const renderHome = () => (
                 <span className={`absolute inset-x-0 -bottom-0.5 h-0.5 origin-left rounded-full bg-[#2F6B3B] transition-all duration-300 ${currentView === item.view ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100"}`} />
               </button>
             ))}
+            {account && <button onClick={() => router.push("/messages")} className="py-2 text-sm font-bold text-[#5C6B5D] transition hover:text-[#2F6B3B]">Messages</button>}
           </nav>
 
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
