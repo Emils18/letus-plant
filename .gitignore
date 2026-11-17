@@ -1,4 +1,7 @@
-﻿# Node & dependencies
+﻿# Nested duplicate checkout that previously broke the Next.js build
+/letus-plant-buyer-web/
+
+# Node & dependencies
 node_modules/
 npm-debug.log
 yarn-debug.log
@@ -9,6 +12,7 @@ pnpm-debug.log
 .next/
 out/
 dist/
+*.tsbuildinfo
 
 # Environment files (keep them local, never commit!)
 .env.local

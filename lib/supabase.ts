@@ -1,3 +1,4 @@
+import { createBrowserClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -12,15 +13,10 @@ if (!supabaseAnonKey) {
 
 /**
  * Public client – used in browser code (auth, data fetches).
- * Only the anon key is exposed to the client.
+ * Uses @supabase/ssr so the auth session is stored in cookies,
+ * making it accessible to the server (middleware, server components).
  */
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-});
+export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey);
 
 /**
  * Server‑only admin client – uses the service role key.

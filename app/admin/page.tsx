@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { completeSignOut } from "@/lib/clear-auth";
 
 // ============================================================
 // TYPES
@@ -258,8 +258,6 @@ function GreenGuardIcon({
 // ============================================================
 
 export default function AdminDashboardPage() {
-  const router = useRouter();
-
   const diagnosticsSectionRef =
     useRef<HTMLElement | null>(null);
 
@@ -536,9 +534,8 @@ export default function AdminDashboardPage() {
   // ============================================================
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-
-    router.replace("/");
+    await completeSignOut(supabase);
+    window.location.replace("/");
   };
 
   // ============================================================

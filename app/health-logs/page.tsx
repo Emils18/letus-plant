@@ -389,11 +389,11 @@ export default function HealthLogsPage() {
 
       try {
         const {
-          data: { session },
+          data: { user },
         } =
-          await supabase.auth.getSession();
+          await supabase.auth.getUser();
 
-        if (!session?.user) {
+        if (!user) {
           throw new Error(
             "Please login first."
           );
@@ -407,7 +407,7 @@ export default function HealthLogsPage() {
           .select(
             "id, role, full_name"
           )
-          .eq("id", session.user.id)
+          .eq("id", user.id)
           .maybeSingle();
 
         if (profileError) {
@@ -439,7 +439,7 @@ export default function HealthLogsPage() {
               .select("*")
               .eq(
                 "user_id",
-                session.user.id
+                user.id
               )
               .order("created_at", {
                 ascending: false,
@@ -452,7 +452,7 @@ export default function HealthLogsPage() {
               )
               .eq(
                 "farmer_id",
-                session.user.id
+                user.id
               )
               .order("created_at", {
                 ascending: false,
@@ -463,7 +463,7 @@ export default function HealthLogsPage() {
               .select("id, status")
               .eq(
                 "farmer_id",
-                session.user.id
+                user.id
               )
               .order("created_at", {
                 ascending: false,

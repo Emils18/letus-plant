@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { completeSignOut } from "@/lib/clear-auth";
 
 // ==================== TYPES ====================
 type Product = {
@@ -350,8 +351,8 @@ const [sellForm, setSellForm] = useState({
     if (savedCart) setCart(JSON.parse(savedCart));
 
     async function checkSession() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) return;
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return;
 
   // IMPORTANT: Skip redirect on reset password page
   if (window.location.pathname === '/reset-password') {
@@ -361,17 +362,17 @@ const [sellForm, setSellForm] = useState({
   const { data: profile, error: profileError } = await supabase
     .from("users")
     .select("full_name, email, role")
-    .eq("id", session.user.id)
+    .eq("id", user.id)
     .maybeSingle();
 
-  if (profileError) {
-    await supabase.auth.signOut();
+  if (profileError || !profile) {
+    await completeSignOut(supabase);
     setAccount(null);
-    showNotification("Unable to verify your account profile.");
+    if (profileError) showNotification("Unable to verify your account profile.");
     return;
   }
 
-  const role = String(profile?.role || session.user.user_metadata?.role || "buyer").toLowerCase();
+  const role = String(profile.role || "buyer").toLowerCase();
 
   if (role === "admin") {
     router.push("/admin");
@@ -385,9 +386,9 @@ const [sellForm, setSellForm] = useState({
   }
 
   setAccount({
-    id: session.user.id,
-    name: profile?.full_name || session.user.user_metadata?.full_name || (role === "farmer" ? "Farmer" : "Buyer"),
-    email: profile?.email || session.user.email || "",
+    id: user.id,
+    name: profile.full_name || user.user_metadata?.full_name || (role === "farmer" ? "Farmer" : "Buyer"),
+    email: profile.email || user.email || "",
     role: role as UserRole,
   });
 
@@ -398,6 +399,17 @@ const [sellForm, setSellForm] = useState({
   }
 }
     checkSession();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        setAccount(null);
+        setFarmerToolsOpen(false);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, [router]);
 
   useEffect(() => {
@@ -872,7 +884,7 @@ const [sellForm, setSellForm] = useState({
   }
 
   async function handleLogout() {
-    await supabase.auth.signOut();
+    await completeSignOut(supabase);
     setAccount(null);
     setFarmerToolsOpen(false);
     setFarmerProducts([]);
@@ -882,6 +894,7 @@ const [sellForm, setSellForm] = useState({
     setWeatherError("");
     showNotification("Logged out successfully");
     setCurrentView("home");
+    window.location.replace("/");
   }
 
   async function handleResetRequest() {
@@ -926,62 +939,22 @@ const [sellForm, setSellForm] = useState({
       return;
     }
     setAuthLoading(true);
+    const normalizedEmail = cleanEmail.toLowerCase();
 
-            // Normalize inputs
-        const cleanEmail = cleanEmail.trim().toLowerCase();
-        const cleanName = cleanName.trim().toLowerCase();
-        // Check email uniqueness
-        const { data: emailProfile } = await supabase.from("users").select("id").eq("email", cleanEmail).maybeSingle();
-        if (emailProfile) {
-          showNotification("This email is already registered. Please log in instead.");
-          setAuthLoading(false);
-          return;
-        }
-        // Check full name uniqueness (case‑insensitive)
-        const { data: nameProfile } = await supabase.from("users").select("id").eq("full_name", cleanName).maybeSingle();
-        if (nameProfile) {
-          showNotification("This name is already registered. Use a different name.");
-          setAuthLoading(false);
-          return;
-        }
-        // Proceed with Supabase Auth sign‑up
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password: cleanPassword,
-          options: { data: { full_name: cleanName, role: "buyer" } },
-        });
-        if (error) {
-          showNotification(getFriendlyAuthMessage(error.message));
-          setAuthLoading(false);
-          return;
-        }
-        if (!data.user) {
-          showNotification("Registration failed. Please try again.");
-          setAuthLoading(false);
-          return;
-        }
-        const { error: profileError } = await supabase.from("users").insert([
-          { id: data.user.id, full_name: cleanName, email: cleanEmail, role: "buyer" },
-        ]);
-        if (profileError) {
-          showNotification(getFriendlyAuthMessage(profileError.message));
-          setAuthLoading(false);
-          return;
-        }
-        setAccount({ id: data.user.id, name: cleanName, email: cleanEmail, role: "buyer" });
-        setAuthOpen(false);
-        setAuthForm({ name: "", email: "", password: "" });
-        showNotification("Welcome to GreenGuard AI!");
-        setAuthLoading(false);
-        return;
-      const { data: existingProfile } = await supabase.from("users").select("id").eq("email", cleanEmail).maybeSingle();
-      if (existingProfile) {
+    if (authMode === "register") {
+      const { data: emailProfile } = await supabase
+        .from("users")
+        .select("id")
+        .ilike("email", normalizedEmail)
+        .maybeSingle();
+      if (emailProfile) {
         showNotification("This email is already registered. Please log in instead.");
         setAuthLoading(false);
         return;
       }
+
       const { data, error } = await supabase.auth.signUp({
-        email: cleanEmail,
+        email: normalizedEmail,
         password: cleanPassword,
         options: { data: { full_name: cleanName, role: "buyer" } },
       });
@@ -995,13 +968,15 @@ const [sellForm, setSellForm] = useState({
         setAuthLoading(false);
         return;
       }
-      const { error: profileError } = await supabase.from("users").insert([{ id: data.user.id, full_name: cleanName, email: cleanEmail, role: "buyer" }]);
+      const { error: profileError } = await supabase.from("users").insert([
+        { id: data.user.id, full_name: cleanName, email: normalizedEmail, role: "buyer" },
+      ]);
       if (profileError) {
         showNotification(getFriendlyAuthMessage(profileError.message));
         setAuthLoading(false);
         return;
       }
-      setAccount({ id: data.user.id, name: cleanName, email: cleanEmail, role: "buyer" });
+      setAccount({ id: data.user.id, name: cleanName, email: normalizedEmail, role: "buyer" });
       setAuthOpen(false);
       setAuthForm({ name: "", email: "", password: "" });
       showNotification("Welcome to GreenGuard AI!");
@@ -1009,7 +984,7 @@ const [sellForm, setSellForm] = useState({
       return;
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password: cleanPassword });
+    const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password: cleanPassword });
     if (error) {
       showNotification(getFriendlyAuthMessage(error.message));
       setAuthLoading(false);
