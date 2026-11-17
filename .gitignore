@@ -1,0 +1,23 @@
+﻿# Node & dependencies
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Build output
+.next/
+out/
+dist/
+
+# Environment files (keep them local, never commit!)
+.env.local
+.env.*.local
+.env
+
+# VS Code settings
+.vscode/
+
+# OS artefacts
+Thumbs.db
+.DS_Store
