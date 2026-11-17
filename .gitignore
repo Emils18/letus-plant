@@ -21,3 +21,17 @@ dist/
 # OS artefacts
 Thumbs.db
 .DS_Store
+# Flutter/Dart artefacts
+.dart_tool/
+.flutter-plugins-dependencies
+.pub/
+build/
+
+# Android/IntelliJ
+.gradle/
+local.properties
+
+# iOS/Xcode
+DerivedData/
+Pods/
+*.xcworkspace
