@@ -35,3 +35,22 @@ local.properties
 DerivedData/
 Pods/
 *.xcworkspace
+# Flutter/Dart artefacts
+.dart_tool/
+.flutter-plugins-dependencies
+.pub/
+build/
+
+# Android / IntelliJ
+.gradle/
+local.properties
+
+# iOS / Xcode
+DerivedData/
+Pods/
+*.xcworkspace
+
+# VS Code / general editor junk
+.vscode/
+*.log
+*.tmp
