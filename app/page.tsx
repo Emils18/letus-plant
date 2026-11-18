@@ -1811,9 +1811,22 @@ const renderFarmerSellForm = () => {
               <p className="mt-1 text-2xl font-black text-[#2F6B3B]">{latestHealthLog ? getConfidence(latestHealthLog) : "N/A"}</p>
             </div>
             <div className="rounded-2xl bg-white p-5 shadow-sm">
-              <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">Temperature</p>
-              <p className="mt-1 text-2xl font-black text-[#1E2A1F]">{latestHealthLog ? getTemperature(latestHealthLog) : "N/A"}</p>
-            </div>
+  <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B5D]">
+    Live Temperature
+  </p>
+  <p className="mt-1 text-2xl font-black text-[#1E2A1F]">
+    {weather ? `${weather.temperature.toFixed(1)}°C` : weatherLoading ? "Loading..." : "N/A"}
+  </p>
+</div>
+
+<div className="rounded-2xl bg-white p-5 shadow-sm">
+  <p className="text-xs font-black uppercase tracking-[2px] text-[#5C6B3B]">
+    Current Weather
+  </p>
+  <p className="mt-1 text-lg font-black text-[#2F6B3B]">
+    {weather ? weather.description : weatherLoading ? "Loading..." : "N/A"}
+  </p>
+</div>
           </div>
 
           <button onClick={() => router.push("/health-logs")} className="mt-6 w-full rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-black text-white shadow-lg shadow-green-900/20 transition hover:-translate-y-1 hover:bg-[#1E2A1F]">Open Full Health Logs Page</button>
