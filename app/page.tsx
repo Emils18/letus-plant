@@ -15,7 +15,7 @@ type Product = {
   category: string;
   price: number;
   stock: number;
-  badge: string;
+ 
   image: string;
   freshnessInfo: string;
   createdAt?: string;
@@ -139,8 +139,7 @@ type FarmerNotice = {
   tone: "warning" | "danger" | "info" | "success";
 };
 
-const defaultProductImage =
-  "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop";
+
 
 function formatMoney(value: number | string | null | undefined) {
   return Number(value || 0).toLocaleString("en-PH", {
@@ -1142,9 +1141,12 @@ async function handleRestockProduct(product: FarmerProduct) {
   const price = Number(sellForm.price);
   const stock = Number(sellForm.stock);
 
-  const description =
-    sellForm.description.trim() ||
-    "Fresh lettuce crop from local farmer.";
+  const description = sellForm.description.trim();
+
+  if (!description) {
+    showNotification("Product description is required.");
+    return;
+  }
 
   if (!name) {
     showNotification("Product name is required.");
@@ -1207,13 +1209,12 @@ async function handleRestockProduct(product: FarmerProduct) {
       farmer_id: account.id,
       farmer: account.name,
       farmer_name: account.name,
-      badge: "Farmer Listed",
+      
       description,
       freshness_info: description,
       image: publicUrl,
       image_url: publicUrl,
-      location:
-        sellForm.location.trim() || "Local Farm",
+      location: sellForm.location.trim() || null,
       status: "Available",
       updated_at: new Date().toISOString(),
     };
@@ -1491,7 +1492,7 @@ await Promise.all([
 const renderFarmerSellForm = () => {
   const previewImage = selectedProductImage
     ? URL.createObjectURL(selectedProductImage)
-    : defaultProductImage;
+    : "";
 
        return (
     <div className="space-y-8">
@@ -1673,12 +1674,18 @@ const renderFarmerSellForm = () => {
         </h3>
 
         <div className="mt-6 overflow-hidden rounded-[28px] border border-green-100 bg-white shadow-sm">
-          <div
-            className="h-56 bg-cover bg-center"
-            style={{
-              backgroundImage: `url(${previewImage})`,
-            }}
-          />
+          {previewImage ? (
+            <div
+              className="h-56 bg-cover bg-center"
+              style={{
+                backgroundImage: `url(${previewImage})`,
+              }}
+            />
+          ) : (
+            <div className="flex h-56 items-center justify-center bg-gray-100 text-sm font-medium text-gray-400">
+              No image selected
+            </div>
+          )}
 
           <div className="p-5">
             <p className="text-xs font-black uppercase tracking-wider text-[#2F6B3B]">
@@ -1686,30 +1693,41 @@ const renderFarmerSellForm = () => {
             </p>
 
             <h4 className="mt-1 text-xl font-black text-[#1E2A1F]">
-              {sellForm.name || "Product name"}
+              {sellForm.name ? sellForm.name : <span className="italic text-gray-400">Untitled Product</span>}
             </h4>
 
             <p className="mt-2 text-sm text-[#5C6B5D]">
               Farmer: {account?.name || "Farmer"}
             </p>
 
-            <p className="mt-3 text-sm text-gray-600">
-              📍{" "}
-              {sellForm.location ||
-                "Cebu, Philippines"}
-            </p>
+            {sellForm.location?.trim() ? (
+              <p className="mt-3 text-sm text-gray-600">
+                📍 {sellForm.location.trim()}
+              </p>
+            ) : null}
 
-            <p className="mt-4 text-3xl font-black text-[#2F6B3B]">
-              ₱{sellForm.price || "0"}
-            </p>
+            {sellForm.price ? (
+              <p className="mt-4 text-3xl font-black text-[#2F6B3B]">
+                ₱{sellForm.price}
+              </p>
+            ) : (
+              <p className="mt-4 text-sm italic text-gray-400">
+                Price not set
+              </p>
+            )}
 
-            <p className="mt-2 text-sm font-bold text-[#5C6B5D]">
-              Stock: {sellForm.stock || "0"}
-            </p>
+            {sellForm.stock ? (
+              <p className="mt-2 text-sm font-bold text-[#5C6B5D]">
+                Stock: {sellForm.stock}
+              </p>
+            ) : (
+              <p className="mt-2 text-sm italic text-gray-400">
+                Stock not set
+              </p>
+            )}
 
             <p className="mt-4 line-clamp-4 text-sm leading-6 text-[#5C6B5D]">
-              {sellForm.description ||
-                "Fresh product from local farmer."}
+              {sellForm.description || <span className="italic text-gray-400">No description entered yet.</span>}
             </p>
           </div>
         </div>
@@ -1747,7 +1765,13 @@ const renderFarmerSellForm = () => {
                   <tr key={product.id}>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
-                        <div className="h-12 w-12 rounded-2xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image || defaultProductImage})` }} />
+                        {product.image_url || product.image ? (
+                          <div className="h-12 w-12 rounded-2xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
+                        ) : (
+                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 text-[10px] text-gray-400">
+                            No Img
+                          </div>
+                        )}
                         <div>
                           <p className="font-black text-[#1E2A1F]">{product.name || "Unnamed Product"}</p>
                           <p className="text-xs text-[#5C6B5D]">{formatDate(product.created_at)}</p>
@@ -1799,7 +1823,7 @@ const renderFarmerSellForm = () => {
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <div className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6">
           <h3 className="text-2xl font-black text-[#1E2A1F]">Health Logs / Monitoring</h3>
-          <p className="mt-2 text-sm leading-6 text-[#5C6B5D]">View prototype/demo scan records and live weather.</p>
+          <p className="mt-2 text-sm leading-6 text-[#5C6B5D]">View your scan records and live weather conditions.</p>
 
           <div className="mt-6 grid gap-4">
             <div className="rounded-2xl bg-white p-5 shadow-sm">
@@ -2056,7 +2080,7 @@ const renderHome = () => (
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[#2F6B3B]" />
         </span>
 
-        Fresh. Verified. Delivered.
+        From Local Farmers
       </div>
 
       <h1 className="mt-8 text-5xl font-black leading-[1.1] tracking-tight md:text-6xl lg:text-[72px]">
@@ -2070,7 +2094,7 @@ const renderHome = () => (
 
       <p className="mt-6 max-w-xl text-lg leading-relaxed text-[#5C6B5D]">
         Buy fresh lettuce, quality seeds, and farm bundles directly from
-        verified local farmers.
+        local farmers on the GreenGuard AI platform.
       </p>
 
       <div className="mt-10 flex flex-wrap items-center gap-5">
@@ -2110,7 +2134,7 @@ const renderHome = () => (
 
         <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-40 transition-opacity duration-700 group-hover:opacity-60" />
 
-        {/* AI VERIFIED CARD */}
+        {/* DECORATIVE CAPTION */}
         <div className="absolute bottom-10 left-10 translate-y-4 rounded-3xl border border-white/20 bg-white/95 p-6 shadow-2xl backdrop-blur-xl transition-all duration-700 group-hover:translate-y-0">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 shadow-inner">
@@ -2129,11 +2153,11 @@ const renderHome = () => (
 
             <div>
               <p className="text-xs font-bold uppercase tracking-wider text-[#2F6B3B]">
-                AI Verified
+                GreenGuard AI
               </p>
 
               <p className="text-lg font-black text-gray-900">
-                Healthy Lettuce Crop
+                Smart Farming Platform
               </p>
             </div>
           </div>
@@ -2166,8 +2190,7 @@ const renderHome = () => (
           <div key={product.id} className="group flex flex-col rounded-[32px] bg-white p-3 shadow-sm ring-1 ring-black/5 transition-all duration-500 hover:-translate-y-3 hover:shadow-2xl hover:shadow-green-900/10 animate-in slide-in-from-bottom-8 fade-in fill-mode-both" style={{ animationDelay: `${i * 50}ms` }}>
             <div className="relative h-64 w-full overflow-hidden rounded-[24px]">
               <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-110" style={{ backgroundImage: `url(${product.image})` }} />
-              <div className="absolute left-4 top-4 flex w-[calc(100%-2rem)] items-center justify-between">
-                <span className="rounded-full bg-white/90 px-3 py-1.5 text-xs font-bold text-[#2F6B3B] shadow-sm backdrop-blur-md">{product.badge}</span>
+              <div className="absolute right-4 top-4 flex items-center">
                 <span className="rounded-full bg-black/50 px-3 py-1.5 text-xs font-bold text-white backdrop-blur-md">Stock: {product.stock}</span>
               </div>
             </div>

@@ -45,26 +45,22 @@ export async function GET(request: NextRequest) {
       if (error) throw error;
 
       const products = (data || []).map((product) => ({
-        id: product.id,
-        name: product.name,
-        farmer: product.farmer || product.farmer_name || "Local Farmer",
-        farmerId: product.farmer_id || null,
-        location: product.location || null,
-        category: product.category,
-        price: Number(product.price || 0),
-        stock: Number(product.stock || 0),
-        badge: product.badge || "AI Verified",
-        image:
-          product.image ||
-          product.image_url ||
-          "https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200",
-        freshnessInfo:
-          product.freshnessInfo ||
-          product.freshness_info ||
-          product.description ||
-          "AI verified lettuce crop.",
-        createdAt: product.created_at,
-      }));
+  id: product.id,
+  name: product.name,
+  farmer: product.farmer || product.farmer_name || "",
+  farmerId: product.farmer_id || null,
+  location: product.location || null,
+  category: product.category || "",
+  price: Number(product.price ?? 0),
+  stock: Number(product.stock ?? 0),
+  image: product.image || product.image_url || "",
+  freshnessInfo:
+    product.freshnessInfo ||
+    product.freshness_info ||
+    product.description ||
+    "",
+  createdAt: product.created_at,
+}));
 
       return json({ success: true, data: products });
     }

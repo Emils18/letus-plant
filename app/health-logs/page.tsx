@@ -841,14 +841,11 @@ export default function HealthLogsPage() {
           </h2>
 
           <p className="mt-4 max-w-3xl text-lg text-white/55">
-            Review prototype/demo
-            lettuce scan records,
+            Review lettuce scan records,
             disease results,
             confidence scores, live
             weather, and monitoring
-            history. Real ESP32-CAM
-            integration is still under
-            development.
+            history from the GreenGuard AI system.
           </p>
 
           <p className="mt-3 text-sm text-white/35">
@@ -897,9 +894,7 @@ export default function HealthLogsPage() {
             </h3>
 
             <p className="mt-1 text-sm text-white/45">
-              Latest prototype/demo
-              diagnostic records for
-              this monitoring view.
+              The 3 most recent diagnostic records.
             </p>
           </div>
 
@@ -960,21 +955,19 @@ export default function HealthLogsPage() {
                           </span>
                         </p>
 
-                        <p>
-                          Temperature:{" "}
-                          {getTemperature(
-                            log
-                          )}
-                        </p>
+                        {getTemperature(log) !== "N/A" && (
+                          <p>
+                            Temperature:{" "}
+                            {getTemperature(log)}
+                          </p>
+                        )}
 
-                        <p>
-                          Location:{" "}
-                          {readText(
-                            log,
-                            ["location"],
-                            "N/A"
-                          )}
-                        </p>
+                        {isUsefulLocation(log.location) && (
+                          <p>
+                            Location:{" "}
+                            {log.location}
+                          </p>
+                        )}
                       </div>
                     </div>
                   );
@@ -1118,11 +1111,8 @@ export default function HealthLogsPage() {
                 </h3>
 
                 <p className="mt-1 text-sm text-white/45">
+                  All scan records from the GreenGuard AI system.
                   Buyer view is read-only.
-                  Farmer records remain a
-                  prototype/demo flow while
-                  real ESP32-CAM integration
-                  is still under development.
                 </p>
               </div>
 
@@ -1206,24 +1196,19 @@ export default function HealthLogsPage() {
                               </span>
                             </p>
 
-                            <p>
-                              Temperature:{" "}
-                              {getTemperature(
-                                log
-                              )}
-                            </p>
+                            {getTemperature(log) !== "N/A" && (
+                              <p>
+                                Temperature:{" "}
+                                {getTemperature(log)}
+                              </p>
+                            )}
 
-
-                            <p>
-                              Location:{" "}
-                              {readText(
-                                log,
-                                [
-                                  "location",
-                                ],
-                                "N/A"
-                              )}
-                            </p>
+                            {isUsefulLocation(log.location) && (
+                              <p>
+                                Location:{" "}
+                                {log.location}
+                              </p>
+                            )}
 
                             <p className="md:col-span-2">
                               Date:{" "}
