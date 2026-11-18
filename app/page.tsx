@@ -299,6 +299,8 @@ const [farmerLoading, setFarmerLoading] =
 
 const [savingProduct, setSavingProduct] =
   useState(false);
+  const [restockingProductId, setRestockingProductId] =
+  useState<string | null>(null);
 const [scanImage, setScanImage] = useState<File | null>(null);
 const [scanPreview, setScanPreview] = useState("");
 const [scanLoading, setScanLoading] = useState(false);
@@ -1057,6 +1059,70 @@ const [sellForm, setSellForm] = useState({
   setSelectedProductImage(file);
 }
 
+
+async function handleRestockProduct(product: FarmerProduct) {
+  if (!account || account.role !== "farmer") return;
+
+  const input = window.prompt(
+    `How many additional units of ${product.name || "this crop"} would you like to add?`
+  );
+
+  if (input === null) return;
+
+  const additionalStock = Number(input.trim());
+
+  if (!Number.isSafeInteger(additionalStock) || additionalStock <= 0) {
+    showNotification("Please enter a valid positive whole number.");
+    return;
+  }
+
+  const currentStock = Math.max(0, Number(product.stock) || 0);
+  const newStock = currentStock + additionalStock;
+
+  if (!Number.isSafeInteger(newStock)) {
+    showNotification("The resulting stock quantity is too large.");
+    return;
+  }
+
+  setRestockingProductId(String(product.id));
+
+  try {
+    const { data, error } = await supabase
+      .from("products")
+      .update({
+        stock: newStock,
+        status: "Available",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", product.id)
+      .eq("farmer_id", account.id)
+      .select("id, stock, status")
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+
+    if (!data) {
+      throw new Error("Product not found or you do not own this listing.");
+    }
+
+    await Promise.all([
+      loadFarmerToolsData(account.id),
+      loadProducts(),
+    ]);
+
+    showNotification(
+      `${product.name} restocked successfully! New stock: ${data.stock}`
+    );
+  } catch (error) {
+    showNotification(
+      error instanceof Error ? error.message : "Failed to restock product."
+    );
+  } finally {
+    setRestockingProductId(null);
+  }
+}
+
+
   async function handlePublishProduct(
   e: React.FormEvent
 ) {
@@ -1427,8 +1493,8 @@ const renderFarmerSellForm = () => {
     ? URL.createObjectURL(selectedProductImage)
     : defaultProductImage;
 
-  return (
-    <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
+       return (
+    <div className="space-y-8">
       <form
         onSubmit={handlePublishProduct}
         className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6"

@@ -58,3 +58,5 @@ Pods/
 .vscode/
 *.log
 *.tmp
+.vercel
+.env*
