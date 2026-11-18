@@ -1845,7 +1845,7 @@ const renderFarmerSellForm = () => {
                     <div className="flex-1">
                       <p className="text-lg font-black text-[#1E2A1F]">{getDiseaseName(log)}</p>
                       <p className="mt-1 text-sm text-[#5C6B5D]">Confidence: <span className="font-black text-[#2F6B3B]">{getConfidence(log)}</span></p>
-                      <p className="text-sm text-[#5C6B5D]">Weather: {log.weather_condition || log.weather || "N/A"}</p>
+                      
                       <p className="text-sm text-[#5C6B5D]">Date: {formatDate(log.captured_at || log.created_at)}</p>
                     </div>
                   </div>

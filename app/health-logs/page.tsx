@@ -1213,17 +1213,6 @@ export default function HealthLogsPage() {
                               )}
                             </p>
 
-                            <p>
-                              Weather:{" "}
-                              {readText(
-                                log,
-                                [
-                                  "weather_condition",
-                                  "weather",
-                                ],
-                                "N/A"
-                              )}
-                            </p>
 
                             <p>
                               Location:{" "}
