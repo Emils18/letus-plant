@@ -37,7 +37,7 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: ScanModeScreen()));
 
       expect(find.text('Drone Manual Scan'), findsOneWidget);
-      expect(find.text('Drone readiness check'), findsOneWidget);
+      expect(find.text('Drone readiness check'), findsNothing);
       expect(find.text('Automatic Flight Plan'), findsOneWidget);
       expect(find.text('Manual Farmer Scan'), findsNothing);
     },

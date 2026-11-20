@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NotificationService {
@@ -11,9 +12,9 @@ class NotificationService {
     required String type,
   }) async {
     try {
-      print('TRYING TO CREATE NOTIFICATION...');
-      print('receiver userId: $userId');
-      print('orderId: $orderId');
+      debugPrint('TRYING TO CREATE NOTIFICATION...');
+      debugPrint('receiver userId: $userId');
+      debugPrint('orderId: $orderId');
 
       final data = await supabase
           .from('notifications')
@@ -28,17 +29,17 @@ class NotificationService {
           .select()
           .single();
 
-      print('NOTIFICATION INSERTED: $data');
+      debugPrint('NOTIFICATION INSERTED: $data');
 
       return null;
     } on PostgrestException catch (e) {
-      print('NOTIFICATION DATABASE ERROR: ${e.message}');
-      print('DETAILS: ${e.details}');
-      print('HINT: ${e.hint}');
-      print('CODE: ${e.code}');
+      debugPrint('NOTIFICATION DATABASE ERROR: ${e.message}');
+      debugPrint('DETAILS: ${e.details}');
+      debugPrint('HINT: ${e.hint}');
+      debugPrint('CODE: ${e.code}');
       return 'Notification database error: ${e.message}';
     } catch (e) {
-      print('NOTIFICATION UNKNOWN ERROR: $e');
+      debugPrint('NOTIFICATION UNKNOWN ERROR: $e');
       return 'Notification error: $e';
     }
   }
@@ -73,10 +74,10 @@ class NotificationService {
 
       return List<Map<String, dynamic>>.from(data);
     } on PostgrestException catch (e) {
-      print('getMyNotifications database error: ${e.message}');
+      debugPrint('getMyNotifications database error: ${e.message}');
       return [];
     } catch (e) {
-      print('getMyNotifications error: $e');
+      debugPrint('getMyNotifications error: $e');
       return [];
     }
   }
@@ -95,7 +96,7 @@ class NotificationService {
 
       return List.from(data).length;
     } catch (e) {
-      print('getUnreadCount error: $e');
+      debugPrint('getUnreadCount error: $e');
       return 0;
     }
   }

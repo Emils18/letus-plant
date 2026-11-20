@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -13,17 +14,23 @@ import '../services/inav_diagnostics_service.dart';
 const _green = Color(0xFF47D16C);
 const _panel = Color(0xE91A211E);
 
+// Initial field-test settings. Require consecutive fixes to reduce false arrivals
+// caused by ordinary GPS position jitter. Tune after testing the actual drone GPS.
+const double _waypointArrivalRadiusMeters = 5.0;
+const int _requiredArrivalFixes = 3;
+
 /// Map-first mission editor. It intentionally has no flight-command path:
 /// this project has no verified MSP mission upload or multicopter launch path.
 class MissionPlannerScreen extends StatefulWidget {
-  const MissionPlannerScreen({super.key});
+  const MissionPlannerScreen({super.key, this.mappingAltitudeFeet});
+
+  final int? mappingAltitudeFeet;
 
   @override
   State<MissionPlannerScreen> createState() => _MissionPlannerScreenState();
 }
 
 class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
-  static const _tileKey = 'mission_map_tile_template';
   final _service = InavDiagnosticsService();
   final _cameraService = EspCamService();
   FlightMission _mission = const FlightMission();
@@ -40,10 +47,22 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
   bool _checkingCamera = false;
   bool _busy = false;
   int _zoom = 17;
-  LatLngD _center = const LatLngD(14.5995, 120.9842);
-  String _tileTemplate =
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+  LatLngD _center = const LatLngD(0, 0);
+  bool get _hasMapLocation => _drone != null || _phone != null;
+  int _mapViewRevision = 0;
+  int _detailedMappingAltitudeFeet = 2;
+  bool _choosingLandingPoint = false;
+  bool _mappingPlanConfirmed = false;
+  LatLngD? _landingPoint;
   int? _selected;
+
+  // Read-only waypoint monitoring state. It never sends commands to INAV.
+  bool _waypointMonitoring = false;
+  bool _waypointMonitoringComplete = false;
+  int _nextWaypointIndex = 0;
+  int _arrivalFixCount = 0;
+  double? _distanceToNextWaypointMeters;
+  final Set<int> _reachedWaypoints = <int>{};
 
   @override
   void initState() {
@@ -62,7 +81,7 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
   Future<void> _restore() async {
     final prefs = await SharedPreferences.getInstance();
     final mission = prefs.getString('saved_flight_mission');
-    final template = prefs.getString(_tileKey);
+    final landing = prefs.getString('saved_mapping_landing_point');
     if (!mounted) return;
     setState(() {
       if (mission != null) {
@@ -70,11 +89,19 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
           _mission = FlightMission.decode(mission);
         } catch (_) {}
       }
-      if (template != null &&
-          template.contains('{z}') &&
-          template.contains('{x}') &&
-          template.contains('{y}')) {
-        _tileTemplate = template;
+      if (landing != null) {
+        final parts = landing.split(',');
+        if (parts.length == 2) {
+          final lat = double.tryParse(parts[0]);
+          final lon = double.tryParse(parts[1]);
+          if (lat != null && lon != null) _landingPoint = LatLngD(lat, lon);
+        }
+      }
+      if (_landingPoint != null && _mission.waypoints.isNotEmpty) {
+        _mappingPlanConfirmed = true;
+        _detailedMappingAltitudeFeet = (_mission.altitudeMeters / 0.3048)
+            .round()
+            .clamp(1, 6);
       }
     });
     _locatePhone();
@@ -89,7 +116,30 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('saved_flight_mission', _mission.encode());
-    if (mounted) _toast('Mission saved on this device.');
+    final landing = _landingPoint;
+    if (landing != null) {
+      await prefs.setString(
+        'saved_mapping_landing_point',
+        '${landing.latitude},${landing.longitude}',
+      );
+    } else {
+      await prefs.remove('saved_mapping_landing_point');
+    }
+    if (mounted) _toast('Mapping plan saved on this device.');
+  }
+
+  Future<void> _disconnectDrone() async {
+    _telemetryTimer?.cancel();
+    _telemetryTimer = null;
+    _resetWaypointProgress();
+    await _service.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _connection = 'ESP32 NOT CONNECTED';
+      _drone = null;
+      _headingDegrees = null;
+      _battery = 'BATTERY UNAVAILABLE';
+    });
   }
 
   Future<void> _locatePhone() async {
@@ -113,6 +163,10 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
 
   Future<void> _checkCamera() async {
     if (_checkingCamera) return;
+    if (kIsWeb) {
+      if (mounted) setState(() => _cameraReady = false);
+      return;
+    }
     _checkingCamera = true;
     final ready = await _cameraService.checkConnection();
     if (mounted) setState(() => _cameraReady = ready);
@@ -121,6 +175,13 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
 
   Future<void> _connect() async {
     if (_busy || _service.connected) return;
+    if (kIsWeb) {
+      _toast(
+        'Drone connection requires the Android/iOS app. Chrome cannot use '
+        'the UDP discovery and TCP MSP sockets used by the ESP32 bridge.',
+      );
+      return;
+    }
     setState(() {
       _busy = true;
       _connection = 'DISCOVERING ESP32…';
@@ -178,6 +239,8 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
           _headingDegrees = null;
           _heading = 'HEADING UNAVAILABLE';
           _connection = 'INAV CONNECTED • GPS NO FIX';
+          _arrivalFixCount = 0;
+          _distanceToNextWaypointMeters = null;
         });
       } else {
         double? heading;
@@ -204,19 +267,139 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
           _battery = battery;
           _connection = 'INAV CONNECTED • GPS FIX • $sats SAT';
         });
+        _checkWaypointArrival(point);
       }
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _connection = 'TELEMETRY STALE';
         _drone = null;
+        _arrivalFixCount = 0;
+        _distanceToNextWaypointMeters = null;
       });
       _telemetryTimer?.cancel();
       _telemetryTimer = null;
     }
   }
 
+  void _resetWaypointProgress() {
+    _waypointMonitoring = false;
+    _waypointMonitoringComplete = false;
+    _nextWaypointIndex = 0;
+    _arrivalFixCount = 0;
+    _distanceToNextWaypointMeters = null;
+    _reachedWaypoints.clear();
+  }
+
+  void _toggleWaypointMonitoring() {
+    if (_waypointMonitoring) {
+      setState(() {
+        _waypointMonitoring = false;
+        _arrivalFixCount = 0;
+        _distanceToNextWaypointMeters = null;
+      });
+      _toast('Waypoint monitoring stopped. No flight command was sent.');
+      return;
+    }
+
+    if (_mission.waypoints.isEmpty) {
+      _toast('Add at least one waypoint first.');
+      return;
+    }
+    if (!_service.connected || _drone == null) {
+      _toast('Connect to INAV and wait for a valid live GPS fix first.');
+      return;
+    }
+
+    setState(() {
+      _waypointMonitoring = true;
+      _waypointMonitoringComplete = false;
+      _nextWaypointIndex = 0;
+      _arrivalFixCount = 0;
+      _distanceToNextWaypointMeters = null;
+      _reachedWaypoints.clear();
+    });
+    _toast(
+      'Read-only waypoint monitoring started. The drone must be flown manually.',
+    );
+  }
+
+  void _checkWaypointArrival(LatLngD current) {
+    if (!_waypointMonitoring ||
+        _waypointMonitoringComplete ||
+        _nextWaypointIndex >= _mission.waypoints.length) {
+      return;
+    }
+
+    final target = _mission.waypoints[_nextWaypointIndex];
+    final distance = Geolocator.distanceBetween(
+      current.latitude,
+      current.longitude,
+      target.latitude,
+      target.longitude,
+    );
+
+    var reachedIndex = -1;
+    var completed = false;
+    setState(() {
+      _distanceToNextWaypointMeters = distance;
+      if (distance <= _waypointArrivalRadiusMeters) {
+        _arrivalFixCount++;
+      } else {
+        _arrivalFixCount = 0;
+      }
+
+      if (_arrivalFixCount >= _requiredArrivalFixes) {
+        reachedIndex = _nextWaypointIndex;
+        _reachedWaypoints.add(reachedIndex);
+        _nextWaypointIndex++;
+        _arrivalFixCount = 0;
+        if (_nextWaypointIndex >= _mission.waypoints.length) {
+          _waypointMonitoring = false;
+          _waypointMonitoringComplete = true;
+          _distanceToNextWaypointMeters = null;
+          completed = true;
+        }
+      }
+    });
+
+    if (reachedIndex >= 0) {
+      _toast(
+        completed
+            ? 'All ${_mission.waypoints.length} waypoints detected as reached.'
+            : 'Waypoint ${reachedIndex + 1} reached. Next: waypoint ${reachedIndex + 2}.',
+      );
+    }
+  }
+
+  String get _waypointProgressText {
+    final total = _mission.waypoints.length;
+    if (total == 0) return 'NO WAYPOINTS PLANNED';
+    if (_waypointMonitoringComplete) {
+      return 'COMPLETE • ${_reachedWaypoints.length}/$total WAYPOINTS REACHED';
+    }
+    if (_waypointMonitoring) {
+      final distance = _distanceToNextWaypointMeters;
+      final distanceLabel = distance == null
+          ? 'WAITING FOR GPS'
+          : '${distance.toStringAsFixed(1)} m AWAY • $_arrivalFixCount/$_requiredArrivalFixes FIXES';
+      return 'MONITORING • WP ${_nextWaypointIndex + 1}/$total • $distanceLabel';
+    }
+    return '${_reachedWaypoints.length}/$total WAYPOINTS REACHED • MONITORING OFF';
+  }
+
   void _addWaypoint(LatLngD point) {
+    if (!_hasMapLocation) {
+      _toast(
+        'Connect the drone or enable location before choosing field areas.',
+      );
+      return;
+    }
+    if (_mission.waypoints.length >= 60) {
+      _toast('The plan can contain up to 60 mapping points.');
+      return;
+    }
+    _resetWaypointProgress();
     _remember();
     setState(() {
       _mission = _mission.copyWith(
@@ -233,13 +416,203 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
       );
       _selected = _mission.waypoints.length - 1;
     });
-    final index = _mission.waypoints.length - 1;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && index < _mission.waypoints.length) _editPoint(index);
+    _mappingPlanConfirmed = false;
+    _landingPoint = null;
+    _choosingLandingPoint = false;
+    _toast(
+      'Area ${_mission.waypoints.length} added. Tap the map to add another.',
+    );
+  }
+
+  void _handleMapTap(LatLngD point) {
+    if (_choosingLandingPoint) {
+      _confirmLandingPoint(point);
+    } else {
+      _addWaypoint(point);
+    }
+  }
+
+  Future<void> _reviewMappingAreas() async {
+    if (_mission.waypoints.isEmpty) {
+      _toast('Tap the map to select at least one area first.');
+      return;
+    }
+    var selectedHeight = _detailedMappingAltitudeFeet;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, updateDialog) => AlertDialog(
+          backgroundColor: const Color(0xFFFDFEF9),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          title: const Text(
+            'Are these the areas to map?',
+            style: TextStyle(
+              color: Color(0xFF203A28),
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'You selected ${_mission.waypoints.length} mapping ${_mission.waypoints.length == 1 ? 'area' : 'areas'}.',
+                style: const TextStyle(color: Color(0xFF536356), fontSize: 15),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Detailed mapping height',
+                style: TextStyle(
+                  color: Color(0xFF203A28),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [1, 2, 3, 4, 5, 6]
+                    .map(
+                      (feet) => ChoiceChip(
+                        label: Text(
+                          '$feet ft',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                          ),
+                        ),
+                        selected: selectedHeight == feet,
+                        onSelected: (_) =>
+                            updateDialog(() => selectedHeight = feet),
+                        selectedColor: const Color(0xFFD9EBDD),
+                        backgroundColor: const Color(0xFFF0F3EC),
+                        labelStyle: TextStyle(
+                          color: selectedHeight == feet
+                              ? const Color(0xFF205D35)
+                              : const Color(0xFF526253),
+                        ),
+                        side: BorderSide(
+                          color: selectedHeight == feet
+                              ? const Color(0xFF4E9561)
+                              : const Color(0xFFD6DED3),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Next, you will choose the landing location on the map.',
+                style: TextStyle(
+                  color: Color(0xFF687568),
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Go back'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF286B3D),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    _remember();
+    final altitudeMeters = selectedHeight * 0.3048;
+    final updatedPoints = _mission.waypoints
+        .map(
+          (point) => MissionPoint(
+            latitude: point.latitude,
+            longitude: point.longitude,
+            altitudeMeters: altitudeMeters,
+            speedMetersPerSecond: point.speedMetersPerSecond,
+            hoverSeconds: point.hoverSeconds,
+          ),
+        )
+        .toList();
+    setState(() {
+      _detailedMappingAltitudeFeet = selectedHeight;
+      _mission = _mission.copyWith(
+        altitudeMeters: altitudeMeters,
+        waypoints: updatedPoints,
+      );
+      _choosingLandingPoint = true;
+      _landingPoint = null;
+      _mappingPlanConfirmed = false;
     });
+    _toast('Now tap the map to choose where the drone should land.');
+  }
+
+  Future<void> _confirmLandingPoint(LatLngD point) async {
+    setState(() => _landingPoint = point);
+    final usePoint = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFFFDFEF9),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text(
+          'Use this landing location?',
+          style: TextStyle(
+            color: Color(0xFF203A28),
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        content: Text(
+          'Landing point\n${point.latitude.toStringAsFixed(6)}, ${point.longitude.toStringAsFixed(6)}',
+          style: const TextStyle(color: Color(0xFF536356), height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Choose again'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF286B3D),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirm location'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (usePoint == true) {
+      setState(() {
+        _choosingLandingPoint = false;
+        _mappingPlanConfirmed = true;
+      });
+      _toast(
+        'Landing location selected. Save the plan when ready. Flight is not enabled.',
+      );
+    } else {
+      setState(() {
+        _landingPoint = null;
+        _choosingLandingPoint = true;
+        _mappingPlanConfirmed = false;
+      });
+    }
   }
 
   void _moveWaypoint(int index, LatLngD point) {
+    _resetWaypointProgress();
     final list = [..._mission.waypoints];
     final old = list[index];
     list[index] = MissionPoint(
@@ -249,7 +622,11 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
       speedMetersPerSecond: old.speedMetersPerSecond,
       hoverSeconds: old.hoverSeconds,
     );
-    setState(() => _mission = _mission.copyWith(waypoints: list));
+    setState(() {
+      _mission = _mission.copyWith(waypoints: list);
+      _mappingPlanConfirmed = false;
+      _landingPoint = null;
+    });
   }
 
   void _editPoint(int index) {
@@ -286,22 +663,29 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
               ),
             ),
             const SizedBox(height: 14),
-            _field(alt, 'Altitude (1–6 feet)', decimal: true),
+            _field(alt, 'Mapping height (1–6 feet)', decimal: true),
             _field(speed, 'Speed (m/s)', decimal: true),
             _field(hover, 'Position hold (seconds)'),
-            Row(
+            Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 4,
+              runSpacing: 4,
               children: [
                 IconButton(
                   onPressed: index == 0
                       ? null
                       : () {
                           _remember();
+                          _resetWaypointProgress();
                           final points = [..._mission.waypoints];
                           final p = points.removeAt(index);
                           points.insert(index - 1, p);
                           setState(() {
                             _mission = _mission.copyWith(waypoints: points);
                             _selected = index - 1;
+                            _mappingPlanConfirmed = false;
+                            _landingPoint = null;
                           });
                           Navigator.pop(context);
                         },
@@ -312,25 +696,31 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
                       ? null
                       : () {
                           _remember();
+                          _resetWaypointProgress();
                           final points = [..._mission.waypoints];
                           final p = points.removeAt(index);
                           points.insert(index + 1, p);
                           setState(() {
                             _mission = _mission.copyWith(waypoints: points);
                             _selected = index + 1;
+                            _mappingPlanConfirmed = false;
+                            _landingPoint = null;
                           });
                           Navigator.pop(context);
                         },
                   icon: const Icon(Icons.arrow_downward, color: Colors.white),
                 ),
-                const Spacer(),
+                const SizedBox(width: 4),
                 TextButton.icon(
                   onPressed: () {
                     _remember();
+                    _resetWaypointProgress();
                     final points = [..._mission.waypoints]..removeAt(index);
                     setState(() {
                       _mission = _mission.copyWith(waypoints: points);
                       _selected = null;
+                      _mappingPlanConfirmed = false;
+                      _landingPoint = null;
                     });
                     Navigator.pop(context);
                   },
@@ -354,9 +744,9 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
                         h < 1 ||
                         h > 10 ||
                         a < 1 ||
-                        a > 6) {
+                        a > 4) {
                       _toast(
-                        'Waypoint altitude must be 1–6 ft and wait must be 1–10 seconds.',
+                        'Mapping height must be 1–4 ft and wait must be 1–10 seconds.',
                       );
                       return;
                     }
@@ -369,9 +759,11 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
                       speedMetersPerSecond: s,
                       hoverSeconds: h,
                     );
-                    setState(
-                      () => _mission = _mission.copyWith(waypoints: points),
-                    );
+                    setState(() {
+                      _mission = _mission.copyWith(waypoints: points);
+                      _mappingPlanConfirmed = false;
+                      _landingPoint = null;
+                    });
                     Navigator.pop(context);
                   },
                   child: const Text('SAVE'),
@@ -547,42 +939,6 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
     );
   }
 
-  Future<void> _tileSettings() async {
-    final c = TextEditingController(text: _tileTemplate);
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Satellite map source'),
-        content: TextField(
-          controller: c,
-          decoration: const InputDecoration(
-            labelText: 'Tile URL template',
-            helperText: 'URL must include {z}, {x}, and {y}.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('CANCEL'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, c.text),
-            child: const Text('SAVE'),
-          ),
-        ],
-      ),
-    );
-    if (value == null ||
-        !value.contains('{z}') ||
-        !value.contains('{x}') ||
-        !value.contains('{y}')) {
-      return;
-    }
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_tileKey, value);
-    if (mounted) setState(() => _tileTemplate = value);
-  }
-
   void _start() {
     final errors = _mission.validate();
     final all = [...errors];
@@ -750,328 +1106,585 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final droneReady = _service.connected && _drone != null;
+    final connectionLabel = droneReady
+        ? 'Drone location ready'
+        : _service.connected
+        ? 'Drone connected • waiting for GPS'
+        : 'Drone not connected';
+    final connectionColor = droneReady
+        ? const Color(0xFF187A46)
+        : const Color(0xFF9A6B18);
+
     return Scaffold(
-      backgroundColor: const Color(0xFF121714),
+      backgroundColor: const Color(0xFFF2F5EC),
       body: SafeArea(
         child: Stack(
           children: [
             Positioned.fill(
               child: _MissionMap(
+                key: ValueKey(_mapViewRevision),
                 center: _center,
                 zoom: _zoom,
+                hasLocation: _hasMapLocation,
                 waypoints: _mission.waypoints,
+                landingPoint: _landingPoint,
                 drone: _drone,
                 headingDegrees: _headingDegrees,
                 phone: _phone,
-                tileTemplate: _tileTemplate,
-                onTap: _addWaypoint,
+                reachedWaypoints: _reachedWaypoints,
+                nextWaypointIndex: _nextWaypointIndex,
+                waypointMonitoring: _waypointMonitoring,
+                onTap: _handleMapTap,
                 onMove: _moveWaypoint,
                 onMoveStart: _remember,
                 onSelect: _editPoint,
               ),
             ),
+
+            // Simple, high-contrast header for the farmer.
             Positioned(
               top: 12,
               left: 12,
               right: 12,
-              child: Row(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: 760,
+                    maxHeight: MediaQuery.of(context).size.height * .48,
+                  ),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFDFEF9),
+                      borderRadius: BorderRadius.circular(22),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x220E2818),
+                          blurRadius: 18,
+                          offset: Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        _headerIcon(
+                          Icons.arrow_back_rounded,
+                          () => Navigator.pop(context),
+                        ),
+                        const SizedBox(width: 12),
+                        Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE5F2E5),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(
+                            Icons.eco_rounded,
+                            color: Color(0xFF246B3B),
+                            size: 25,
+                          ),
+                        ),
+                        const SizedBox(width: 11),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _mission.name.isEmpty
+                                    ? 'Field survey'
+                                    : _mission.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF203A28),
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                connectionLabel,
+                                style: TextStyle(
+                                  color: connectionColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _headerIcon(Icons.tune_rounded, _settings),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Map controls are separated from the main farmer actions.
+            Positioned(
+              top: 112,
+              right: 16,
+              child: Column(
                 children: [
-                  _roundButton(Icons.arrow_back, () => Navigator.pop(context)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
+                  _mapControl(
+                    Icons.add_rounded,
+                    () => setState(
+                      () => _zoom = (_zoom + 1).clamp(3, 19).toInt(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _mapControl(
+                    Icons.remove_rounded,
+                    () => setState(
+                      () => _zoom = (_zoom - 1).clamp(3, 19).toInt(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _mapControl(Icons.my_location_rounded, () {
+                    final point = _drone ?? _phone;
+                    if (point != null) {
+                      setState(() {
+                        _center = point;
+                        _mapViewRevision++;
+                      });
+                    } else {
+                      _connect();
+                    }
+                  }),
+                  const SizedBox(height: 8),
+                  _mapControl(
+                    Icons.undo_rounded,
+                    _undoMission,
+                    enabled: _undo.isNotEmpty,
+                  ),
+                  const SizedBox(height: 8),
+                  _mapControl(
+                    Icons.redo_rounded,
+                    _redoMission,
+                    enabled: _redo.isNotEmpty,
+                  ),
+                ],
+              ),
+            ),
+
+            if (_choosingLandingPoint)
+              Positioned(
+                top: 112,
+                left: 14,
+                right: 76,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 15,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF17472B),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x33000000), blurRadius: 12),
+                      ],
+                    ),
+                    child: const Text(
+                      'TAP THE MAP TO CHOOSE A LANDING LOCATION',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
                       ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // A real location is required before showing map tiles or accepting taps.
+            if (!_hasMapLocation)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Center(
+                    child: Container(
+                      margin: const EdgeInsets.fromLTRB(28, 110, 72, 270),
+                      padding: const EdgeInsets.all(22),
                       decoration: BoxDecoration(
-                        color: _panel,
-                        borderRadius: BorderRadius.circular(16),
+                        color: const Color(0xF7FDFEF9),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x220E2818),
+                            blurRadius: 18,
+                            offset: Offset(0, 5),
+                          ),
+                        ],
                       ),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          Icon(
+                            Icons.location_searching_rounded,
+                            color: Color(0xFF34754A),
+                            size: 42,
+                          ),
+                          SizedBox(height: 12),
                           Text(
-                            _mission.name.toUpperCase(),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            'Waiting for your field location',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 19,
                               fontWeight: FontWeight.w900,
+                              color: Color(0xFF203A28),
                             ),
                           ),
-                          const SizedBox(height: 3),
+                          SizedBox(height: 7),
                           Text(
-                            _connection,
+                            'Connect the drone or allow phone location to open the real map. No sample location is shown.',
+                            textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: _connection.contains('FIX')
-                                  ? _green
-                                  : Colors.amber,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
+                              fontSize: 14,
+                              height: 1.4,
+                              color: Color(0xFF5B6B5F),
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  _roundButton(Icons.settings, _settings),
-                ],
-              ),
-            ),
-            Positioned(
-              right: 12,
-              top: 100,
-              child: Column(
-                children: [
-                  _roundButton(
-                    Icons.add,
-                    () => setState(
-                      () => _zoom = (_zoom + 1).clamp(3, 19).toInt(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  _roundButton(
-                    Icons.remove,
-                    () => setState(
-                      () => _zoom = (_zoom - 1).clamp(3, 19).toInt(),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  _roundButton(Icons.my_location, () {
-                    final p = _drone ?? _phone;
-                    if (p != null) {
-                      setState(() => _center = p);
-                    } else {
-                      _connect();
-                    }
-                  }),
-                  const SizedBox(height: 8),
-                  _roundButton(Icons.photo_camera, () {
-                    _checkCamera();
-                    _photoWorkflow();
-                  }),
-                ],
-              ),
-            ),
-            Positioned(
-              left: 12,
-              top: 100,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 11,
-                  vertical: 9,
-                ),
-                decoration: BoxDecoration(
-                  color: _panel,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.navigation_rounded,
-                      color: Colors.cyanAccent,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 7),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'NOSE / FRONT',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        Text(
-                          'TAIL / BACK • tap route direction',
-                          style: TextStyle(color: Colors.white70, fontSize: 9),
-                        ),
-                      ],
-                    ),
-                  ],
                 ),
               ),
-            ),
+
+            // Farmer action panel: fewer actions, larger labels, and clear status.
             Positioned(
               left: 12,
               right: 12,
               bottom: 12,
-              child: Container(
-                padding: const EdgeInsets.all(13),
-                decoration: BoxDecoration(
-                  color: _panel,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Wrap(
-                      spacing: 7,
-                      runSpacing: 5,
-                      children: [
-                        _compactStatus(
-                          Icons.navigation,
-                          _drone == null ? 'GPS: NO FIX' : 'DRONE: $_heading',
-                          Colors.cyanAccent,
-                        ),
-                        _compactStatus(
-                          Icons.photo_camera,
-                          _cameraReady ? 'CAMERA: READY' : 'CAMERA: CHECK',
-                          _cameraReady ? _green : Colors.amber,
-                        ),
-                        _compactStatus(
-                          Icons.battery_std,
-                          _battery,
-                          _battery.contains('UNAVAILABLE')
-                              ? Colors.amber
-                              : _green,
-                        ),
-                        _compactStatus(
-                          Icons.person_pin_circle,
-                          _phone == null ? 'PHONE: OFF' : 'PHONE: READY',
-                          Colors.white70,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(Icons.route, color: _green),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${_mission.waypoints.length} STOPS • ${(_mission.altitudeMeters / 0.3048).toStringAsFixed(0)} ft • ${_mission.speedMetersPerSecond.toStringAsFixed(1)} m/s • ${_mission.hoverSeconds}s wait',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 11,
-                            ),
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: _mission.waypoints.isEmpty
-                              ? null
-                              : _editPointForSelected,
-                          icon: const Icon(Icons.tune, color: Colors.white),
-                        ),
-                        IconButton(
-                          onPressed: _save,
-                          icon: const Icon(
-                            Icons.save_outlined,
-                            color: Colors.white,
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: _photoWorkflow,
-                          icon: const Icon(
-                            Icons.photo_library_outlined,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _busy
-                                ? null
-                                : _service.connected
-                                ? () async {
-                                    _telemetryTimer?.cancel();
-                                    await _service.disconnect();
-                                    setState(
-                                      () => _connection = 'ESP32 NOT CONNECTED',
-                                    );
-                                  }
-                                : _connect,
-                            icon: Icon(
-                              _service.connected ? Icons.link_off : Icons.wifi,
-                              size: 18,
-                            ),
-                            label: Text(
-                              _busy
-                                  ? 'CONNECTING…'
-                                  : _service.connected
-                                  ? 'DISCONNECT'
-                                  : 'CONNECT DRONE',
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              side: const BorderSide(color: Colors.white30),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _start,
-                            icon: const Icon(Icons.flight_takeoff, size: 18),
-                            label: const Text('START MISSION'),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF604D31),
-                              foregroundColor: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    const Text(
-                      'PLANNING ONLY • FLIGHT COMMANDS DISABLED UNTIL VERIFIED',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.amber,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 9,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            Positioned(
-              right: 12,
-              top: 170,
-              child: Column(
-                children: [
-                  _roundButton(Icons.undo, _undoMission),
-                  const SizedBox(height: 8),
-                  _roundButton(Icons.redo, _redoMission),
-                  const SizedBox(height: 8),
-                  _roundButton(Icons.layers, _tileSettings),
-                ],
-              ),
-            ),
-            Positioned(
-              left: 0,
-              right: 0,
-              top: 74,
-              child: IgnorePointer(
-                child: Center(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
+                    padding: const EdgeInsets.fromLTRB(18, 17, 18, 16),
                     decoration: BoxDecoration(
-                      color: _panel,
-                      borderRadius: BorderRadius.circular(10),
+                      color: const Color(0xFFFDFEF9),
+                      borderRadius: BorderRadius.circular(26),
+                      border: Border.all(color: const Color(0xFFE1E9DD)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x2A102719),
+                          blurRadius: 24,
+                          offset: Offset(0, 7),
+                        ),
+                      ],
                     ),
-                    child: const Text(
-                      'TAP MAP TO ADD WAYPOINT • DRAG MARKER TO MOVE',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w800,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Map your field',
+                                  style: TextStyle(
+                                    fontSize: 21,
+                                    fontWeight: FontWeight.w900,
+                                    color: Color(0xFF203A28),
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEAF3E8),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Text(
+                                  '${_mission.waypoints.length} areas',
+                                  style: const TextStyle(
+                                    color: Color(0xFF28633B),
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            _choosingLandingPoint
+                                ? 'Choose a safe place for the drone to land.'
+                                : _mappingPlanConfirmed
+                                ? 'Your mapping areas and landing location are selected. Save this plan on your device.'
+                                : _hasMapLocation
+                                ? 'Tap the map to mark the lettuce areas you want to inspect.'
+                                : 'Connect your drone to show the field and start choosing areas.',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              height: 1.35,
+                              color: Color(0xFF5B6B5F),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              _farmerStatus(
+                                Icons.flight_rounded,
+                                droneReady
+                                    ? 'Drone GPS ready'
+                                    : _service.connected
+                                    ? 'Waiting for GPS'
+                                    : 'Drone offline',
+                                droneReady
+                                    ? const Color(0xFF187A46)
+                                    : const Color(0xFF9A6B18),
+                              ),
+                              _farmerStatus(
+                                Icons.photo_camera_rounded,
+                                _cameraReady
+                                    ? 'Camera ready'
+                                    : _checkingCamera
+                                    ? 'Checking camera'
+                                    : 'Camera offline',
+                                _cameraReady
+                                    ? const Color(0xFF187A46)
+                                    : const Color(0xFF9A6B18),
+                                onTap: _checkCamera,
+                              ),
+                              _farmerStatus(
+                                Icons.battery_charging_full_rounded,
+                                _battery == 'BATTERY UNAVAILABLE'
+                                    ? 'Battery unavailable'
+                                    : _battery,
+                                _battery.contains('UNAVAILABLE')
+                                    ? const Color(0xFF9A6B18)
+                                    : const Color(0xFF187A46),
+                              ),
+                              _farmerStatus(
+                                Icons.height,
+                                widget.mappingAltitudeFeet == null
+                                    ? 'Overview height not set'
+                                    : 'Overview ${widget.mappingAltitudeFeet} ft',
+                                widget.mappingAltitudeFeet == null
+                                    ? const Color(0xFF9A6B18)
+                                    : const Color(0xFF187A46),
+                              ),
+                            ],
+                          ),
+                          if (_waypointMonitoring ||
+                              _waypointMonitoringComplete) ...[
+                            const SizedBox(height: 12),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 13,
+                                vertical: 11,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF4DF),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.route_rounded,
+                                        color: Color(0xFF946018),
+                                      ),
+                                      const SizedBox(width: 9),
+                                      Expanded(
+                                        child: Text(
+                                          _waypointProgressText,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          softWrap: true,
+                                          style: const TextStyle(
+                                            color: Color(0xFF775014),
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (_waypointMonitoring)
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: TextButton(
+                                        onPressed: _toggleWaypointMonitoring,
+                                        child: const Text('Stop monitoring'),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            width: double.infinity,
+                            height: 56,
+                            child: FilledButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : _service.connected
+                                  ? _disconnectDrone
+                                  : _connect,
+                              icon: _busy
+                                  ? const SizedBox(
+                                      width: 19,
+                                      height: 19,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : Icon(
+                                      _service.connected
+                                          ? Icons.check_circle_rounded
+                                          : Icons.wifi_rounded,
+                                      size: 22,
+                                    ),
+                              label: Text(
+                                _busy
+                                    ? 'Connecting to drone…'
+                                    : _service.connected
+                                    ? 'Disconnect drone'
+                                    : 'Connect drone',
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: _service.connected
+                                    ? const Color(0xFF526C59)
+                                    : const Color(0xFF286B3D),
+                                foregroundColor: Colors.white,
+                                disabledBackgroundColor: const Color(
+                                  0xFFDCE9DB,
+                                ),
+                                disabledForegroundColor: const Color(
+                                  0xFF28633B,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(17),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_mission.waypoints.isNotEmpty) ...[
+                            const SizedBox(height: 9),
+                            if (_mappingPlanConfirmed)
+                              Container(
+                                width: double.infinity,
+                                margin: const EdgeInsets.only(bottom: 9),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 13,
+                                  vertical: 11,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE8F4E9),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.check_circle_rounded,
+                                      color: Color(0xFF286B3D),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        'Plan reviewed • $_detailedMappingAltitudeFeet ft • landing point selected',
+                                        style: const TextStyle(
+                                          color: Color(0xFF28633B),
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: _save,
+                                  icon: const Icon(Icons.save_outlined),
+                                  label: const Text('Save plan'),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: const Color(0xFF28633B),
+                                    minimumSize: const Size.fromHeight(52),
+                                    side: const BorderSide(
+                                      color: Color(0xFFB8CDB8),
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(15),
+                                    ),
+                                    textStyle: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 9),
+                                FilledButton.icon(
+                                  onPressed: _choosingLandingPoint
+                                      ? null
+                                      : _reviewMappingAreas,
+                                  icon: Icon(
+                                    _mappingPlanConfirmed
+                                        ? Icons.edit_location_alt_rounded
+                                        : Icons.fact_check_rounded,
+                                  ),
+                                  label: Text(
+                                    _mappingPlanConfirmed
+                                        ? 'Change plan'
+                                        : 'Review areas',
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    foregroundColor: Colors.white,
+                                    backgroundColor: const Color(0xFF286B3D),
+                                    disabledBackgroundColor: const Color(
+                                      0xFFCBD8CC,
+                                    ),
+                                    minimumSize: const Size.fromHeight(52),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(15),
+                                    ),
+                                    textStyle: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                          const SizedBox(height: 9),
+                          const Center(
+                            child: Text(
+                              'PLANNING ONLY  •  AUTONOMOUS FLIGHT IS NOT ENABLED',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Color(0xFF8A641E),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: .3,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
@@ -1084,80 +1697,105 @@ class _MissionPlannerScreenState extends State<MissionPlannerScreen> {
     );
   }
 
-  void _editPointForSelected() => _editPoint(
-    (_selected ?? _mission.waypoints.length - 1).clamp(
-      0,
-      _mission.waypoints.length - 1,
-    ),
-  );
   void _undoMission() {
     if (_undo.isEmpty) return;
     _redo.add(_mission);
-    setState(() => _mission = _undo.removeLast());
+    _resetWaypointProgress();
+    setState(() {
+      _mission = _undo.removeLast();
+      _mappingPlanConfirmed = false;
+      _landingPoint = null;
+      _choosingLandingPoint = false;
+    });
   }
 
   void _redoMission() {
     if (_redo.isEmpty) return;
     _undo.add(_mission);
-    setState(() => _mission = _redo.removeLast());
+    _resetWaypointProgress();
+    setState(() {
+      _mission = _redo.removeLast();
+      _mappingPlanConfirmed = false;
+      _landingPoint = null;
+      _choosingLandingPoint = false;
+    });
   }
 
-  Widget _roundButton(IconData icon, VoidCallback onPressed) => Material(
-    color: _panel,
+  Widget _headerIcon(IconData icon, VoidCallback onTap) => Material(
+    color: const Color(0xFFF0F4EC),
     borderRadius: BorderRadius.circular(14),
     child: InkWell(
-      onTap: onPressed,
+      onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: SizedBox(
-        width: 44,
-        height: 44,
-        child: Icon(icon, color: Colors.white, size: 21),
+        width: 42,
+        height: 42,
+        child: Icon(icon, color: const Color(0xFF365A40), size: 22),
       ),
     ),
   );
-  Widget _pill(String text, IconData icon, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-    decoration: BoxDecoration(
-      color: _panel,
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, color: color, size: 14),
-        const SizedBox(width: 5),
-        Text(
-          text,
-          style: TextStyle(
-            color: color,
-            fontSize: 9,
-            fontWeight: FontWeight.w900,
-          ),
+
+  Widget _mapControl(
+    IconData icon,
+    VoidCallback onTap, {
+    bool enabled = true,
+  }) => Material(
+    color: const Color(0xFFFDFEF9),
+    elevation: 4,
+    shadowColor: const Color(0x330E2818),
+    borderRadius: BorderRadius.circular(15),
+    child: InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(15),
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: Icon(
+          icon,
+          color: enabled ? const Color(0xFF315B3C) : const Color(0xFFB5C0B4),
+          size: 23,
         ),
-      ],
+      ),
     ),
   );
 
-  Widget _compactStatus(IconData icon, String label, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-    decoration: BoxDecoration(
-      color: Colors.white.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 13, color: color),
-        const SizedBox(width: 5),
-        Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 9,
-            fontWeight: FontWeight.w800,
+  Widget _farmerStatus(
+    IconData icon,
+    String label,
+    Color color, {
+    VoidCallback? onTap,
+  }) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 220),
+    child: Material(
+      color: color.withValues(alpha: .09),
+      borderRadius: BorderRadius.circular(13),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(13),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 17, color: color),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  softWrap: true,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ],
+      ),
     ),
   );
 }
@@ -1170,25 +1808,35 @@ class LatLngD {
 
 class _MissionMap extends StatefulWidget {
   const _MissionMap({
+    super.key,
     required this.center,
     required this.zoom,
+    required this.hasLocation,
     required this.waypoints,
+    required this.landingPoint,
     required this.drone,
     required this.headingDegrees,
     required this.phone,
-    required this.tileTemplate,
+    required this.reachedWaypoints,
+    required this.nextWaypointIndex,
+    required this.waypointMonitoring,
     required this.onTap,
     required this.onMove,
     required this.onMoveStart,
     required this.onSelect,
   });
+
   final LatLngD center;
   final int zoom;
+  final bool hasLocation;
   final List<MissionPoint> waypoints;
+  final LatLngD? landingPoint;
   final LatLngD? drone;
   final double? headingDegrees;
   final LatLngD? phone;
-  final String tileTemplate;
+  final Set<int> reachedWaypoints;
+  final int nextWaypointIndex;
+  final bool waypointMonitoring;
   final ValueChanged<LatLngD> onTap;
   final void Function(int, LatLngD) onMove;
   final VoidCallback onMoveStart;
@@ -1200,247 +1848,321 @@ class _MissionMap extends StatefulWidget {
 
 class _MissionMapState extends State<_MissionMap> {
   Offset? _last;
-  LatLngD? _center;
+  LatLngD? _localCenter;
   int? _dragIndex;
   bool _moved = false;
-  LatLngD get center => _center ?? widget.center;
+  bool _userMovedMap = false;
+
+  LatLngD get center => _localCenter ?? widget.center;
   double get tileScale => 256 * (1 << widget.zoom).toDouble();
 
-  Offset _world(LatLngD p) {
-    final lat = p.latitude.clamp(-85.0511, 85.0511) * 3.141592653589793 / 180;
+  @override
+  void didUpdateWidget(covariant _MissionMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Follow live drone position until the user deliberately pans the map.
+    if (!_userMovedMap && oldWidget.center != widget.center) {
+      _localCenter = null;
+    }
+    if (!widget.hasLocation) {
+      _localCenter = null;
+      _userMovedMap = false;
+    }
+  }
+
+  Offset _world(LatLngD point) {
+    final lat = point.latitude.clamp(-85.0511, 85.0511) * math.pi / 180;
     return Offset(
-      (p.longitude + 180) / 360 * tileScale,
-      (1 - logTan(lat)) / 2 * tileScale,
+      (point.longitude + 180) / 360 * tileScale,
+      (1 - math.log(math.tan(lat) + 1 / math.cos(lat)) / math.pi) /
+          2 *
+          tileScale,
     );
+  }
+
+  LatLngD _fromWorld(Offset world) {
+    final lon = world.dx / tileScale * 360 - 180;
+    final n = math.pi - 2 * math.pi * world.dy / tileScale;
+    final safeN = n.clamp(-20.0, 20.0).toDouble();
+    final lat = (2 * math.atan(math.exp(safeN)) - math.pi / 2) * 180 / math.pi;
+    return LatLngD(lat, lon);
   }
 
   LatLngD _geo(Offset local, Size size) {
     final centerPx = _world(center);
-    final world =
-        centerPx +
-        Offset(local.dx - size.width / 2, local.dy - size.height / 2);
-    final n = tileScale;
-    final lon = world.dx / n * 360 - 180;
-    final lat =
-        (2 * math.atan(math.exp((1 - 2 * world.dy / n) * 3.141592653589793)) -
-            3.141592653589793 / 2) *
-        180 /
-        3.141592653589793;
-    return LatLngD(lat, lon);
+    return _fromWorld(
+      centerPx + Offset(local.dx - size.width / 2, local.dy - size.height / 2),
+    );
   }
 
-  double logTan(double lat) => math.log(math.tan(lat) + 1 / math.cos(lat));
+  List<Widget> _buildSatelliteTiles(Size size) {
+    if (!widget.hasLocation) return const [];
+
+    final centerPx = _world(center);
+    final firstX = ((centerPx.dx - size.width / 2) / 256).floor();
+    final lastX = ((centerPx.dx + size.width / 2) / 256).floor();
+    final firstY = ((centerPx.dy - size.height / 2) / 256).floor();
+    final lastY = ((centerPx.dy + size.height / 2) / 256).floor();
+    final tileCount = 1 << widget.zoom;
+    final tiles = <Widget>[];
+
+    for (var tileX = firstX; tileX <= lastX; tileX++) {
+      final wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
+      for (var tileY = firstY; tileY <= lastY; tileY++) {
+        if (tileY < 0 || tileY >= tileCount) continue;
+        final left = size.width / 2 + tileX * 256 - centerPx.dx;
+        final top = size.height / 2 + tileY * 256 - centerPx.dy;
+        final url =
+            'https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${widget.zoom}/$tileY/$wrappedX';
+        tiles.add(
+          Positioned(
+            left: left,
+            top: top,
+            width: 256,
+            height: 256,
+            child: Image.network(
+              url,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              errorBuilder: (context, error, stack) =>
+                  Container(color: const Color(0xFFDDE5D7)),
+            ),
+          ),
+        );
+      }
+    }
+    return tiles;
+  }
+
+  Color _waypointMarkerColor(int index) {
+    if (widget.reachedWaypoints.contains(index)) return const Color(0xFF32B8A2);
+    if (widget.waypointMonitoring && widget.nextWaypointIndex == index) {
+      return const Color(0xFFF0A638);
+    }
+    return const Color(0xFF2E914C);
+  }
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final size = Size(constraints.maxWidth, constraints.maxHeight);
-      final c = _world(center);
-      final baseX = (c.dx / 256).floor();
-      final baseY = (c.dy / 256).floor();
-      final origin = Offset(
-        size.width / 2 - (c.dx - baseX * 256),
-        size.height / 2 - (c.dy - baseY * 256),
-      );
-      final count = 1 << widget.zoom;
-      final cols = (size.width / 256).ceil() + 2;
-      final rows = (size.height / 256).ceil() + 2;
+      final centerWorld = widget.hasLocation ? _world(center) : Offset.zero;
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapUp: (e) {
-          if (!_moved) widget.onTap(_geo(e.localPosition, size));
+        onTapUp: (details) {
+          if (!_moved && widget.hasLocation) {
+            widget.onTap(_geo(details.localPosition, size));
+          }
           _moved = false;
         },
-        onPanStart: (e) {
-          _last = e.localPosition;
+        onPanStart: (details) {
+          _last = details.localPosition;
           _moved = false;
-          _dragIndex = _nearestWaypoint(e.localPosition, size);
+          _dragIndex = widget.hasLocation
+              ? _nearestWaypoint(details.localPosition, size)
+              : null;
           if (_dragIndex != null) widget.onMoveStart();
         },
-        onPanUpdate: (e) {
+        onPanUpdate: (details) {
           _moved = true;
+          if (!widget.hasLocation) return;
           if (_dragIndex != null) {
-            widget.onMove(_dragIndex!, _geo(e.localPosition, size));
+            widget.onMove(_dragIndex!, _geo(details.localPosition, size));
             return;
           }
-          final delta = e.localPosition - _last!;
-          _last = e.localPosition;
-          final world = _world(center) - delta;
-          final lon = world.dx / tileScale * 360 - 180;
-          final lat =
-              (2 *
-                      math.atan(
-                        math.exp(
-                          (1 - 2 * world.dy / tileScale) * 3.141592653589793,
-                        ),
-                      ) -
-                  3.141592653589793 / 2) *
-              180 /
-              3.141592653589793;
-          setState(() => _center = LatLngD(lat, lon));
+          final delta = details.localPosition - _last!;
+          _last = details.localPosition;
+          final nextWorld = _world(center) - delta;
+          setState(() {
+            _localCenter = _fromWorld(nextWorld);
+            _userMovedMap = true;
+          });
         },
         onPanEnd: (_) {
-          if (_dragIndex != null) {
-            widget.onSelect(_dragIndex!);
-          }
+          if (_dragIndex != null) widget.onSelect(_dragIndex!);
           _dragIndex = null;
         },
         child: Stack(
           clipBehavior: Clip.hardEdge,
           children: [
-            for (var dx = -1; dx <= cols; dx++)
-              for (var dy = -1; dy <= rows; dy++)
-                (() {
-                  final tx = baseX + dx;
-                  final ty = baseY + dy;
-                  if (ty < 0 || ty >= count) return const SizedBox.shrink();
-                  final x = (tx % count + count) % count;
-                  final url = widget.tileTemplate
-                      .replaceAll('{z}', '${widget.zoom}')
-                      .replaceAll('{x}', '$x')
-                      .replaceAll('{y}', '$ty');
-                  return Positioned(
-                    left: origin.dx + dx * 256,
-                    top: origin.dy + dy * 256,
-                    width: 256,
-                    height: 256,
-                    child: Image.network(
-                      url,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => Container(
-                        color: const Color(0xFF344238),
-                        child: const Center(
-                          child: Icon(
-                            Icons.satellite_alt,
-                            color: Colors.white24,
+            Positioned.fill(child: Container(color: const Color(0xFFE8EEE3))),
+            if (widget.hasLocation) ..._buildSatelliteTiles(size),
+            if (!widget.hasLocation)
+              const Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Color(0xFFE9F0E5), Color(0xFFDCE7D7)],
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.hasLocation)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: _RoutePainter(
+                      center: center,
+                      zoom: widget.zoom,
+                      waypoints: widget.waypoints,
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.hasLocation)
+              for (var i = 0; i < widget.waypoints.length; i++)
+                Positioned.fromRect(
+                  rect: _markerRect(
+                    _world(
+                      LatLngD(
+                        widget.waypoints[i].latitude,
+                        widget.waypoints[i].longitude,
+                      ),
+                    ),
+                    centerWorld,
+                    size,
+                  ),
+                  child: GestureDetector(
+                    onTap: () => widget.onSelect(i),
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _waypointMarkerColor(i),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 3),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x55000000),
+                            blurRadius: 9,
+                            offset: Offset(0, 3),
                           ),
+                        ],
+                      ),
+                      child: Text(
+                        '${i + 1}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w900,
                         ),
                       ),
                     ),
-                  );
-                })(),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _RoutePainter(
-                    center: center,
-                    zoom: widget.zoom,
-                    waypoints: widget.waypoints,
+                  ),
+                ),
+            if (widget.hasLocation && widget.landingPoint != null)
+              Positioned.fromRect(
+                rect: _markerRect(
+                  _world(widget.landingPoint!),
+                  centerWorld,
+                  size,
+                ),
+                child: Container(
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF245DA8),
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 3),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x66000000),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.home_rounded,
+                    color: Colors.white,
+                    size: 23,
                   ),
                 ),
               ),
-            ),
-            for (var i = 0; i < widget.waypoints.length; i++)
+            if (widget.hasLocation && widget.drone != null)
               Positioned.fromRect(
-                rect: _markerRect(
-                  _world(
-                    LatLngD(
-                      widget.waypoints[i].latitude,
-                      widget.waypoints[i].longitude,
-                    ),
-                  ),
-                  c,
-                  size,
-                ),
-                child: GestureDetector(
-                  onTap: () => widget.onSelect(i),
+                rect: _markerRect(_world(widget.drone!), centerWorld, size),
+                child: Transform.rotate(
+                  angle: (widget.headingDegrees ?? 0) * math.pi / 180,
                   child: Container(
-                    width: 34,
-                    height: 34,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: _green,
+                      color: const Color(0xFF123B2A),
                       shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
+                      border: Border.all(color: Colors.white, width: 3),
                       boxShadow: const [
-                        BoxShadow(color: Colors.black54, blurRadius: 7),
+                        BoxShadow(
+                          color: Color(0x66000000),
+                          blurRadius: 12,
+                          spreadRadius: 2,
+                        ),
                       ],
                     ),
+                    child: const Icon(
+                      Icons.navigation_rounded,
+                      color: Colors.white,
+                      size: 25,
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.hasLocation && widget.phone != null)
+              Positioned.fromRect(
+                rect: _markerRect(_world(widget.phone!), centerWorld, size),
+                child: const Icon(
+                  Icons.person_pin_circle_rounded,
+                  color: Color(0xFF2258A5),
+                  size: 32,
+                  shadows: [Shadow(color: Colors.white, blurRadius: 5)],
+                ),
+              ),
+            if (widget.hasLocation)
+              Positioned(
+                right: 10,
+                bottom: MediaQuery.of(context).size.height * .50 + 20,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Color(0xCC10271B),
+                    borderRadius: BorderRadius.all(Radius.circular(7)),
+                  ),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                     child: Text(
-                      '${i + 1}',
-                      style: const TextStyle(
-                        color: Colors.black,
-                        fontWeight: FontWeight.w900,
+                      'Street map © Esri',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
                   ),
                 ),
               ),
-            if (widget.drone case final p?)
-              Positioned.fromRect(
-                rect: _markerRect(_world(p), c, size),
-                child: Transform.rotate(
-                  angle: widget.headingDegrees == null
-                      ? 0
-                      : widget.headingDegrees! * math.pi / 180,
-                  child: const Icon(
-                    Icons.navigation,
-                    color: Colors.cyanAccent,
-                    size: 42,
-                    shadows: [Shadow(color: Colors.black, blurRadius: 8)],
-                  ),
-                ),
-              ),
-            if (widget.phone case final p?)
-              Positioned.fromRect(
-                rect: _markerRect(_world(p), c, size),
-                child: const Icon(
-                  Icons.person_pin_circle,
-                  color: Colors.white,
-                  size: 30,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 6)],
-                ),
-              ),
-            if (widget.drone == null)
-              const Positioned(
-                left: 12,
-                bottom: 150,
-                child: Text(
-                  'DRONE HEADING UNAVAILABLE',
-                  style: TextStyle(
-                    color: Colors.amber,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 9,
-                  ),
-                ),
-              ),
-            const Positioned(
-              right: 4,
-              bottom: 142,
-              child: Text(
-                '© Esri • Imagery',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 9,
-                  shadows: [Shadow(color: Colors.black, blurRadius: 3)],
-                ),
-              ),
-            ),
           ],
         ),
       );
     },
   );
 
-  Rect _markerRect(Offset point, Offset center, Size size) {
-    final p = Offset(
-      size.width / 2 + point.dx - center.dx,
-      size.height / 2 + point.dy - center.dy,
+  Rect _markerRect(Offset point, Offset centerWorld, Size size) {
+    final screen = Offset(
+      size.width / 2 + point.dx - centerWorld.dx,
+      size.height / 2 + point.dy - centerWorld.dy,
     );
-    return Rect.fromCenter(center: p, width: 40, height: 40);
+    return Rect.fromCenter(center: screen, width: 42, height: 42);
   }
 
   int? _nearestWaypoint(Offset position, Size size) {
-    var nearest = 36.0;
+    var nearest = 38.0;
     int? result;
+    final c = _world(center);
     for (var i = 0; i < widget.waypoints.length; i++) {
-      final p = widget.waypoints[i];
-      final r = _markerRect(
-        _world(LatLngD(p.latitude, p.longitude)),
-        _world(center),
+      final point = widget.waypoints[i];
+      final rect = _markerRect(
+        _world(LatLngD(point.latitude, point.longitude)),
+        c,
         size,
       );
-      final distance = (r.center - position).distance;
+      final distance = (rect.center - position).distance;
       if (distance < nearest) {
         nearest = distance;
         result = i;
@@ -1464,7 +2186,7 @@ class _RoutePainter extends CustomPainter {
     final lat = p.latitude.clamp(-85.0511, 85.0511) * 3.141592653589793 / 180;
     return Offset(
       (p.longitude + 180) / 360 * n,
-      (1 - math.log(math.tan(lat) + 1 / math.cos(lat))) / 2 * n,
+      (1 - math.log(math.tan(lat) + 1 / math.cos(lat)) / math.pi) / 2 * n,
     );
   }
 

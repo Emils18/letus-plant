@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
-import 'scan_session_report_screen.dart';
+import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../models/lettuce_scan_report.dart';
+import '../../widgets/lettuce_scan_report_card.dart';
+import 'scan_session_report_screen.dart';
 
 class HealthLogsScreen extends StatefulWidget {
   const HealthLogsScreen({
@@ -17,1302 +21,437 @@ class HealthLogsScreen extends StatefulWidget {
   final String? title;
 
   @override
-  State<HealthLogsScreen> createState() =>
-      _HealthLogsScreenState();
+  State<HealthLogsScreen> createState() => _HealthLogsScreenState();
 }
 
-class _HealthLogsScreenState
-    extends State<HealthLogsScreen> {
-  final SupabaseClient _supabase =
-      Supabase.instance.client;
+class _HealthLogsScreenState extends State<HealthLogsScreen> {
+  static const _background = Color(0xfff6fbf7);
+  static const _green = Color(0xff2f6b3b);
+  static const _ink = Color(0xff1e2a1f);
+  static const _muted = Color(0xff4d6050);
 
-  bool _loading = true;
-
-  List<Map<String, dynamic>>
-      _logs = [];
+  final _supabase = Supabase.instance.client;
+  bool _loading = false;
+  bool _loadFailed = false;
+  List<Map<String, dynamic>> _logs = [];
+  Map<String, List<Map<String, dynamic>>> _groups = {};
+  final _sessionMetadata = <String, Map<String, dynamic>>{};
 
   @override
   void initState() {
     super.initState();
-
     _loadHealthLogs();
   }
 
-  Future<void>
-      _loadHealthLogs() async {
-    if (!mounted) return;
-
-    setState(() {
-      _loading = true;
-    });
+  Future<void> _loadHealthLogs() async {
+    if (_loading) return;
+    setState(() => _loading = true);
 
     try {
-      final user =
-          _supabase.auth.currentUser;
-
-      if (user == null) {
-        throw Exception(
-          'No logged-in user.',
-        );
+      final user = _supabase.auth.currentUser;
+      if (user == null) throw StateError('Sign in to view scan history.');
+      final owner = widget.readOnlyBuyer ? widget.farmerId ?? user.id : user.id;
+      final logs = <Map<String, dynamic>>[];
+      const pageSize = 250;
+      for (var from = 0; ; from += pageSize) {
+        final page = await _supabase
+            .from('diagnostic_logs')
+            .select()
+            .eq('user_id', owner)
+            .order('created_at', ascending: false)
+            .order('id', ascending: false)
+            .range(from, from + pageSize - 1);
+        if (!mounted) return;
+        logs.addAll(page);
+        if (page.length < pageSize) break;
       }
 
-      dynamic query =
-          _supabase
-              .from(
-                'diagnostic_logs',
-              )
-              .select('*');
-
-      if (widget.readOnlyBuyer &&
-          widget.farmerId != null) {
-        query = query.eq(
-          'user_id',
-          widget.farmerId!,
-        );
+      final groups = <String, List<Map<String, dynamic>>>{};
+      if (!widget.readOnlyBuyer) {
+        for (final log in logs) {
+          final id = LettuceScanReport.text(log, ['scan_session_id']);
+          if (id.isNotEmpty) (groups[id] ??= []).add(log);
+        }
       }
-      else {
-        query = query.eq(
-          'user_id',
-          user.id,
-        );
-      }
-
-      final dynamic data =
-          await query.order(
-        'created_at',
-        ascending: false,
-      );
 
       if (!mounted) return;
-
       setState(() {
-        _logs =
-            List<Map<String, dynamic>>
-                .from(
-          data as List,
-        );
+        _logs = logs;
+        _groups = groups;
+        _sessionMetadata.clear();
+        _loadFailed = false;
       });
     } catch (error) {
-      if (mounted) {
-        _showSnack(
-          'Failed to load health logs: $error',
-          isError: true,
-        );
-      }
+      debugPrint('Health log load failed: $error');
+      if (mounted) setState(() => _loadFailed = true);
     } finally {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-        });
-      }
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  String _getText(
-    Map<String, dynamic> log,
-    List<String> keys,
-    String fallback,
-  ) {
-    for (final String key
-        in keys) {
-      final dynamic value =
-          log[key];
-
-      if (value != null &&
-          value
-              .toString()
-              .trim()
-              .isNotEmpty) {
-        return value.toString();
+  Future<void> _openSession(String id, List<Map<String, dynamic>> logs) async {
+    // Read session timestamps separately so a missing session table cannot
+    // hide the individual scans or legacy history.
+    var session = _sessionMetadata[id];
+    if (session == null) {
+      try {
+        session = await _supabase
+            .from('scan_sessions')
+            .select('started_at, completed_at')
+            .eq('id', id)
+            .eq('user_id', _supabase.auth.currentUser!.id)
+            .maybeSingle();
+        if (session != null) _sessionMetadata[id] = session;
+      } catch (error) {
+        debugPrint('Scan session metadata unavailable: $error');
       }
     }
 
-    return fallback;
-  }
-
-  String _getDiseaseName(
-    Map<String, dynamic> log,
-  ) {
-    return _getText(
-      log,
-      [
-        'disease_name',
-        'result',
-        'disease',
-        'label',
-      ],
-      'Unknown Result',
-    ).replaceAll(
-      '_',
-      ' ',
-    );
-  }
-
-  String _getConfidence(
-    Map<String, dynamic> log,
-  ) {
-    final dynamic raw =
-        log['confidence_score'] ??
-            log['confidence'] ??
-            log['score'];
-
-    if (raw == null) {
-      return 'N/A';
-    }
-
-    final double? value =
-        double.tryParse(
-      raw.toString(),
-    );
-
-    if (value == null) {
-      return raw.toString();
-    }
-
-    if (value <= 1) {
-      return '${(value * 100).toStringAsFixed(1)}%';
-    }
-
-    return '${value.toStringAsFixed(1)}%';
-  }
-
-  String _getTemperature(
-    Map<String, dynamic> log,
-  ) {
-    final dynamic raw =
-        log['temperature'] ??
-            log['temp'];
-
-    if (raw == null) {
-      return 'N/A';
-    }
-
-    final double? value =
-        double.tryParse(
-      raw.toString(),
-    );
-
-    if (value == null) {
-      return raw.toString();
-    }
-
-    return '${value.toStringAsFixed(1)}°C';
-  }
-
-  String _getDate(
-    Map<String, dynamic> log,
-  ) {
-    final dynamic raw =
-        log['captured_at'] ??
-            log['created_at'];
-
-    if (raw == null) {
-      return 'No date';
-    }
-
-    final DateTime? parsed =
-        DateTime.tryParse(
-      raw.toString(),
-    );
-
-    if (parsed == null) {
-      return raw.toString();
-    }
-
-    final DateTime local =
-        parsed.toLocal();
-
-    return '${local.month}/${local.day}/${local.year} • '
-        '${local.hour.toString().padLeft(2, '0')}:'
-        '${local.minute.toString().padLeft(2, '0')}';
-  }
-
-  String _getPathogen(
-    String diseaseName,
-  ) {
-    final String value =
-        diseaseName
-            .toLowerCase()
-            .replaceAll(
-              '_',
-              ' ',
-            )
-            .trim();
-
-    if (value ==
-        'downy mildew') {
-      return 'Bremia lactucae';
-    }
-
-    if (value ==
-        'powdery mildew') {
-      return 'Erysiphe cichoracearum';
-    }
-
-    if (value ==
-            'septoria blight' ||
-        value ==
-            'septoria leaf spot') {
-      return 'Septoria lactucae';
-    }
-
-    if (value.contains(
-      'healthy',
-    )) {
-      return 'No pathogen detected';
-    }
-
-    return 'N/A';
-  }
-
-  bool _isHealthy(
-    String diseaseName,
-  ) {
-    final String value =
-        diseaseName.toLowerCase();
-
-    return value.contains(
-          'healthy',
-        ) ||
-        value.contains(
-          'none',
-        ) ||
-        value.contains(
-          'no disease',
-        );
-  }
-
-  bool _isUnknown(
-    String diseaseName,
-  ) {
-    final String value =
-        diseaseName.toLowerCase();
-
-    return value.contains(
-          'unknown',
-        ) ||
-        value.contains(
-          'out of scope',
-        );
-  }
-
-  bool _isDemo(
-    Map<String, dynamic> log,
-  ) {
-    return log['device_id']
-            ?.toString()
-            .toUpperCase() ==
-        'DEMO_MODE';
-  }
-
-  Color _statusColor(
-    String diseaseName,
-  ) {
-    final String value =
-        diseaseName
-            .toLowerCase()
-            .replaceAll(
-              '_',
-              ' ',
-            );
-
-    if (_isHealthy(
-      diseaseName,
-    )) {
-      return const Color(
-        0xFF5DBB63,
-      );
-    }
-
-    if (value.contains(
-      'downy mildew',
-    )) {
-      return Colors.redAccent;
-    }
-
-    if (value.contains(
-      'powdery mildew',
-    )) {
-      return Colors.orangeAccent;
-    }
-
-    if (value.contains(
-      'septoria',
-    )) {
-      return Colors.deepOrange;
-    }
-
-    return Colors.grey;
-  }
-
-  int get _healthyCount =>
-      _logs
-          .where(
-            (
-              Map<String, dynamic>
-                  log,
-            ) =>
-                _isHealthy(
-              _getDiseaseName(
-                log,
-              ),
-            ),
-          )
-          .length;
-
-  int get _riskCount =>
-      _logs.length -
-      _healthyCount;
-
-
-      Map<String, List<Map<String, dynamic>>> get _sessionGroups {
-  final Map<String, List<Map<String, dynamic>>> groups = {};
-
-  for (final log in _logs) {
-    final String sessionId =
-        log['scan_session_id']?.toString().trim() ?? '';
-
-    if (sessionId.isEmpty) {
-      continue;
-    }
-
-    groups.putIfAbsent(
-      sessionId,
-      () => <Map<String, dynamic>>[],
-    );
-
-    groups[sessionId]!.add(log);
-  }
-
-  return groups;
-}
-
-List<Map<String, dynamic>> get _legacyLogs {
-  return _logs.where((log) {
-    final String sessionId =
-        log['scan_session_id']?.toString().trim() ?? '';
-
-    return sessionId.isEmpty;
-  }).toList();
-}
-
-String _normalizeDisease(String value) {
-  return value
-      .toLowerCase()
-      .replaceAll('_', ' ')
-      .trim();
-}
-
-int _sessionDiseaseCount(
-  List<Map<String, dynamic>> logs,
-  String target,
-) {
-  final String normalizedTarget =
-      _normalizeDisease(target);
-
-  return logs.where((log) {
-    final String disease =
-        _normalizeDisease(
-      _getDiseaseName(log),
-    );
-
-    if (normalizedTarget == 'septoria blight') {
-      return disease == 'septoria blight' ||
-          disease == 'septoria leaf spot';
-    }
-
-    return disease == normalizedTarget;
-  }).length;
-}
-
-  void _showSnack(
-    String message, {
-    bool isError = false,
-  }) {
     if (!mounted) return;
-
-    ScaffoldMessenger.of(
+    final chronological = logs.reversed.toList();
+    final startedAt =
+        DateTime.tryParse(
+          LettuceScanReport.text(session ?? {}, ['started_at']),
+        ) ??
+        LettuceScanReport.capturedAt(chronological.first);
+    final completedAt = DateTime.tryParse(
+      LettuceScanReport.text(session ?? {}, ['completed_at']),
+    );
+    await Navigator.push<void>(
       context,
-    ).showSnackBar(
-      SnackBar(
-        backgroundColor:
-            isError
-                ? Colors.red
-                : const Color(
-                    0xFF2F6B3B,
-                  ),
-        content: Text(
-          message,
-          style:
-              const TextStyle(
-            fontWeight:
-                FontWeight.bold,
-            fontSize: 15,
-          ),
+      MaterialPageRoute(
+        builder: (_) => ScanSessionReportScreen(
+          scans: chronological,
+          startedAt: startedAt,
+          completedAt: completedAt,
+          historyMode: true,
         ),
       ),
     );
   }
+
+
+
+
+  void _openOverallReport() {
+    if (_logs.isEmpty) return;
+
+    final scans = _logs.reversed.toList();
+
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ScanSessionReportScreen(
+          scans: scans,
+          startedAt: LettuceScanReport.capturedAt(scans.first),
+          completedAt: null,
+          historyMode: true,
+          reportTitle: 'Overall Health Report',
+        ),
+      ),
+    );
+  }
+
+
+
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
-    final String title =
-        widget.title ??
-            (
-              widget.readOnlyBuyer
-                  ? 'Product Health Logs'
-                  : 'Scan History Logs'
-            );
+  Widget build(BuildContext context) {
+    final healthy = _logs.where(_isHealthy).length;
+    final risk = _logs.where((scan) {
+      final key = LettuceScanReport.diseaseKey(
+        LettuceScanReport.diseaseName(scan),
+      );
+      return key != 'healthy' &&
+          LettuceScanReport.diseaseNames.containsKey(key);
+    }).length;
+    final sessions = _groups.entries.toList();
 
     return Scaffold(
-      backgroundColor:
-          const Color(
-        0xFFF6FBF7,
-      ),
+      backgroundColor: _background,
       appBar: AppBar(
-        backgroundColor:
-            const Color(
-          0xFFF6FBF7,
-        ),
-        elevation: 0,
+        backgroundColor: _background,
+        foregroundColor: _ink,
         title: Text(
-          title,
-          style:
-              const TextStyle(
-            fontWeight:
-                FontWeight.w900,
-            fontSize: 25,
-            color: Color(
-              0xFF1E2A1F,
-            ),
-          ),
-        ),
-        iconTheme:
-            const IconThemeData(
-          color: Color(
-            0xFF1E2A1F,
-          ),
-          size: 30,
+          widget.title ??
+              (widget.readOnlyBuyer
+                  ? 'Product Health Logs'
+                  : 'Scan History Logs'),
         ),
         actions: [
           IconButton(
-            onPressed:
-                _loading
-                    ? null
-                    : _loadHealthLogs,
-            icon: const Icon(
-              Icons.refresh_rounded,
-              color: Color(
-                0xFF2F6B3B,
-              ),
-              size: 30,
-            ),
+            tooltip: 'Refresh scan history',
+            onPressed: _loading ? null : _loadHealthLogs,
+            icon: const Icon(Icons.refresh_rounded, color: _green),
           ),
         ],
       ),
       body: RefreshIndicator(
-        color: const Color(
-          0xFF2F6B3B,
-        ),
-        onRefresh:
-            _loadHealthLogs,
-        child: _loading
-            ? const Center(
-                child:
-                    CircularProgressIndicator(
-                  color: Color(
-                    0xFF2F6B3B,
-                  ),
-                ),
-              )
-            : ListView(
-                physics:
-                    const AlwaysScrollableScrollPhysics(),
-                padding:
-                    const EdgeInsets.all(
-                  18,
-                ),
+        color: _green,
+        onRefresh: _loadHealthLogs,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              sliver: SliverList.list(
                 children: [
-                  if (widget.productName !=
-                      null) ...[
-                    Container(
-                      width:
-                          double.infinity,
-                      padding:
-                          const EdgeInsets.all(
-                        16,
-                      ),
-                      decoration:
-                          BoxDecoration(
-                        color:
-                            Colors.white,
-                        borderRadius:
-                            BorderRadius
-                                .circular(
-                          18,
-                        ),
-                      ),
+                  if (widget.productName case final name?)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
                       child: Text(
-                        'Crop: ${widget.productName}',
-                        style:
-                            const TextStyle(
-                          fontWeight:
-                              FontWeight
-                                  .w800,
-                          color:
-                              Color(
-                            0xFF2F6B3B,
-                          ),
+                        'Crop: $name',
+                        style: const TextStyle(
+                          color: _green,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
-                    const SizedBox(
-                      height: 16,
-                    ),
-                  ],
-
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child:
-                            _summaryCard(
-                          'Total',
-                          _logs.length
-                              .toString(),
-                          Icons
-                              .history_rounded,
-                        ),
+                        child: _metric('Total', _logs.length, Icons.history),
                       ),
-                      const SizedBox(
-                        width: 10,
-                      ),
+                      const SizedBox(width: 8),
                       Expanded(
-                        child:
-                            _summaryCard(
+                        child: _metric(
                           'Healthy',
-                          _healthyCount
-                              .toString(),
-                          Icons
-                              .verified_rounded,
+                          healthy,
+                          Icons.verified_outlined,
                         ),
                       ),
-                      const SizedBox(
-                        width: 10,
-                      ),
+                      const SizedBox(width: 8),
                       Expanded(
-                        child:
-                            _summaryCard(
+                        child: _metric(
                           'Risk',
-                          _riskCount
-                              .toString(),
-                          Icons
-                              .warning_rounded,
+                          risk,
+                          Icons.warning_amber_rounded,
                         ),
                       ),
                     ],
                   ),
-
-                  const SizedBox(
-                    height: 24,
-                  ),
-
-                  if (_logs.isEmpty)
-                    Container(
-                      padding:
-                          const EdgeInsets.all(
-                        38,
+                  if (_logs.length > healthy + risk)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        '${_logs.length - healthy - risk} scans need review',
+                        style: const TextStyle(color: _muted, fontSize: 15),
                       ),
-                      decoration:
-                          BoxDecoration(
-                        color:
-                            Colors.white,
-                        borderRadius:
-                            BorderRadius
-                                .circular(
-                          28,
-                        ),
+                    ),
+                  if (_loading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 18),
+                      child: LinearProgressIndicator(color: _green),
+                    ),
+                  if (_loadFailed)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        'Scan history could not be refreshed. Check your connection and try again.',
+                        style: TextStyle(color: _ink, fontSize: 16),
                       ),
-                      child:
-                          const Column(
-                        children: [
-                          Icon(
-                            Icons
-                                .eco_rounded,
-                            size: 80,
-                            color:
-                                Colors.grey,
-                          ),
-                          SizedBox(
-                            height: 18,
-                          ),
-                          Text(
-                            'No health logs yet.',
-                            textAlign:
-                                TextAlign
-                                    .center,
-                            style:
-                                TextStyle(
-                              fontSize:
-                                  22,
-                              fontWeight:
-                                  FontWeight
-                                      .w900,
-                            ),
-                          ),
-                          SizedBox(
-                            height: 10,
-                          ),
-                          Text(
-                            'Real lettuce AI scan records will appear here after Use Photo completes successfully.',
-                            textAlign:
-                                TextAlign
-                                    .center,
-                            style:
-                                TextStyle(
-                              fontSize:
-                                  15,
-                              height:
-                                  1.5,
-                            ),
-                          ),
+                    ),
+                  if (!_loading && !_loadFailed && _logs.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 22),
+                      child: Text(
+                        'No scans saved yet. Take a lettuce photo to start.',
+                        style: TextStyle(color: _ink, fontSize: 16),
+                      ),
+                    ),
+                  if (sessions.isNotEmpty)
+
+                  Container(
+                    margin: const EdgeInsets.symmetric(vertical: 18),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [
+                          Color(0xFF173E29),
+                          Color(0xFF34814B),
                         ],
                       ),
-                    )
-                  else
-                  if (!widget.readOnlyBuyer &&
-    _sessionGroups.isNotEmpty) ...[
-  const Text(
-    'Previous Scan Sessions',
-    style: TextStyle(
-      fontSize: 22,
-      fontWeight: FontWeight.w900,
-      color: Color(0xFF1E2A1F),
-    ),
-  ),
-
-  const SizedBox(height: 14),
-
-  ..._sessionGroups.entries.map(
-    (entry) => _buildSessionCard(
-      entry.key,
-      entry.value,
-    ),
-  ),
-
-  if (_legacyLogs.isNotEmpty) ...[
-    const SizedBox(height: 12),
-    const Text(
-      'Older / Individual Scans',
-      style: TextStyle(
-        fontSize: 20,
-        fontWeight: FontWeight.w900,
-        color: Color(0xFF1E2A1F),
-      ),
-    ),
-    const SizedBox(height: 14),
-  ],
-],
-
-..._legacyLogs.map(
-  _buildLogCard,
-),
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _summaryCard(
-    String label,
-    String value,
-    IconData icon,
-  ) {
-    return Container(
-      constraints:
-          const BoxConstraints(
-        minHeight: 136,
-      ),
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 12,
-        vertical: 18,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius:
-            BorderRadius.circular(
-          22,
-        ),
-      ),
-      child: Column(
-        mainAxisAlignment:
-            MainAxisAlignment
-                .center,
-        children: [
-          Icon(
-            icon,
-            color:
-                const Color(
-              0xFF2F6B3B,
-            ),
-            size: 30,
-          ),
-          const SizedBox(
-            height: 10,
-          ),
-          Text(
-            value,
-            style:
-                const TextStyle(
-              fontSize: 28,
-              fontWeight:
-                  FontWeight.w900,
-              color: Color(
-                0xFF1E2A1F,
-              ),
-            ),
-          ),
-          const SizedBox(
-            height: 4,
-          ),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
-              label,
-              maxLines: 1,
-              style:
-                  const TextStyle(
-                fontSize: 14,
-                fontWeight:
-                    FontWeight.w700,
-                color: Colors.grey,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-
-
-
-Future<void> _openSessionReport(
-  String sessionId,
-  List<Map<String, dynamic>> logs,
-) async {
-  if (logs.isEmpty) {
-    return;
-  }
-
-  final List<Map<String, dynamic>> reportLogs =
-      List<Map<String, dynamic>>.from(
-    logs,
-  );
-
-  DateTime readDate(
-    Map<String, dynamic> log,
-  ) {
-    final dynamic raw =
-        log['captured_at'] ??
-        log['created_at'];
-
-    return DateTime.tryParse(
-          raw?.toString() ?? '',
-        ) ??
-        DateTime.now();
-  }
-
-  reportLogs.sort(
-    (a, b) => readDate(a).compareTo(
-      readDate(b),
-    ),
-  );
-
-  final DateTime startedAt =
-      readDate(
-    reportLogs.first,
-  );
-
-  final DateTime completedAt =
-      readDate(
-    reportLogs.last,
-  );
-
-  await Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) =>
-          ScanSessionReportScreen(
-        scans: reportLogs,
-        startedAt: startedAt,
-        completedAt: completedAt,
-        historyMode: true,
-      ),
-    ),
-  );
-}
-
-
-
-
-
-
-Widget _buildSessionCard(
-  String sessionId,
-  List<Map<String, dynamic>> logs,
-) {
-  final int healthy =
-      _sessionDiseaseCount(logs, 'Healthy');
-
-  final int downy =
-      _sessionDiseaseCount(logs, 'Downy Mildew');
-
-  final int powdery =
-      _sessionDiseaseCount(logs, 'Powdery Mildew');
-
-  final int septoria =
-      _sessionDiseaseCount(logs, 'Septoria Blight');
-
-  final String date =
-      logs.isNotEmpty
-          ? _getDate(logs.first)
-          : 'No date';
-
-  return Container(
-    margin: const EdgeInsets.only(bottom: 18),
-    padding: const EdgeInsets.all(22),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(26),
-      border: Border.all(
-        color: const Color(0xFF5DBB63)
-            .withValues(alpha: 0.25),
-      ),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              height: 50,
-              width: 50,
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8F3EA),
-                borderRadius:
-                    BorderRadius.circular(16),
-              ),
-              child: const Icon(
-                Icons.analytics_rounded,
-                color: Color(0xFF2F6B3B),
-                size: 30,
-              ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Scan Session Report',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFF1E2A1F),
+                      borderRadius: BorderRadius.circular(23),
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(18),
+                      leading: const Icon(
+                        Icons.assessment_rounded,
+                        color: Color(0xFFD8F973),
+                        size: 35,
+                      ),
+                      title: const Text(
+                        'Overall Health Report',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'All scans, disease breakdown, treatments and selling guidance',
+                        style: TextStyle(
+                          color: Color(0xFFE1F1E2),
+                        ),
+                      ),
+                      trailing: const Icon(
+                        Icons.arrow_forward_ios,
+                        color: Colors.white,
+                        size: 17,
+                      ),
+                      onTap: _logs.isEmpty ? null : _openOverallReport,
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    date,
-                    style: const TextStyle(
-                      color: Colors.grey,
-                      fontWeight: FontWeight.w600,
+
+
+
+                  Container(
+                    margin: const EdgeInsets.symmetric(vertical: 18),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [
+                          Color(0xFF173E29),
+                          Color(0xFF34814B),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(23),
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(18),
+                      leading: const Icon(
+                        Icons.assessment_rounded,
+                        color: Color(0xFFD8F973),
+                        size: 35,
+                      ),
+                      title: const Text(
+                        'Overall Health Report',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'All scans, disease breakdown, treatments and selling guidance',
+                        style: TextStyle(
+                          color: Color(0xFFE1F1E2),
+                        ),
+                      ),
+                      trailing: const Icon(
+                        Icons.arrow_forward_ios,
+                        color: Colors.white,
+                        size: 17,
+                      ),
+                      onTap: _logs.isEmpty ? null : _openOverallReport,
                     ),
                   ),
+
+
+                    _sectionTitle('Previous scan sessions'),
                 ],
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              sliver: SliverList.builder(
+                itemCount: sessions.length,
+                itemBuilder: (_, index) => _sessionCard(sessions[index]),
+              ),
+            ),
+            if (_logs.isNotEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 10),
+                sliver: SliverToBoxAdapter(
+                  child: _sectionTitle('Individual scans'),
+                ),
+              ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+              sliver: SliverList.builder(
+                itemCount: _logs.length,
+                itemBuilder: (_, index) => LettuceScanReportCard(
+                  key: ValueKey(_logs[index]['id']),
+                  scan: _logs[index],
+                ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
 
-        const SizedBox(height: 18),
+  bool _isHealthy(Map<String, dynamic> scan) =>
+      LettuceScanReport.diseaseKey(LettuceScanReport.diseaseName(scan)) ==
+      'healthy';
 
-        _infoRow(
-          'Total Lettuce',
-          logs.length.toString(),
-        ),
-
-        _infoRow(
-          'Healthy',
-          healthy.toString(),
-        ),
-
-        _infoRow(
-          'Downy',
-          downy.toString(),
-        ),
-
-        _infoRow(
-          'Powdery',
-          powdery.toString(),
-        ),
-
-        _infoRow(
-          'Septoria',
-          septoria.toString(),
-        ),
-
-        const SizedBox(height: 12),
-
-        SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: ElevatedButton.icon(
-            onPressed: () {
-              _openSessionReport(
-                sessionId,
-                logs,
-              );
-            },
-            icon: const Icon(
-              Icons.description_rounded,
-            ),
-            label: const Text(
-              'View Full Report',
-              style: TextStyle(
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  const Color(0xFF2F6B3B),
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius:
-                    BorderRadius.circular(18),
-              ),
-            ),
-          ),
-        ),
-      ],
+  Widget _sectionTitle(String title) => Padding(
+    padding: const EdgeInsets.only(top: 14),
+    child: Text(
+      title,
+      style: const TextStyle(
+        color: _ink,
+        fontSize: 21,
+        fontWeight: FontWeight.w800,
+      ),
     ),
   );
-}
 
-  Widget _buildLogCard(
-    Map<String, dynamic> log,
-  ) {
-    final String diseaseName =
-        _getDiseaseName(
-      log,
-    );
-
-    final String confidence =
-        _getConfidence(
-      log,
-    );
-
-    final String temperature =
-        _getTemperature(
-      log,
-    );
-
-    final String weather =
-        _getText(
-      log,
-      [
-        'weather_condition',
-        'weather',
-      ],
-      'N/A',
-    );
-
-    final String location =
-        _getText(
-      log,
-      [
-        'location',
-      ],
-      'N/A',
-    );
-
-    final String device =
-        _getText(
-      log,
-      [
-        'device_id',
-      ],
-      'Unknown device',
-    );
-
-    final String date =
-        _getDate(
-      log,
-    );
-
-    final String pathogen =
-        _getPathogen(
-      diseaseName,
-    );
-
-    final Color color =
-        _statusColor(
-      diseaseName,
-    );
-
-    final bool demo =
-        _isDemo(
-      log,
-    );
-
-    final bool unknown =
-        _isUnknown(
-      diseaseName,
-    );
-
-    return Container(
-      margin:
-          const EdgeInsets.only(
-        bottom: 18,
-      ),
-      padding:
-          const EdgeInsets.all(
-        22,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius:
-            BorderRadius.circular(
-          26,
-        ),
-        border: Border.all(
-          color: color.withValues(
-            alpha: 0.18,
-          ),
-        ),
-      ),
+  Widget _metric(String label, int count, IconData icon) => Card(
+    color: Colors.white,
+    elevation: 0,
+    margin: EdgeInsets.zero,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 5),
       child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment:
-                CrossAxisAlignment
-                    .start,
-            children: [
-              Container(
-                width: 50,
-                height: 50,
-                decoration:
-                    BoxDecoration(
-                  color:
-                      color.withValues(
-                    alpha: 0.10,
-                  ),
-                  borderRadius:
-                      BorderRadius
-                          .circular(
-                    16,
-                  ),
-                ),
-                child: Icon(
-                  _isHealthy(
-                    diseaseName,
-                  )
-                      ? Icons
-                          .verified_rounded
-                      : unknown
-                          ? Icons
-                              .help_outline_rounded
-                          : Icons
-                              .warning_amber_rounded,
-                  color: color,
-                  size: 30,
-                ),
-              ),
-
-              const SizedBox(
-                width: 14,
-              ),
-
-              Expanded(
-                child: Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment
-                          .start,
-                  children: [
-                    Text(
-                      diseaseName,
-                      style:
-                          const TextStyle(
-                        fontSize: 21,
-                        fontWeight:
-                            FontWeight
-                                .w900,
-                        color: Color(
-                          0xFF1E2A1F,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(
-                      height: 5,
-                    ),
-                    Text(
-                      date,
-                      style:
-                          const TextStyle(
-                        fontSize: 14,
-                        color:
-                            Colors.grey,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(
-            height: 16,
-          ),
-
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _chip(
-                demo
-                    ? 'Demo / Legacy'
-                    : 'AI Scan',
-                demo
-                    ? Colors.grey
-                    : const Color(
-                        0xFF2F6B3B,
-                      ),
-              ),
-              _chip(
-                device,
-                const Color(
-                  0xFF2F6B3B,
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(
-            height: 18,
-          ),
-
-          _infoRow(
-            'Confidence',
-            confidence,
-          ),
-
-          if (pathogen !=
-              'N/A')
-            _infoRow(
-              'Pathogen',
-              pathogen,
+          Icon(icon, color: _green, size: 25),
+          Text(
+            '$count',
+            style: const TextStyle(
+              color: _ink,
+              fontSize: 23,
+              fontWeight: FontWeight.w800,
             ),
-
-          _infoRow(
-            'Temperature',
-            temperature,
           ),
-
-          _infoRow(
-            'Weather',
-            weather,
-          ),
-
-          _infoRow(
-            'Location',
-            location,
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _muted, fontSize: 15),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
 
-  Widget _chip(
-    String label,
-    Color color,
-  ) {
-    return Container(
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 6,
-      ),
-      decoration: BoxDecoration(
-        color: color.withValues(
-          alpha: 0.10,
-        ),
-        borderRadius:
-            BorderRadius.circular(
-          18,
-        ),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight:
-              FontWeight.w800,
-        ),
-      ),
-    );
-  }
-
-  Widget _infoRow(
-    String label,
-    String value,
-  ) {
-    return Padding(
-      padding:
-          const EdgeInsets.only(
-        bottom: 8,
-      ),
-      child: Row(
-        crossAxisAlignment:
-            CrossAxisAlignment
-                .start,
-        children: [
-          SizedBox(
-            width: 112,
-            child: Text(
-              '$label:',
-              style:
-                  const TextStyle(
-                fontSize: 15,
-                fontWeight:
-                    FontWeight.w800,
-                color:
-                    Colors.grey,
-              ),
-            ),
+  Widget _sessionCard(MapEntry<String, List<Map<String, dynamic>>> entry) {
+    final date = LettuceScanReport.capturedAt(entry.value.first);
+    final count = entry.value.length;
+    return Card(
+      color: Colors.white,
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: ListTile(
+        minTileHeight: 66,
+        contentPadding: const EdgeInsets.symmetric(vertical: 6, horizontal: 14),
+        leading: const Icon(Icons.assessment_outlined, color: _green),
+        title: Text(
+          '$count saved ${count == 1 ? 'photo' : 'photos'}',
+          style: const TextStyle(
+            color: _ink,
+            fontSize: 17,
+            fontWeight: FontWeight.w800,
           ),
-          Expanded(
-            child: Text(
-              value,
-              style:
-                  const TextStyle(
-                fontSize: 15,
-                fontWeight:
-                    FontWeight.w800,
-                color: Color(
-                  0xFF1E2A1F,
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
+        subtitle: Text(
+          date == null
+              ? 'Open session report'
+              : DateFormat.yMMMd().add_jm().format(date.toLocal()),
+          style: const TextStyle(color: _muted, fontSize: 15),
+        ),
+        trailing: const Icon(Icons.chevron_right, color: _green),
+        onTap: () => _openSession(entry.key, entry.value),
       ),
     );
   }

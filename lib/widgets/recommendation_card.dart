@@ -22,7 +22,7 @@ class RecommendationCard extends StatelessWidget {
         color: bgColor,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: iconColor.withOpacity(0.2),
+          color: iconColor.withValues(alpha: 0.2),
           width: 1,
         ),
       ),
@@ -35,7 +35,7 @@ class RecommendationCard extends StatelessWidget {
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: iconColor.withOpacity(0.1),
+                  color: iconColor.withValues(alpha: 0.1),
                   blurRadius: 8,
                   offset: const Offset(0, 4),
                 )

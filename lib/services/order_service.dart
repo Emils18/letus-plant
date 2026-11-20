@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -55,10 +56,10 @@ class OrderService {
 
       return List<Map<String, dynamic>>.from(data);
     } on PostgrestException catch (e) {
-      print('getBuyerOrders database error: ${e.message}');
+      debugPrint('getBuyerOrders database error: ${e.message}');
       return [];
     } catch (e) {
-      print('getBuyerOrders error: $e');
+      debugPrint('getBuyerOrders error: $e');
       return [];
     }
   }
@@ -91,10 +92,10 @@ class OrderService {
 
       return List<Map<String, dynamic>>.from(data);
     } on PostgrestException catch (e) {
-      print('getFarmerOrders database error: ${e.message}');
+      debugPrint('getFarmerOrders database error: ${e.message}');
       return [];
     } catch (e) {
-      print('getFarmerOrders error: $e');
+      debugPrint('getFarmerOrders error: $e');
       return [];
     }
   }
@@ -127,7 +128,7 @@ class OrderService {
 
       return data == null ? null : Map<String, dynamic>.from(data);
     } catch (error) {
-      print('getFarmerOrderById error: $error');
+      debugPrint('getFarmerOrderById error: $error');
       return null;
     }
   }
@@ -166,232 +167,42 @@ class OrderService {
     }
 
     try {
-      // ==========================================================
-      // GET PRODUCT IDS FROM CART
-      // ==========================================================
-
-      final List<int> productIds = [];
-
-      for (final item in cartItems) {
-        final int productId = _toInt(item['id']);
-
-        if (productId <= 0) {
-          return const CheckoutResult(
-            success: false,
-            error: 'Invalid product detected.',
-          );
-        }
-
-        if (!productIds.contains(productId)) {
-          productIds.add(productId);
-        }
+      final requestedItems = cartItems.map((item) => {
+        'product_id': _toInt(item['id']),
+        'quantity': _toInt(item['quantity']),
+      }).toList();
+      final orders = await supabase.rpc('place_marketplace_order', params: {
+        'p_contact': {
+          'email': user.email,
+          'shipping_name': cleanName,
+          'shipping_phone': cleanPhone,
+          'shipping_address': cleanAddress,
+          'city': 'Cebu City',
+          'postal_code': '6000',
+          'payment_method': cleanPayment,
+          'delivery_method': 'Delivery',
+        },
+        'p_items': requestedItems,
+        'p_single_farmer': false,
+      });
+      if (orders is! List || orders.isEmpty) {
+        return const CheckoutResult(success: false, error: 'The order was not created.');
       }
 
-      // ==========================================================
-      // GET CURRENT PRODUCTS FROM SUPABASE
-      // ==========================================================
-
-      final response = await supabase
-          .from('products')
-          .select('id, name, price, stock, farmer_id')
-          .inFilter('id', productIds);
-
-      final List<Map<String, dynamic>> databaseProducts =
-          List<Map<String, dynamic>>.from(response);
-
-      if (databaseProducts.length != productIds.length) {
-        return const CheckoutResult(
-          success: false,
-          error: 'One or more products are no longer available.',
-        );
-      }
-
-      // ==========================================================
-      // BUILD VALIDATED CART USING DATABASE VALUES
-      // ==========================================================
-
-      final List<Map<String, dynamic>> validatedItems = [];
-
-      for (final cartItem in cartItems) {
-        final int productId = _toInt(cartItem['id']);
-
-        final int quantity = _toInt(cartItem['quantity']);
-
-        if (quantity <= 0) {
-          return const CheckoutResult(
-            success: false,
-            error: 'Invalid quantity.',
-          );
-        }
-
-        final Map<String, dynamic> databaseProduct = databaseProducts
-            .firstWhere((product) => _toInt(product['id']) == productId);
-
-        final int currentStock = _toInt(databaseProduct['stock']);
-
-        final double currentPrice = _toDouble(databaseProduct['price']);
-
-        final String productName =
-            databaseProduct['name']?.toString() ?? 'Lettuce Product';
-
-        final String farmerId =
-            databaseProduct['farmer_id']?.toString().trim() ?? '';
-
-        if (farmerId.isEmpty) {
-          return CheckoutResult(
-            success: false,
-            error: '$productName has no farmer owner.',
-          );
-        }
-
-        if (currentStock < quantity) {
-          return CheckoutResult(
-            success: false,
-            error:
-                'Not enough stock for $productName. '
-                'Available: $currentStock',
-          );
-        }
-
-        validatedItems.add({
-          'id': productId,
-          'name': productName,
-          'price': currentPrice,
-          'quantity': quantity,
-          'stock': currentStock,
-          'farmer_id': farmerId,
-        });
-      }
-
-      // ==========================================================
-      // GROUP BY FARMER
-      // ==========================================================
-
-      final Map<String, List<Map<String, dynamic>>> groupedByFarmer = {};
-
-      for (final item in validatedItems) {
-        final String farmerId = item['farmer_id'].toString();
-
-        groupedByFarmer.putIfAbsent(farmerId, () => []);
-
-        groupedByFarmer[farmerId]!.add(item);
-      }
-
-      int createdOrders = 0;
-
-      // ==========================================================
-      // CREATE ORDERS
-      // ==========================================================
-
-      for (final entry in groupedByFarmer.entries) {
-        final String farmerId = entry.key;
-
-        final List<Map<String, dynamic>> items = entry.value;
-
-        final double totalAmount = items.fold<double>(0, (sum, item) {
-          return sum + (_toDouble(item['price']) * _toInt(item['quantity']));
-        });
-
-        final insertedOrder = await supabase
-            .from('orders')
-            .insert({
-              'order_code': _generateOrderCode(),
-              'user_id': user.id,
-              'farmer_id': farmerId,
-              'email': user.email,
-              'status': 'Pending',
-              'shipping_name': cleanName,
-              'shipping_phone': cleanPhone,
-              'shipping_address': cleanAddress,
-              'city': 'Cebu City',
-              'postal_code': '6000',
-              'payment_method': cleanPayment,
-              'payment_status': cleanPayment,
-              'delivery_method': 'Delivery',
-              'delivery_status': 'Pending',
-              'total_amount': totalAmount,
-              'confirmed_received': false,
-              'updated_at': DateTime.now().toIso8601String(),
-            })
-            .select('id')
-            .single();
-
-        final String orderId = insertedOrder['id'].toString();
-
-        // ========================================================
-        // ORDER ITEMS
-        // ========================================================
-
-        final orderItems = items.map((item) {
-          final double price = _toDouble(item['price']);
-
-          final int quantity = _toInt(item['quantity']);
-
-          return {
-            'order_id': orderId,
-            'product_id': item['id'],
-            'product_name': item['name'],
-            'quantity': quantity,
-            'price': price,
-            'price_at_time': price,
-            'subtotal': price * quantity,
-          };
-        }).toList();
-
-        await supabase.from('order_items').insert(orderItems);
-
-        // ========================================================
-        // REDUCE STOCK
-        // ========================================================
-
-        for (final item in items) {
-          final int oldStock = _toInt(item['stock']);
-
-          final int quantity = _toInt(item['quantity']);
-
-          final int newStock = oldStock - quantity;
-
-          if (newStock < 0) {
-            return CheckoutResult(
-              success: false,
-              error:
-                  'Stock changed while ordering ${item['name']}. Please try again.',
-            );
-          }
-
-          await supabase
-              .from('products')
-              .update({
-                'stock': newStock,
-                'status': newStock > 0 ? 'Available' : 'Out of Stock',
-                'updated_at': DateTime.now().toIso8601String(),
-              })
-              .eq('id', item['id']);
-        }
-
-        // ========================================================
-        // NOTIFICATION
-        // ========================================================
-
+      for (final order in orders) {
         final notificationError = await _notificationService.createNotification(
-          userId: farmerId,
-          orderId: orderId,
+          userId: order['farmer_id'].toString(),
+          orderId: order['id'].toString(),
           title: 'New Order',
           message: 'Someone ordered your product.',
           type: 'new_order',
         );
-
         if (notificationError != null) {
-          print(
-            'CREATE NOTIFICATION FAILED: '
-            '$notificationError',
-          );
+          debugPrint('CREATE NOTIFICATION FAILED: $notificationError');
         }
-
-        createdOrders++;
       }
 
-      return CheckoutResult(success: true, orderCount: createdOrders);
+      return CheckoutResult(success: true, orderCount: orders.length);
     } on PostgrestException catch (e) {
       return CheckoutResult(
         success: false,
@@ -410,12 +221,21 @@ class OrderService {
     try {
       final orderData = await supabase
           .from('orders')
-          .select('farmer_id, order_code')
+          .select('farmer_id, order_code, status, delivery_status')
           .eq('id', orderId)
           .eq('user_id', user.id)
           .single();
 
-      await supabase
+      final isDelivered = [orderData['status'], orderData['delivery_status']]
+          .any(
+            (value) =>
+                value?.toString().toLowerCase().contains('delivered') == true,
+          );
+      if (!isDelivered) {
+        return 'You can confirm receipt after the farmer marks the order Delivered.';
+      }
+
+      final updatedOrder = await supabase
           .from('orders')
           .update({
             'status': 'Completed',
@@ -426,7 +246,13 @@ class OrderService {
             'updated_at': DateTime.now().toIso8601String(),
           })
           .eq('id', orderId)
-          .eq('user_id', user.id);
+          .eq('user_id', user.id)
+          .eq('status', orderData['status'])
+          .select('id')
+          .maybeSingle();
+      if (updatedOrder == null) {
+        return 'Order was not updated. Refresh your orders and try again.';
+      }
 
       final farmerId = orderData['farmer_id']?.toString();
       final orderCode = orderData['order_code']?.toString() ?? orderId;
@@ -441,7 +267,7 @@ class OrderService {
         );
 
         if (notificationError != null) {
-          print(
+          debugPrint(
             'CREATE CONFIRM RECEIVED NOTIFICATION FAILED: $notificationError',
           );
         }
@@ -466,12 +292,23 @@ class OrderService {
     try {
       final orderData = await supabase
           .from('orders')
-          .select('user_id, order_code')
+          .select('user_id, order_code, status')
           .eq('id', orderId)
           .eq('farmer_id', user.id)
           .single();
 
-      await supabase
+      final currentStatus = orderData['status']?.toString().toLowerCase();
+      final expectedStatus = switch (currentStatus) {
+        'pending' => 'Confirmed',
+        'confirmed' => 'Preparing',
+        'preparing' => 'Shipped',
+        _ => null,
+      };
+      if (status != expectedStatus) {
+        return 'This order status changed. Refresh the order and try the next available step.';
+      }
+
+      final updatedOrder = await supabase
           .from('orders')
           .update({
             'status': status,
@@ -479,7 +316,13 @@ class OrderService {
             'updated_at': DateTime.now().toIso8601String(),
           })
           .eq('id', orderId)
-          .eq('farmer_id', user.id);
+          .eq('farmer_id', user.id)
+          .eq('status', orderData['status'])
+          .select('id')
+          .maybeSingle();
+      if (updatedOrder == null) {
+        return 'Order was not updated. Check that it still belongs to your farm.';
+      }
 
       final buyerId = orderData['user_id']?.toString();
       final orderCode = orderData['order_code']?.toString() ?? orderId;
@@ -494,7 +337,7 @@ class OrderService {
         );
 
         if (notificationError != null) {
-          print('CREATE ORDER UPDATE NOTIFICATION FAILED: $notificationError');
+          debugPrint('CREATE ORDER UPDATE NOTIFICATION FAILED: $notificationError');
         }
       }
 
@@ -519,11 +362,38 @@ class OrderService {
       );
     }
 
+    String? uploadedPath;
     try {
+      final order = await supabase
+          .from('orders')
+          .select('status')
+          .eq('id', orderId)
+          .eq('farmer_id', user.id)
+          .maybeSingle();
+      if (order == null) {
+        return const ProofUploadResult(
+          success: false,
+          error: 'Order not found for this farmer account.',
+        );
+      }
+      if (order['status']?.toString().toLowerCase() != 'shipped') {
+        return const ProofUploadResult(
+          success: false,
+          error: 'Mark the order as Shipped before submitting delivery proof.',
+        );
+      }
+
       final bytes = await proofImage.readAsBytes();
+      if (bytes.isEmpty) {
+        return const ProofUploadResult(
+          success: false,
+          error: 'The selected photo is empty. Choose another photo.',
+        );
+      }
       final extension = _extensionFromName(proofImage.name);
       final path =
           '${user.id}/$orderId-${DateTime.now().millisecondsSinceEpoch}.$extension';
+      uploadedPath = path;
 
       await supabase.storage
           .from('delivery-proofs')
@@ -540,7 +410,7 @@ class OrderService {
           .from('delivery-proofs')
           .getPublicUrl(path);
 
-      await supabase
+      final updatedOrder = await supabase
           .from('orders')
           .update({
             'proof_image_url': imageUrl,
@@ -550,17 +420,21 @@ class OrderService {
             'updated_at': DateTime.now().toIso8601String(),
           })
           .eq('id', orderId)
-          .eq('farmer_id', user.id);
-
-      final orderData = await supabase
-          .from('orders')
-          .select('user_id, order_code')
-          .eq('id', orderId)
           .eq('farmer_id', user.id)
-          .single();
+          .eq('status', 'Shipped')
+          .select('id, user_id, order_code')
+          .maybeSingle();
+      if (updatedOrder == null) {
+        await supabase.storage.from('delivery-proofs').remove([path]);
+        return const ProofUploadResult(
+          success: false,
+          error:
+              'Photo uploaded, but the order status could not be updated. Try again.',
+        );
+      }
 
-      final buyerId = orderData['user_id']?.toString();
-      final orderCode = orderData['order_code']?.toString() ?? orderId;
+      final buyerId = updatedOrder['user_id']?.toString();
+      final orderCode = updatedOrder['order_code']?.toString() ?? orderId;
 
       if (buyerId != null && buyerId.isNotEmpty) {
         final notificationError = await _notificationService.createNotification(
@@ -572,33 +446,39 @@ class OrderService {
         );
 
         if (notificationError != null) {
-          print('CREATE DELIVERED NOTIFICATION FAILED: $notificationError');
+          debugPrint('CREATE DELIVERED NOTIFICATION FAILED: $notificationError');
         }
       }
 
       return ProofUploadResult(success: true, imageUrl: imageUrl);
     } on StorageException catch (e) {
+      if (uploadedPath != null) {
+        try {
+          await supabase.storage.from('delivery-proofs').remove([uploadedPath]);
+        } catch (_) {}
+      }
       return ProofUploadResult(
         success: false,
         error: 'Storage error: ${e.message}',
       );
     } on PostgrestException catch (e) {
+      if (uploadedPath != null) {
+        try {
+          await supabase.storage.from('delivery-proofs').remove([uploadedPath]);
+        } catch (_) {}
+      }
       return ProofUploadResult(
         success: false,
         error: 'Database error: ${e.message}',
       );
     } catch (e) {
+      if (uploadedPath != null) {
+        try {
+          await supabase.storage.from('delivery-proofs').remove([uploadedPath]);
+        } catch (_) {}
+      }
       return ProofUploadResult(success: false, error: 'Proof upload error: $e');
     }
-  }
-
-  String _generateOrderCode() {
-    final now = DateTime.now();
-    return 'ORD-${now.year}${_two(now.month)}${_two(now.day)}-${now.millisecondsSinceEpoch.toString().substring(8)}';
-  }
-
-  String _two(int value) {
-    return value.toString().padLeft(2, '0');
   }
 
   String _extensionFromName(String name) {
@@ -617,13 +497,6 @@ class OrderService {
     if (extension == 'jpeg') return 'image/jpeg';
 
     return 'image/jpeg';
-  }
-
-  double _toDouble(dynamic value) {
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-
-    return double.tryParse(value?.toString() ?? '0') ?? 0;
   }
 
   int _toInt(dynamic value) {

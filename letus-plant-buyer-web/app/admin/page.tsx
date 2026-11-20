@@ -75,6 +75,12 @@ async function readJsonResponse(response: Response) {
   }
 }
 
+async function adminAuthorizationHeaders() {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error("Your admin session expired. Please sign in again.");
+  return { Authorization: `Bearer ${session.access_token}` };
+}
+
 function formatMoney(
   value: number | string | null | undefined
 ) {
@@ -354,6 +360,7 @@ export default function AdminDashboardPage() {
         "/api/admin/users",
         {
           method: "GET",
+          headers: await adminAuthorizationHeaders(),
         }
       );
 
@@ -489,10 +496,12 @@ export default function AdminDashboardPage() {
           loadDiagnosticLogs(),
         ]);
 
-        const visibleUsers =
-          loadedUsers.filter(isVisibleUser);
+        // Keep legacy soft-deleted rows visible so admins can permanently purge
+        // the Auth accounts left behind by the old delete endpoint.
+        const adminUsers = loadedUsers;
+        const activeUsers = adminUsers.filter(isVisibleUser);
 
-        setUsers(visibleUsers);
+        setUsers(adminUsers);
 
         setOrders(loadedOrders);
 
@@ -502,7 +511,7 @@ export default function AdminDashboardPage() {
 
         setStats(
           buildStats(
-            visibleUsers,
+            activeUsers,
             loadedOrders,
             totalProducts || 0
           )
@@ -564,6 +573,7 @@ export default function AdminDashboardPage() {
           method: "PATCH",
 
           headers: {
+            ...await adminAuthorizationHeaders(),
             "Content-Type":
               "application/json",
           },
@@ -606,7 +616,7 @@ export default function AdminDashboardPage() {
         if (!previous) return previous;
 
         return buildStats(
-          updatedUsers,
+          updatedUsers.filter(isVisibleUser),
           orders,
           previous.totalProducts
         );
@@ -634,7 +644,7 @@ export default function AdminDashboardPage() {
     email: string
   ) => {
     const confirmed = window.confirm(
-      `Are you sure you want to delete this user?\n\n${email}\n\nIf full delete is blocked, the user will be hidden.`
+      `Permanently delete this user?\n\n${email}\n\nTheir sign-in and profile will be deleted. This action cannot be undone.`
     );
 
     if (!confirmed) return;
@@ -643,9 +653,10 @@ export default function AdminDashboardPage() {
 
     try {
       const response = await fetch(
-        `/api/admin/users?userId=${userId}`,
+        `/api/admin/users?userId=${encodeURIComponent(userId)}`,
         {
           method: "DELETE",
+          headers: await adminAuthorizationHeaders(),
         }
       );
 
@@ -671,7 +682,7 @@ export default function AdminDashboardPage() {
         if (!previous) return previous;
 
         return buildStats(
-          remainingUsers,
+          remainingUsers.filter(isVisibleUser),
           orders,
           previous.totalProducts
         );
@@ -1019,6 +1030,7 @@ export default function AdminDashboardPage() {
                     String(
                       user.role || "buyer"
                     ).toLowerCase();
+                  const legacyDeleted = normalizedRole === "deleted" || user.email.toLowerCase().startsWith("deleted_");
 
                   return (
                     <div
@@ -1043,7 +1055,7 @@ export default function AdminDashboardPage() {
                               </h4>
 
                               <span className="rounded-full border border-[#5DBB63]/20 bg-[#5DBB63]/10 px-3 py-1 text-[10px] font-black uppercase tracking-[2px] text-[#5DBB63] sm:text-[11px]">
-                                {normalizedRole}
+                                {legacyDeleted ? "Needs permanent cleanup" : normalizedRole}
                               </span>
                             </div>
 
@@ -1054,11 +1066,12 @@ export default function AdminDashboardPage() {
                             <p className="mt-1 break-all text-xs text-white/25">
                               ID: {user.id}
                             </p>
+                            {legacyDeleted && <p className="mt-2 text-xs font-bold text-amber-300">This account was only hidden by the old delete flow. Use Purge leftover to remove its Auth login and profile.</p>}
                           </div>
                         </div>
 
                         <div className="flex flex-wrap gap-2">
-                          {USER_ROLES.map(
+                          {!legacyDeleted && USER_ROLES.map(
                             (role) => (
                               <button
                                 key={role}
@@ -1098,7 +1111,7 @@ export default function AdminDashboardPage() {
                           >
                             {deletingUser === user.id
                               ? "Deleting..."
-                              : "Delete"}
+                              : legacyDeleted ? "Purge leftover" : "Delete"}
                           </button>
                         </div>
                       </div>

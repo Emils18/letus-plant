@@ -12,13 +12,15 @@ class ResetPasswordScreen extends StatefulWidget {
   State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
 }
 
-class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTickerProviderStateMixin {
+class _ResetPasswordScreenState extends State<ResetPasswordScreen>
+    with SingleTickerProviderStateMixin {
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final _authService = AuthService();
 
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
   bool _isSuccess = false;
 
   late AnimationController _animController;
@@ -28,9 +30,18 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
   @override
   void initState() {
     super.initState();
-    _animController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _animController, curve: Curves.easeOut));
-    _slideAnimation = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic));
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    );
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _animController, curve: Curves.easeOut));
+    _slideAnimation =
+        Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(
+          CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
+        );
     _animController.forward();
   }
 
@@ -43,8 +54,8 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
   }
 
   Future<void> _updatePassword() async {
-    final password = _passwordController.text.trim();
-    final confirmPassword = _confirmPasswordController.text.trim();
+    final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
 
     if (password.isEmpty || confirmPassword.isEmpty) {
       _showSnackBar('Please enter both passwords.', isError: true);
@@ -87,7 +98,10 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
+        content: Text(
+          message,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: isError ? Colors.redAccent : const Color(0xFF2F6B3B),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -102,7 +116,13 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Color(0xFF1E2A1F)), onPressed: () => Navigator.pop(context)),
+        leading: IconButton(
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: Color(0xFF1E2A1F),
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
       ),
       body: Container(
         width: double.infinity,
@@ -131,15 +151,39 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(28),
-                        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 20, offset: const Offset(0, 8))],
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.08),
+                            blurRadius: 20,
+                            offset: const Offset(0, 8),
+                          ),
+                        ],
                       ),
-                      child: Image.asset('assets/images/Greenguard.png', fit: BoxFit.contain),
+                      child: Image.asset(
+                        'assets/images/Greenguard.png',
+                        fit: BoxFit.contain,
+                      ),
                     ),
 
                     const SizedBox(height: 24),
 
-                    const Text('Reset Password', style: TextStyle(color: Color(0xFF1E2A1F), fontSize: 32, fontWeight: FontWeight.w900)),
-                    const Text('SECURE GREENGUARD ACCESS', style: TextStyle(color: Color(0xFF5DBB63), fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 2)),
+                    const Text(
+                      'Reset Password',
+                      style: TextStyle(
+                        color: Color(0xFF1E2A1F),
+                        fontSize: 32,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const Text(
+                      'SECURE GREENGUARD ACCESS',
+                      style: TextStyle(
+                        color: Color(0xFF5DBB63),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 2,
+                      ),
+                    ),
 
                     const SizedBox(height: 48),
 
@@ -157,18 +201,48 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
                           child: _isSuccess
                               ? Column(
                                   children: [
-                                    const Icon(Icons.check_circle_rounded, color: Color(0xFF2F6B3B), size: 80),
+                                    const Icon(
+                                      Icons.check_circle_rounded,
+                                      color: Color(0xFF2F6B3B),
+                                      size: 80,
+                                    ),
                                     const SizedBox(height: 16),
-                                    const Text('Password Updated!', style: TextStyle(color: Color(0xFF1E2A1F), fontSize: 22, fontWeight: FontWeight.bold)),
+                                    const Text(
+                                      'Password Updated!',
+                                      style: TextStyle(
+                                        color: Color(0xFF1E2A1F),
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
                                     const SizedBox(height: 8),
-                                    const Text('You can now login with your new password.', textAlign: TextAlign.center, style: TextStyle(color: const Color(0xFF757575))),
+                                    const Text(
+                                      'You can now login with your new password.',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: Color(0xFF757575),
+                                      ),
+                                    ),
                                     const SizedBox(height: 24),
                                     SizedBox(
                                       width: double.infinity,
                                       height: 50,
                                       child: ElevatedButton(
-                                        onPressed: () => Navigator.popUntil(context, (route) => route.isFirst),
-                                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2F6B3B), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
+                                        onPressed: () => Navigator.popUntil(
+                                          context,
+                                          (route) => route.isFirst,
+                                        ),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(
+                                            0xFF2F6B3B,
+                                          ),
+                                          foregroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                          ),
+                                        ),
                                         child: const Text('Go to Login'),
                                       ),
                                     ),
@@ -176,17 +250,50 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
                                 )
                               : Column(
                                   children: [
-                                    _buildTextField(controller: _passwordController, hint: 'New Password', isPassword: true),
+                                    _buildTextField(
+                                      controller: _passwordController,
+                                      hint: 'New Password',
+                                      isPassword: true,
+                                      isConfirm: false,
+                                    ),
                                     const SizedBox(height: 16),
-                                    _buildTextField(controller: _confirmPasswordController, hint: 'Confirm New Password', isPassword: true),
+                                    _buildTextField(
+                                      controller: _confirmPasswordController,
+                                      hint: 'Confirm New Password',
+                                      isPassword: true,
+                                      isConfirm: true,
+                                    ),
                                     const SizedBox(height: 24),
                                     SizedBox(
                                       width: double.infinity,
                                       height: 56,
                                       child: ElevatedButton(
-                                        onPressed: _isLoading ? null : _updatePassword,
-                                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2F6B3B), foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20))),
-                                        child: _isLoading ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 3) : const Text('Update Password', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+                                        onPressed: _isLoading
+                                            ? null
+                                            : _updatePassword,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(
+                                            0xFF2F6B3B,
+                                          ),
+                                          foregroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              20,
+                                            ),
+                                          ),
+                                        ),
+                                        child: _isLoading
+                                            ? const CircularProgressIndicator(
+                                                color: Colors.white,
+                                                strokeWidth: 3,
+                                              )
+                                            : const Text(
+                                                'Update Password',
+                                                style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.w900,
+                                                ),
+                                              ),
                                       ),
                                     ),
                                   ],
@@ -208,6 +315,7 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
     required TextEditingController controller,
     required String hint,
     bool isPassword = false,
+    bool isConfirm = false,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -217,21 +325,50 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> with SingleTi
       ),
       child: TextField(
         controller: controller,
-        obscureText: isPassword && _obscurePassword,
-        style: const TextStyle(color: Color(0xFF1E2A1F), fontWeight: FontWeight.w600),
+        obscureText:
+            isPassword &&
+            (isConfirm ? _obscureConfirmPassword : _obscurePassword),
+        style: const TextStyle(
+          color: Color(0xFF1E2A1F),
+          fontWeight: FontWeight.w600,
+        ),
         cursorColor: const Color(0xFF2F6B3B),
         decoration: InputDecoration(
           hintText: hint,
-          hintStyle: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w500),
-          prefixIcon: Icon(Icons.lock_rounded, color: const Color(0xFF2F6B3B).withValues(alpha: 0.7)),
+          hintStyle: TextStyle(
+            color: Colors.grey.shade400,
+            fontWeight: FontWeight.w500,
+          ),
+          prefixIcon: Icon(
+            Icons.lock_rounded,
+            color: const Color(0xFF2F6B3B).withValues(alpha: 0.7),
+          ),
           suffixIcon: isPassword
               ? IconButton(
-                  icon: Icon(_obscurePassword ? Icons.visibility_rounded : Icons.visibility_off_rounded, color: Colors.grey),
-                  onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                  tooltip:
+                      (isConfirm ? _obscureConfirmPassword : _obscurePassword)
+                      ? 'Show password'
+                      : 'Hide password',
+                  icon: Icon(
+                    (isConfirm ? _obscureConfirmPassword : _obscurePassword)
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded,
+                    color: const Color(0xFF46534A),
+                  ),
+                  onPressed: () => setState(() {
+                    if (isConfirm) {
+                      _obscureConfirmPassword = !_obscureConfirmPassword;
+                    } else {
+                      _obscurePassword = !_obscurePassword;
+                    }
+                  }),
                 )
               : null,
           border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 20,
+          ),
         ),
       ),
     );

@@ -9,8 +9,6 @@ import 'order_detail_screen.dart';
 import 'scan_mode_screen.dart';
 import 'sell_crop_screen.dart';
 
-import 'shared/health_logs_screen.dart';
-
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -26,6 +24,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late Future<List<Map<String, dynamic>>> _recentOrders;
   final Map<String, GlobalKey> _orderKeys = {};
   String? _highlightedOrderId;
+  String? _busyOrderId;
 
   @override
   void initState() {
@@ -79,7 +78,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final targetContext = _orderKeys[orderId]?.currentContext;
 
-    if (targetContext != null) {
+    if (targetContext != null && targetContext.mounted) {
       await Scrollable.ensureVisible(
         targetContext,
         duration: const Duration(milliseconds: 650),
@@ -108,11 +107,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _updateOrderStatus(String orderId, String newStatus) async {
+    if (_busyOrderId != null) return;
     setState(() {
+      _busyOrderId = orderId;
       _recentOrders = _recentOrders.then((orders) {
         return orders.map((order) {
           if (order['id'].toString() == orderId) {
-            return {...order, 'status': newStatus};
+            return {
+              ...order,
+              'status': newStatus,
+              'delivery_status': newStatus,
+            };
           }
 
           return order;
@@ -125,18 +130,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       status: newStatus,
     );
 
-    if (error != null) {
-      if (mounted) {
-        _refreshOrders();
-      }
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to update: $error')));
-    }
+    if (!mounted) return;
+    await _refreshOrders();
+    if (!mounted) return;
+    setState(() => _busyOrderId = null);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error == null
+              ? 'Order status updated. The buyer will see the change.'
+              : 'Failed to update: $error',
+        ),
+      ),
+    );
   }
 
   Future<void> _submitProof(String orderId) async {
+    if (_busyOrderId != null) return;
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       builder: (context) {
@@ -165,13 +175,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (source == null) return;
 
-    final pickedImage = await _imagePicker.pickImage(
-      source: source,
-      imageQuality: 80,
-    );
+    XFile? pickedImage;
+    try {
+      pickedImage = await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 80,
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open the photo picker: $error')),
+        );
+      }
+      return;
+    }
 
     if (pickedImage == null) return;
 
+    setState(() => _busyOrderId = orderId);
     final result = await _orderService.submitDeliveryProof(
       orderId: orderId,
       proofImage: pickedImage,
@@ -179,10 +200,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     if (!mounted) return;
 
+    setState(() => _busyOrderId = null);
     if (result.success) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Proof submitted!')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Delivery photo submitted; buyer status is now Delivered.',
+          ),
+        ),
+      );
 
       _refreshOrders();
     } else {
@@ -683,7 +709,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           height: 92,
                                           width: 92,
                                           fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) {
+                                          errorBuilder: (_, _, _) {
                                             return Container(
                                               height: 92,
                                               width: 92,
@@ -953,12 +979,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                     const SizedBox(height: 22),
                                   if (status.toLowerCase() == 'pending')
                                     ElevatedButton(
-                                      onPressed: () {
-                                        _updateOrderStatus(
-                                          orderId,
-                                          'Confirmed',
-                                        );
-                                      },
+                                      onPressed: _busyOrderId == null
+                                          ? () {
+                                              _updateOrderStatus(
+                                                orderId,
+                                                'Confirmed',
+                                              );
+                                            }
+                                          : null,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: const Color(
                                           0xFF2F6B3B,
@@ -975,22 +1003,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           ),
                                         ),
                                       ),
-                                      child: const Text(
-                                        'Accept Order',
-                                        style: TextStyle(
-                                          fontSize: 21,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
+                                      child: _busyOrderId == orderId
+                                          ? const CircularProgressIndicator(
+                                              color: Colors.white,
+                                            )
+                                          : const Text(
+                                              'Accept Order',
+                                              style: TextStyle(
+                                                fontSize: 21,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
                                     ),
                                   if (status.toLowerCase() == 'confirmed')
                                     ElevatedButton(
-                                      onPressed: () {
-                                        _updateOrderStatus(
-                                          orderId,
-                                          'Preparing',
-                                        );
-                                      },
+                                      onPressed: _busyOrderId == null
+                                          ? () {
+                                              _updateOrderStatus(
+                                                orderId,
+                                                'Preparing',
+                                              );
+                                            }
+                                          : null,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: const Color(
                                           0xFF5DBB63,
@@ -1007,19 +1041,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           ),
                                         ),
                                       ),
-                                      child: const Text(
-                                        'Mark as Preparing',
-                                        style: TextStyle(
-                                          fontSize: 21,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
+                                      child: _busyOrderId == orderId
+                                          ? const CircularProgressIndicator(
+                                              color: Colors.white,
+                                            )
+                                          : const Text(
+                                              'Mark as Preparing',
+                                              style: TextStyle(
+                                                fontSize: 21,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
                                     ),
                                   if (status.toLowerCase() == 'preparing')
                                     ElevatedButton(
-                                      onPressed: () {
-                                        _updateOrderStatus(orderId, 'Shipped');
-                                      },
+                                      onPressed: _busyOrderId == null
+                                          ? () {
+                                              _updateOrderStatus(
+                                                orderId,
+                                                'Shipped',
+                                              );
+                                            }
+                                          : null,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: const Color(
                                           0xFF2F6B3B,
@@ -1036,19 +1079,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           ),
                                         ),
                                       ),
-                                      child: const Text(
-                                        'Mark as Shipped',
-                                        style: TextStyle(
-                                          fontSize: 21,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
+                                      child: _busyOrderId == orderId
+                                          ? const CircularProgressIndicator(
+                                              color: Colors.white,
+                                            )
+                                          : const Text(
+                                              'Mark as Shipped',
+                                              style: TextStyle(
+                                                fontSize: 21,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
                                     ),
                                   if (status.toLowerCase() == 'shipped')
                                     ElevatedButton(
-                                      onPressed: () {
-                                        _submitProof(orderId);
-                                      },
+                                      onPressed: _busyOrderId == null
+                                          ? () {
+                                              _submitProof(orderId);
+                                            }
+                                          : null,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: const Color(
                                           0xFF5DBB63,
@@ -1065,13 +1114,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                           ),
                                         ),
                                       ),
-                                      child: const Text(
-                                        'Submit Delivery Proof',
-                                        style: TextStyle(
-                                          fontSize: 21,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
+                                      child: _busyOrderId == orderId
+                                          ? const CircularProgressIndicator(
+                                              color: Colors.white,
+                                            )
+                                          : const Text(
+                                              'Submit Delivery Proof',
+                                              style: TextStyle(
+                                                fontSize: 21,
+                                                fontWeight: FontWeight.w900,
+                                              ),
+                                            ),
                                     ),
                                   const SizedBox(height: 10),
                                   Align(

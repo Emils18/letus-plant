@@ -54,7 +54,7 @@ class ScanModeScreen extends StatelessWidget {
             icon: Icons.map_rounded,
             title: 'Automatic Flight Plan',
             subtitle:
-                'Plan and save waypoints on a live satellite map. Flight launch remains locked until hardware command paths are verified.',
+                'Prepare the inspection steps and add route waypoints on the visual farm map.',
             onTap: () => _open(context, const MissionProcedureScreen()),
           ),
           const SizedBox(height: 14),
@@ -64,14 +64,6 @@ class ScanModeScreen extends StatelessWidget {
             subtitle:
                 'Choose when to capture an image using the existing camera and AI workflow.',
             onTap: () => _open(context, const ScanScreen(droneManual: true)),
-          ),
-          const SizedBox(height: 14),
-          _ModeCard(
-            icon: Icons.route_rounded,
-            title: 'Drone readiness check',
-            subtitle:
-                'Read live flight-controller diagnostics before planning a route.',
-            onTap: () => _open(context, const DroneReadinessScreen()),
           ),
         ],
       ),

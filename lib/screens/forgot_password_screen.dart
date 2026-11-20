@@ -16,7 +16,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> with Single
   final _authService = AuthService();
 
   bool _isLoading = false;
-  bool _isSuccess = false;
+  final bool _isSuccess = false;
 
   late AnimationController _animController;
   late Animation<double> _fadeAnimation;

@@ -367,6 +367,7 @@ class _OrdersScreenState extends State<OrdersScreen> {
     if (error == null) {
       _refreshOrders();
     } else {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed: $error')));
@@ -375,8 +376,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
 
   Color _statusColor(String status) {
     final s = status.toLowerCase();
-    if (s.contains('delivered') || s.contains('completed'))
+    if (s.contains('delivered') || s.contains('completed')) {
       return const Color(0xFF2F6B3B);
+    }
     if (s.contains('pending')) return Colors.orange;
     if (s.contains('cancel')) return Colors.red;
     return Colors.blueGrey;
