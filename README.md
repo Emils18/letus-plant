@@ -18,8 +18,9 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## GreenGuard device and AI network settings
 
-- Web scan requests use `GREENGUARD_AI_URL` on the Next.js server. The code default is `http://185.133.48.73:5000`, based on the inference server's Flask default port. Set the same variable in the Web deployment environment if Contabo exposes the service on another scheme or port.
-- Flutter uses the centralized `lib/config/greenguard_network_config.dart` value. Override it in Web/Android release builds with `--dart-define=GREENGUARD_AI_BASE_URL=https://your-ai-host`.
+- Web scan requests go through the same-origin Next.js `/api/scan` route; the browser never calls the HTTP AI server directly, avoiding HTTPS mixed-content restrictions. The server-side default is the verified `http://185.133.48.73`; Web deployments can override it with `GREENGUARD_AI_URL`.
+- Flutter uses the centralized `lib/config/greenguard_network_config.dart` value. The verified HTTP endpoint is the default for the native Android app. If a secure HTTPS endpoint is provisioned for direct clients, override it with `--dart-define=GREENGUARD_AI_BASE_URL=https://your-ai-host`.
+- The verified endpoints are `GET /health` and multipart `POST /scan` with field `image`. A POST without an image returns the expected `image_missing` JSON error.
 - ESP32-CAM discovery and the soil sensor's UDP discovery remain local-network settings in that Flutter config. They are separate from the Contabo AI address. Soil readings are marked live only after the device's `/soil` response contains valid moisture, raw ADC, status, and matching device IP values.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.

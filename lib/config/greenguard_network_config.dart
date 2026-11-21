@@ -1,14 +1,14 @@
 /// Network endpoints used by the GreenGuard app.
 ///
-/// Contabo runs the Flask inference service on its configured service port.
-/// Override at release time with:
-/// --dart-define=GREENGUARD_AI_BASE_URL=http://host:port
+/// The verified Contabo endpoint is served through Nginx on HTTP port 80.
+/// Override at release time (prefer HTTPS for direct clients) with:
+/// --dart-define=GREENGUARD_AI_BASE_URL=https://your-ai-host
 class GreenGuardNetworkConfig {
   GreenGuardNetworkConfig._();
 
   static const String aiServerBaseUrl = String.fromEnvironment(
     'GREENGUARD_AI_BASE_URL',
-    defaultValue: 'http://185.133.48.73:5000',
+    defaultValue: 'http://185.133.48.73',
   );
 
   static const String soilDiscoveryMessage =
