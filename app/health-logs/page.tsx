@@ -855,7 +855,17 @@ export default function HealthLogsPage() {
           </p>
         </section>
 
-        <section className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-3">
+        <nav aria-label="Health report navigation" className="mb-8 grid gap-4 sm:grid-cols-2">
+  <a href="#overall-health-report" className="rounded-3xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 p-6 transition-colors hover:bg-[#5DBB63]/20">
+    <h3 className="text-xl font-black text-white">Overall Health Report</h3>
+    <p className="mt-2 text-sm text-white/70">View combined health statistics from saved scans.</p>
+  </a>
+  <a href="#diagnostic-records" className="rounded-3xl border border-white/20 bg-white/[0.06] p-6 transition-colors hover:bg-white/[0.12]">
+    <h3 className="text-xl font-black text-white">Diagnostic Records</h3>
+    <p className="mt-2 text-sm text-white/70">Browse individual scan results and their details.</p>
+  </a>
+</nav>
+<section id="overall-health-report" className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-3">
           <div className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-6">
             <p className="text-4xl font-black text-white">
               {logs.length}
@@ -1102,7 +1112,7 @@ export default function HealthLogsPage() {
           </section>
         )}
 
-        <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.035] shadow-2xl shadow-black/20 backdrop-blur-xl">
+        <section id="diagnostic-records" className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.035] shadow-2xl shadow-black/20 backdrop-blur-xl">
           <div className="border-b border-white/10 px-8 py-7">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
