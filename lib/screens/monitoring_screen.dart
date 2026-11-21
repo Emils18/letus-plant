@@ -21,14 +21,16 @@ class _MonitoringScreenState
   Map<String, dynamic>? data;
   Timer? _refreshTimer;
   bool _loading = true;
+  bool _requestInProgress = false;
 
-  bool get _connected => data?['connected'] == true;
+  bool get _connected =>
+      data?['connected'] == true && data?['reading_is_live'] == true;
 
   @override
   void initState() {
     super.initState();
     unawaited(_loadData());
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) => unawaited(_loadData()));
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => unawaited(_loadData()));
   }
 
   @override
@@ -38,8 +40,11 @@ class _MonitoringScreenState
   }
 
   Future<void> _loadData() async {
+    if (_requestInProgress) return;
+    _requestInProgress = true;
     final result =
         await _service.fetchSensorData();
+    _requestInProgress = false;
 
     if (!mounted) return;
 
@@ -185,7 +190,7 @@ class _MonitoringScreenState
 
                   const SizedBox(height: 12),
                   Row(children: [
-                    Expanded(child: Text('ESP32: ${MonitoringService.soilEsp32Ip}', style: const TextStyle(color: Colors.black54))),
+                    Expanded(child: Text(MonitoringService.soilEsp32Ip.isEmpty ? 'ESP32: Searching automatically' : 'ESP32: ${MonitoringService.soilEsp32Ip}', style: const TextStyle(color: Colors.black54))),
                     TextButton.icon(onPressed: _editSensorAddress, icon: const Icon(Icons.edit, size: 16), label: const Text('Set IP')),
                     IconButton(onPressed: _loadData, tooltip: 'Refresh now', icon: const Icon(Icons.refresh)),
                   ]),

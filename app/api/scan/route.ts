@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import { scanConfidencePercent, scanGuidance } from "@/lib/scan-guidance";
+import { getGreenGuardAiBaseUrl } from "@/lib/greenguard_ai_config";
 
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -117,35 +118,26 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Connect to the existing GreenGuard AI model.
-    const servers = [
-      process.env.GREENGUARD_AI_URL,
-      "http://192.168.254.192:5000",
-      "http://192.168.254.143:5000",
-    ].filter((value): value is string => Boolean(value));
-
+    // Web requests run server-side, so the configured Contabo endpoint does
+    // not depend on the farmer's local network or browser CORS settings.
+    const server = getGreenGuardAiBaseUrl();
     let diagnosis: Record<string, unknown> | null = null;
+    let lastError = "GreenGuard AI could not be reached at the configured server.";
 
-    let lastError =
-      "GreenGuard AI could not be reached. Check GREENGUARD_AI_URL and the AI server.";
+    try {
+      const health = await fetch(`${server}/health`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(6000),
+      });
+      const healthData = await health.json();
 
-    for (const server of [...new Set(servers)]) {
-      try {
-        const health = await fetch(`${server}/health`, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(4000),
-        });
-
-        const healthData = await health.json();
-
-        if (
-          !health.ok ||
-          healthData.online !== true ||
-          healthData.model_loaded !== true
-        ) {
-          continue;
-        }
-
+      if (
+        !health.ok ||
+        healthData.online !== true ||
+        healthData.model_loaded !== true
+      ) {
+        lastError = "The configured GreenGuard AI server is online but its model is not ready.";
+      } else {
         const body = new FormData();
         body.set("image", image, image.name || "lettuce.jpg");
 
@@ -155,33 +147,30 @@ export async function POST(request: NextRequest) {
           cache: "no-store",
           signal: AbortSignal.timeout(90000),
         });
-
         const result = await response.json();
 
         if (
-          !response.ok ||
-          result.success !== true ||
-          result.diagnosis_available !== true ||
-          !result.result
+          response.ok &&
+          result.success === true &&
+          result.diagnosis_available === true &&
+          result.result
         ) {
-          lastError =
-            result.message ||
+          diagnosis = result.result as Record<string, unknown>;
+        } else {
+          lastError = result.message ||
             "The AI could not produce a diagnosis. Try a clearer lettuce photo.";
-
-          continue;
         }
-
-        diagnosis = result.result as Record<string, unknown>;
-        break;
-      } catch {
-        // Try the next configured AI server.
       }
+    } catch (error) {
+      lastError = error instanceof Error && error.name === "TimeoutError"
+        ? "The GreenGuard AI server did not respond in time. Please retry."
+        : "GreenGuard AI could not be reached at the configured server.";
     }
 
     if (!diagnosis) {
       return json({
         success: false,
-        message: lastError,
+        message: `${lastError} Server: ${server}`,
       }, 502);
     }
 

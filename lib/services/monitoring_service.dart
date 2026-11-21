@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../config/greenguard_network_config.dart';
 
 class HealthLogSaveResult {
   const HealthLogSaveResult({
@@ -24,24 +28,119 @@ class MonitoringService {
   // SOIL SENSOR ESP32
   // ============================================================
 
-  static const String defaultSoilEsp32Ip = '10.175.35.214';
   static const String _soilIpPreference = 'soil_esp32_ip';
-  static String soilEsp32Ip = defaultSoilEsp32Ip;
+  static String soilEsp32Ip = '';
+  static RawDatagramSocket? _soilDiscoverySocket;
+  static Future<void>? _soilDiscoveryStart;
+  static final Set<String> _soilCandidatesBeingVerified = <String>{};
 
   static Future<void> loadSavedSoilAddress() async {
     final preferences = await SharedPreferences.getInstance();
-    soilEsp32Ip = preferences.getString(_soilIpPreference) ?? defaultSoilEsp32Ip;
+    soilEsp32Ip = preferences.getString(_soilIpPreference) ?? '';
   }
 
   static Future<void> setSoilAddress(String address) async {
-    final cleaned = address.trim().replaceFirst(RegExp(r'^https?://'), '').replaceAll(RegExp(r'/$'), '');
+    final input = address.trim();
+    final parsed = Uri.tryParse(
+      input.startsWith('http://') || input.startsWith('https://')
+          ? input
+          : 'http://$input',
+    );
+    final cleaned = parsed?.host ?? '';
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(_soilIpPreference, cleaned);
+    if (cleaned.isEmpty) {
+      await preferences.remove(_soilIpPreference);
+    } else {
+      await preferences.setString(_soilIpPreference, cleaned);
+    }
     soilEsp32Ip = cleaned;
   }
 
-  static const String soilDeviceName =
-      'GreenGuard-SOIL-01';
+  static const String soilDeviceName = GreenGuardNetworkConfig.soilDeviceName;
+
+  /// Receives the soil ESP32's existing UDP discovery announcements.
+  /// An address is persisted only after its /soil endpoint returns a valid,
+  /// fresh sensor payload.
+  static Future<void> startSoilDiscovery() {
+    if (_soilDiscoverySocket != null) return Future<void>.value();
+    final starting = _soilDiscoveryStart;
+    if (starting != null) return starting;
+
+    final Future<void> start = _bindSoilDiscoverySocket();
+    _soilDiscoveryStart = start;
+    return start.whenComplete(() => _soilDiscoveryStart = null);
+  }
+
+  static Future<void> _bindSoilDiscoverySocket() async {
+    try {
+      final socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        GreenGuardNetworkConfig.soilDiscoveryPort,
+        reuseAddress: true,
+      );
+      _soilDiscoverySocket = socket;
+      socket.listen((event) {
+        if (event != RawSocketEvent.read) return;
+        final packet = socket.receive();
+        if (packet == null) return;
+
+        final message = utf8.decode(packet.data, allowMalformed: true).trim();
+        final address = packet.address.address;
+        if (message != GreenGuardNetworkConfig.soilDiscoveryMessage ||
+            address.isEmpty ||
+            address == '0.0.0.0') {
+          return;
+        }
+        unawaited(_verifyAndRememberSoilAddress(address));
+      }, onError: (Object error) {
+        debugPrint('Soil ESP32 discovery listener error: $error');
+        _soilDiscoverySocket?.close();
+        _soilDiscoverySocket = null;
+      });
+    } catch (error) {
+      debugPrint('Unable to listen for Soil ESP32 discovery: $error');
+    }
+  }
+
+  static Future<void> _verifyAndRememberSoilAddress(String address) async {
+    if (!_soilCandidatesBeingVerified.add(address)) return;
+    try {
+      final response = await http
+          .get(Uri.parse('http://$address/soil'))
+          .timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200) return;
+
+      final dynamic decoded = jsonDecode(response.body);
+      if (!_isValidSoilPayload(decoded, expectedAddress: address)) return;
+
+      await setSoilAddress(address);
+      debugPrint('Live Soil ESP32 discovered at $address');
+    } catch (_) {
+      // A discovery packet alone never marks the device as connected.
+    } finally {
+      _soilCandidatesBeingVerified.remove(address);
+    }
+  }
+
+  static bool _isValidSoilPayload(
+    dynamic value, {
+    String? expectedAddress,
+  }) {
+    if (value is! Map<String, dynamic>) return false;
+    final int? moisture = _readInt(value['soil_moisture']);
+    final int? raw = _readInt(value['soil_raw']);
+    final String status = value['soil_status']?.toString().trim().toUpperCase() ?? '';
+    final String reportedAddress = value['device_ip']?.toString().trim() ?? '';
+    return moisture != null &&
+        moisture >= 0 &&
+        moisture <= 100 &&
+        raw != null &&
+        raw >= 0 &&
+        raw <= 4095 &&
+        reportedAddress.isNotEmpty &&
+        (expectedAddress == null || reportedAddress == expectedAddress) &&
+        const {'DRY', 'IDEAL', 'WET'}.contains(status);
+  }
 
   // ============================================================
   // GET REAL SOIL SENSOR DATA
@@ -49,7 +148,11 @@ class MonitoringService {
 
   Future<Map<String, dynamic>>
       fetchSensorData() async {
+    unawaited(startSoilDiscovery());
     try {
+      if (soilEsp32Ip.isEmpty) {
+        return _offlineData();
+      }
       final Uri uri = Uri.parse(
         'http://$soilEsp32Ip/soil',
       );
@@ -77,21 +180,11 @@ class MonitoringService {
         return _offlineData();
       }
 
-      if (!decoded.containsKey(
-            'soil_moisture',
-          ) ||
-          !decoded.containsKey(
-            'soil_status',
-          )) {
+      if (!_isValidSoilPayload(decoded, expectedAddress: soilEsp32Ip)) {
         return _offlineData();
       }
-
-      final int moisture =
-          _readInt(
-        decoded['soil_moisture'],
-      );
-      if (moisture < 0 || moisture > 100) return _offlineData();
-      final int rawValue = _readInt(decoded['soil_raw']);
+      final int moisture = _readInt(decoded['soil_moisture'])!;
+      final int rawValue = _readInt(decoded['soil_raw'])!;
 
       final String status =
           decoded['soil_status']
@@ -120,6 +213,7 @@ class MonitoringService {
         'soil_raw': rawValue,
         'soil_value': '$moisture%',
         'soil_status': status,
+        'reading_is_live': true,
         'last_sync':
             DateTime.now()
                 .toIso8601String(),
@@ -143,9 +237,8 @@ class MonitoringService {
       'soil_raw': null,
       'soil_value': '--%',
       'soil_status': 'OFFLINE',
-      'last_sync':
-          DateTime.now()
-              .toIso8601String(),
+      'reading_is_live': false,
+      'last_sync': null,
     };
   }
 
@@ -153,7 +246,7 @@ class MonitoringService {
   // SAFE INTEGER
   // ============================================================
 
-  int _readInt(
+  static int? _readInt(
     dynamic value,
   ) {
     if (value is int) {
@@ -164,11 +257,7 @@ class MonitoringService {
       return value.round();
     }
 
-    return int.tryParse(
-          value?.toString() ??
-              '',
-        ) ??
-        0;
+    return int.tryParse(value?.toString() ?? '');
   }
 
   // ============================================================

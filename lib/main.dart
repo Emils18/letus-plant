@@ -25,6 +25,7 @@ Future<void> main() async {
   );
 
   await MonitoringService.loadSavedSoilAddress();
+  await MonitoringService.startSoilDiscovery();
 
   // Start listening immediately for GreenGuard ESP32-CAM.
   //

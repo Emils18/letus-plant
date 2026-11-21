@@ -31,8 +31,10 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Timer? _soilTimer;
   Timer? _aiHealthTimer;
+  Timer? _cameraHealthTimer;
 
   Uint8List? _liveFrame;
+  DateTime? _liveFrameCapturedAt;
   Uint8List? _capturedImage;
 
   Map<String, dynamic>? _scanResponse;
@@ -40,6 +42,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   bool _streamConnecting = false;
   bool _cameraConnected = false;
+  String? _connectedCameraHost;
   bool _isSearching = true;
   bool _isCapturing = false;
   bool _isProcessing = false;
@@ -47,6 +50,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   bool _soilLoading = true;
   bool _soilWasConnected = false;
+  bool _soilRequestInProgress = false;
 
   bool _scanCompleted = false;
   bool _scanAddedToSession = false;
@@ -55,7 +59,9 @@ class _ScanScreenState extends State<ScanScreen> {
   // AI Model Status
   bool _aiReady = false;
   bool _aiInitializing = true;
-  String _aiStatusMessage = 'Checking Laptop AI Server...';
+  bool _aiCheckInProgress = false;
+  bool _hasCheckedAiServer = false;
+  String _aiStatusMessage = 'Checking Contabo AI server...';
 
   String _cameraStatus = 'Waiting for GreenGuard-CAM-01...';
 
@@ -88,8 +94,12 @@ class _ScanScreenState extends State<ScanScreen> {
     _warmUpAi();
 
     _aiHealthTimer = Timer.periodic(
-      const Duration(seconds: 15),
+      const Duration(seconds: 30),
       (_) => _warmUpAi(),
+    );
+    _cameraHealthTimer = Timer.periodic(
+      const Duration(seconds: 12),
+      (_) => _refreshCameraConnection(),
     );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -97,30 +107,36 @@ class _ScanScreenState extends State<ScanScreen> {
     });
   }
 
-  // Check Laptop Server status via /health
-  Future<void> _warmUpAi() async {
-    if (!mounted) return;
+  // Check the configured Contabo endpoint via its actual /health response.
+  Future<void> _warmUpAi({bool showLoading = false}) async {
+    if (!mounted || _aiCheckInProgress) return;
+    _aiCheckInProgress = true;
 
-    if (!_aiReady) {
-    setState(() {
-      _aiInitializing = true;
-      _aiStatusMessage = 'Checking AI servers...';
-    });
+    if (!_hasCheckedAiServer || showLoading) {
+      setState(() {
+        _aiInitializing = true;
+        _aiStatusMessage = 'Checking Contabo AI server...';
+      });
     }
 
-    final String? server = await EspCamService.refreshAiServer();
+    String? server;
+    try {
+      server = await EspCamService.refreshAiServer();
+    } catch (error) {
+      debugPrint('AI server health check failed: $error');
+      server = null;
+    } finally {
+      _aiCheckInProgress = false;
+      _hasCheckedAiServer = true;
+    }
 
     if (!mounted) return;
     setState(() {
       _aiInitializing = false;
       _aiReady = server != null;
-      if (server == EspCamService.primaryAiServer) {
-        _aiStatusMessage = 'AI Online — Primary PC';
-      } else if (server == EspCamService.backupAiServer) {
-        _aiStatusMessage = 'AI Online — Backup Laptop';
-      } else {
-        _aiStatusMessage = 'All AI Servers Offline';
-      }
+      _aiStatusMessage = server != null
+          ? 'AI Online - Contabo'
+          : 'Contabo AI server is offline';
     });
   }
 
@@ -128,6 +144,7 @@ class _ScanScreenState extends State<ScanScreen> {
   void dispose() {
     _soilTimer?.cancel();
     _aiHealthTimer?.cancel();
+    _cameraHealthTimer?.cancel();
     _mjpegSubscription?.cancel();
     _cameraSubscription?.cancel();
     unawaited(_espCamService.stopMjpegStream());
@@ -136,16 +153,19 @@ class _ScanScreenState extends State<ScanScreen> {
 
   void _startSoilMonitoring() {
     unawaited(_loadSoilData());
-    _soilTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _soilTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_loadSoilData());
     });
   }
 
   Future<void> _loadSoilData() async {
+    if (_soilRequestInProgress) return;
+    _soilRequestInProgress = true;
     final Map<String, dynamic> data = await _monitoringService.fetchSensorData();
+    _soilRequestInProgress = false;
     if (!mounted) return;
 
-    final bool connected = data['connected'] == true;
+    final bool connected = data['connected'] == true && data['reading_is_live'] == true;
     final bool newlyConnected = connected && !_soilWasConnected;
 
     setState(() {
@@ -223,6 +243,7 @@ class _ScanScreenState extends State<ScanScreen> {
 
   Future<void> _cameraRegistered(EspCamDevice device) async {
     if (!mounted) return;
+    if (_cameraConnected && _connectedCameraHost == device.host) return;
     setState(() {
       _isSearching = true;
       _cameraStatus = '${device.deviceId} found. Connecting...';
@@ -236,10 +257,40 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
+  bool _cameraHealthCheckInProgress = false;
+
+  Future<void> _refreshCameraConnection() async {
+    if (!mounted || _cameraHealthCheckInProgress) return;
+    _cameraHealthCheckInProgress = true;
+    try {
+      final bool connected = await _espCamService.checkConnection();
+      if (!mounted) return;
+
+      if (connected && !_cameraConnected) {
+        _setCameraConnected();
+      } else if (!connected && _cameraConnected) {
+        await _stopPreview();
+        if (!mounted) return;
+        setState(() {
+          _cameraConnected = false;
+          _connectedCameraHost = null;
+          _isSearching = true;
+          _streamConnecting = false;
+          _cameraStatus = 'Camera connection lost. Reconnecting to hotspot...';
+          _liveFrame = null;
+          _liveFrameCapturedAt = null;
+        });
+      }
+    } finally {
+      _cameraHealthCheckInProgress = false;
+    }
+  }
+
   void _setCameraConnected() {
     if (!mounted) return;
     setState(() {
       _cameraConnected = true;
+      _connectedCameraHost = _espCamService.cameraHost;
       _isSearching = false;
       _cameraStatus = 'GreenGuard-CAM-01 connected.';
     });
@@ -275,7 +326,9 @@ class _ScanScreenState extends State<ScanScreen> {
     setState(() {
       _capturedImage = null;
       _liveFrame = null;
+      _liveFrameCapturedAt = null;
       _cameraConnected = false;
+      _connectedCameraHost = null;
       _isSearching = true;
       _cameraStatus = 'Searching for GreenGuard-CAM-01...';
     });
@@ -304,6 +357,7 @@ class _ScanScreenState extends State<ScanScreen> {
         if (!mounted || _isCapturing || _capturedImage != null) return;
         setState(() {
           _liveFrame = frame;
+          _liveFrameCapturedAt = DateTime.now();
           _streamConnecting = false;
         });
       },
@@ -342,8 +396,13 @@ Future<void> _takePhoto() async {
     // 1. Try high-res capture from camera
     Uint8List? image = await _espCamService.capturePhoto();
 
-    // 2. If capture endpoint timed out, fallback to current live frame
-    image ??= _liveFrame;
+    // If the still endpoint fails, use only a fresh frame from the live camera.
+    final DateTime? frameTime = _liveFrameCapturedAt;
+    if (image == null &&
+        frameTime != null &&
+        DateTime.now().difference(frameTime) <= const Duration(seconds: 2)) {
+      image = _liveFrame;
+    }
 
     if (!mounted) return;
 
@@ -372,6 +431,7 @@ Future<void> _takePhoto() async {
     setState(() {
       _capturedImage = null;
       _liveFrame = null;
+      _liveFrameCapturedAt = null;
       _scanResponse = null;
       _scanSaved = false;
       _scanCompleted = false;
@@ -537,6 +597,7 @@ Future<void> _takePhoto() async {
     setState(() {
       _capturedImage = null;
       _liveFrame = null;
+      _liveFrameCapturedAt = null;
       _scanResponse = null;
       _scanSaved = false;
       _scanCompleted = false;
@@ -658,6 +719,7 @@ Future<void> _takePhoto() async {
       _sessionFinished = false;
       _capturedImage = null;
       _liveFrame = null;
+      _liveFrameCapturedAt = null;
       _scanResponse = null;
       _scanSaved = false;
       _scanCompleted = false;
@@ -772,7 +834,7 @@ Future<void> _takePhoto() async {
           ),
           if (!_aiInitializing && !_aiReady)
             GestureDetector(
-              onTap: _warmUpAi,
+              onTap: () => _warmUpAi(showLoading: true),
               child: Text(
                 'Retry',
                 style: TextStyle(color: fg, fontWeight: FontWeight.w900, decoration: TextDecoration.underline),

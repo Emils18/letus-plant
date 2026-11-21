@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../config/greenguard_network_config.dart';
 
 // ============================================================
 // JSON HELPERS
@@ -459,68 +460,59 @@ class EspCamService {
   factory EspCamService() =>
       _instance;
 
-  static const int discoveryPort = 8765;
+  static const int discoveryPort =
+      GreenGuardNetworkConfig.cameraDiscoveryPort;
 
-  // Laptop-hosted GreenGuard AI server (phone and laptop must be on
-  // the same Wi-Fi/hotspot network). Update this when the laptop IPv4 changes.
-// ============================================================
-// DYNAMIC GREENGUARD AI SERVERS
-// ============================================================
+  static String get primaryAiServer =>
+      GreenGuardNetworkConfig.aiServerBaseUrl;
 
-static const String primaryAiServer =
-    'http://192.168.254.192:5000';
+  static String get aiServerBaseUrl =>
+      GreenGuardNetworkConfig.aiServerBaseUrl;
 
-static const String backupAiServer =
-    'http://192.168.254.143:5000';
+  static String get activeAiServerName => 'Contabo AI Server';
 
-static String _activeAiServer = primaryAiServer;
+  static Future<String?>? _aiHealthCheck;
 
-static String get aiServerBaseUrl => _activeAiServer;
+  static Future<String?> refreshAiServer() {
+    final activeCheck = _aiHealthCheck;
+    if (activeCheck != null) return activeCheck;
 
-static String get activeAiServerName =>
-    _activeAiServer == primaryAiServer
-        ? 'Primary PC'
-        : 'Backup Laptop';
+    final Future<String?> check = _checkConfiguredAiServer();
+    _aiHealthCheck = check;
+    return check.whenComplete(() => _aiHealthCheck = null);
+  }
 
-static Future<String?> refreshAiServer() async {
-  // Always prioritize the primary when it recovers.
-  for (final String server in [
-    primaryAiServer,
-    backupAiServer,
-  ]) {
+  static Future<String?> _checkConfiguredAiServer() async {
+    final String server = GreenGuardNetworkConfig.aiServerBaseUrl
+        .trim()
+        .replaceFirst(RegExp(r'/+$'), '');
+
     try {
       final response = await http
           .get(Uri.parse('$server/health'))
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 6));
 
-      if (response.statusCode != 200) continue;
+      if (response.statusCode != 200) return null;
 
       final data = jsonDecode(response.body);
-
       if (data is Map &&
           data['online'] == true &&
           data['model_loaded'] == true) {
-        _activeAiServer = server;
-
-        debugPrint('AI SERVER ACTIVE: $server');
-
+        debugPrint('CONTABO AI SERVER ACTIVE: $server');
         return server;
       }
-    } catch (e) {
-      debugPrint('AI SERVER UNAVAILABLE: $server');
+    } catch (error) {
+      debugPrint('CONTABO AI SERVER UNAVAILABLE: $error');
     }
+
+    return null;
   }
 
-  debugPrint('ALL AI SERVERS OFFLINE');
-
-  return null;
-}
-
   // Kept as compatibility methods for any existing startup/settings calls.
-  // The AI endpoint is intentionally pinned to the laptop, never Hugging Face.
+  // The configured Contabo AI endpoint is intentionally used for scans.
   static Future<void> loadEmergencyUrl() async {}
 
-  @Deprecated('GreenGuard AI scans are pinned to the laptop server.')
+  @Deprecated('GreenGuard AI scans use the centralized Contabo server URL.')
   static Future<void> setEmergencyUrl(String _) async {}
 
   HttpServer? _discoveryServer;
@@ -530,7 +522,7 @@ static Future<String?> refreshAiServer() async {
   String? _cameraHost;
 
   String _deviceId =
-      'GreenGuard-CAM-01';
+      GreenGuardNetworkConfig.cameraDeviceName;
 
   final StreamController<EspCamDevice>
       _cameraController =
@@ -847,8 +839,14 @@ static Future<String?> refreshAiServer() async {
                 ),
               );
 
-      if (response.statusCode ==
-          200) {
+      if (response.statusCode == 200) {
+        final dynamic payload = jsonDecode(response.body);
+        if (payload is! Map ||
+            payload['online'] != true ||
+            payload['camera'] != 'ready' ||
+            payload['device'] != GreenGuardNetworkConfig.cameraDeviceName) {
+          return false;
+        }
         _cameraHost = host;
 
         return true;
@@ -1461,18 +1459,21 @@ static Future<String?> refreshAiServer() async {
                 ),
               );
 
-      if (response.statusCode ==
-              200 &&
-          response
-              .bodyBytes
-              .isNotEmpty) {
+      final bool jpegResponse =
+          response.statusCode == 200 &&
+          response.bodyBytes.length >= 3 &&
+          response.bodyBytes[0] == 0xFF &&
+          response.bodyBytes[1] == 0xD8 &&
+          response.bodyBytes[2] == 0xFF;
+
+      if (jpegResponse) {
         return Uint8List.fromList(
           response.bodyBytes,
         );
       }
 
       debugPrint(
-        'Capture HTTP ${response.statusCode}',
+        'Camera did not return a JPEG image (HTTP ${response.statusCode}).',
       );
 
       return null;
@@ -1509,103 +1510,72 @@ Future<Map<String, dynamic>> scanPhotoWithAi(
     };
   }
 
-  // Check primary first, then backup.
   final String? selectedServer = await refreshAiServer();
 
   if (selectedServer == null) {
     return {
       'success': false,
       'network_error': true,
-      'message': 'Both GreenGuard AI servers are offline.',
+      'message': 'Contabo GreenGuard AI is not responding. Check the server connection and retry.',
     };
   }
 
-  final List<String> servers = [
-    selectedServer,
-    if (selectedServer != primaryAiServer)
-      primaryAiServer
-    else
-      backupAiServer,
-  ];
+  final String server = selectedServer;
+  try {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$server/scan'),
+    );
+    request.headers['Accept'] = 'application/json';
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'image',
+        imageBytes,
+        filename: 'greenguard_capture.jpg',
+      ),
+    );
 
-  for (final String server in servers) {
-    try {
-      // Verify this server before uploading.
-      final health = await http
-          .get(Uri.parse('$server/health'))
-          .timeout(const Duration(seconds: 4));
+    debugPrint('SCANNING WITH: $server');
+    final streamed = await request.send().timeout(
+      const Duration(seconds: 90),
+    );
+    final response = await http.Response.fromStream(streamed).timeout(
+      const Duration(seconds: 90),
+    );
 
-      if (health.statusCode != 200) continue;
-
-      final healthData = jsonDecode(health.body);
-
-      if (healthData is! Map ||
-          healthData['online'] != true ||
-          healthData['model_loaded'] != true) {
-        continue;
-      }
-
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$server/scan'),
-      );
-
-      request.headers['Accept'] = 'application/json';
-
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'image',
-          imageBytes,
-          filename: 'greenguard_capture.jpg',
-        ),
-      );
-
-      debugPrint('SCANNING WITH: $server');
-
-      final streamed = await request.send().timeout(
-        const Duration(seconds: 90),
-      );
-
-      final response = await http.Response.fromStream(
-        streamed,
-      ).timeout(const Duration(seconds: 90));
-
-      if (response.statusCode != 200) {
-        debugPrint('SCAN HTTP ${response.statusCode} FROM: $server');
-        continue;
-      }
-
-      final decoded = jsonDecode(response.body);
-
-      if (decoded is Map<String, dynamic>) {
-        _activeAiServer = server;
-
-        debugPrint('SCAN SERVER USED: $server');
-
-        return {
-          ...decoded,
-          'http_status': response.statusCode,
-          'active_server': server,
-          'active_server_name': activeAiServerName,
-        };
-      }
-
-      debugPrint('INVALID SCAN RESPONSE FROM: $server');
-      continue;
-    } catch (e) {
-      debugPrint('SERVER FAILED: $server');
-      debugPrint('ERROR: $e');
-
-      // Try the other server.
-      continue;
+    if (response.statusCode != 200) {
+      return {
+        'success': false,
+        'network_error': false,
+        'http_status': response.statusCode,
+        'message': 'Contabo GreenGuard AI returned HTTP ${response.statusCode}. Please retry.',
+      };
     }
-  }
 
-  return {
-    'success': false,
-    'network_error': true,
-    'message': 'Both AI servers failed to process the scan.',
-  };
+    final decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) {
+      debugPrint('SCAN SERVER USED: $server');
+      return {
+        ...decoded,
+        'http_status': response.statusCode,
+        'active_server': server,
+        'active_server_name': activeAiServerName,
+      };
+    }
+
+    return {
+      'success': false,
+      'network_error': false,
+      'message': 'Contabo GreenGuard AI returned an invalid scan response.',
+    };
+  } catch (error) {
+    debugPrint('CONTABO AI SCAN FAILED: $error');
+    return {
+      'success': false,
+      'network_error': true,
+      'message': 'Contabo GreenGuard AI could not complete the scan. Please retry.',
+    };
+  }
 }
 
   void forgetCamera() {
