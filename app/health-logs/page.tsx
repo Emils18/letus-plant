@@ -916,7 +916,17 @@ export default function HealthLogsPage() {
           </p>
         </section>
 
-        <section className="mb-8 rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 sm:p-7" aria-labelledby="overall-health-report">
+        <nav id="greenguard-report-choices" aria-label="Health report choices" className="mb-8 grid gap-4 sm:grid-cols-2">
+  <a href="#greenguard-session-reports" className="flex min-h-28 flex-col justify-center rounded-3xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 p-6 text-white transition-colors hover:bg-[#5DBB63]/20 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#5DBB63]">
+    <span className="text-2xl font-black">Session Reports</span>
+    <span className="mt-2 text-base text-white/75">Choose one scanning session to view its photos and full results.</span>
+  </a>
+  <a href="#overall-health-report" className="flex min-h-28 flex-col justify-center rounded-3xl border border-white/20 bg-white/[0.06] p-6 text-white transition-colors hover:bg-white/[0.12] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#5DBB63]">
+    <span className="text-2xl font-black">Overall Health Report</span>
+    <span className="mt-2 text-base text-white/75">View combined results from all saved scanning sessions.</span>
+  </a>
+</nav>
+<section className="mb-8 rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 sm:p-7" aria-labelledby="overall-health-report">
           <h3 id="overall-health-report" className="text-2xl font-black">Overall Health Report</h3>
           <p className="mb-5 mt-2 text-base text-white/75">All saved scans you can view, including individual scans outside a session.</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -1065,7 +1075,7 @@ export default function HealthLogsPage() {
         </section>
 
         {isFarmer && (
-          <section className="mb-8 rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 to-[#0A140E]/95 p-7 shadow-2xl shadow-black/20">
+          <section id="greenguard-session-reports" className="mb-8 rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 to-[#0A140E]/95 p-7 shadow-2xl shadow-black/20">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <p className="text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">Grouped by scan session</p>

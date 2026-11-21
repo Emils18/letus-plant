@@ -20,10 +20,12 @@ export function useWeatherLocation() {
         setCoordinates(`${coords.latitude.toFixed(2)},${coords.longitude.toFixed(2)}`);
       },
       (error) => {
-        setCoordinates("");
+        // Preserve the last known coordinates when GPS temporarily fails.
+        // A warning remains visible so outdated coordinates are not mistaken
+        // for a fresh location reading.
         setLocationError(error.code === 1
-          ? "Location access is off. Allow it in your browser to use local weather."
-          : "Could not determine your location. Try again when GPS is available.");
+          ? "Location permission is denied. Previously detected coordinates may be outdated."
+          : "Could not refresh GPS. Previously detected coordinates, if available, may be outdated.");
       },
       { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 },
     );
