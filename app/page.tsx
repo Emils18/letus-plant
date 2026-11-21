@@ -1132,17 +1132,60 @@ function startProductEdit(product: FarmerProduct) {
   setFarmerTab("sell");
 }
 
-async function archiveProduct(product: FarmerProduct) {
-  if (!account || !window.confirm(`Unlist “${product.name || "this product"}”? Existing orders will be preserved.`)) return;
+async function deleteProduct(product: FarmerProduct) {
+  if (!account || !window.confirm(`Delete "${product.name || "this product"}"? Products without order history will be permanently deleted. Products with order history will be archived.`)) return;
   setDeletingProductId(String(product.id));
   try {
-    const { data, error } = await supabase.rpc("archive_farmer_product", { p_product_id: product.id });
+    const { data, error } = await supabase.rpc("delete_farmer_product", { p_product_id: product.id });
     if (error) throw error;
+    if (!data || !["deleted", "archived"].includes(data.action)) {
+      throw new Error("Supabase did not confirm whether the product was deleted or archived.");
+    }
+    const imageCleanupFailed = data.action === "deleted" && data.image_cleanup_safe
+      ? await cleanupDeletedProductImages(product, account.id)
+      : false;
     await Promise.all([loadFarmerToolsData(account.id), loadProducts()]);
-    showNotification(data?.has_order_history ? "Product unlisted. Order history was preserved." : "Product unlisted.");
+    showNotification(data.action === "deleted"
+      ? imageCleanupFailed
+        ? "Product deleted, but its photo could not be removed from storage."
+        : "Product deleted successfully."
+      : "Product archived because it has order history or related records. Existing order history was preserved.");
   } catch (error) {
-    showNotification(error instanceof Error ? error.message : "Could not unlist product.");
+    showNotification(error instanceof Error ? error.message : "Could not delete product.");
   } finally { setDeletingProductId(null); }
+}
+
+async function cleanupDeletedProductImages(product: FarmerProduct, farmerId: string): Promise<boolean> {
+  let cleanupFailed = false;
+  const imageUrls = Array.from(new Set([product.image_url, product.image].filter((url): url is string => Boolean(url))));
+  for (const imageUrl of imageUrls) {
+    try {
+      const parsed = new URL(imageUrl);
+      const marker = "/storage/v1/object/public/products/";
+      const markerIndex = parsed.pathname.indexOf(marker);
+      if (markerIndex < 0) continue;
+      const objectPath = decodeURIComponent(parsed.pathname.slice(markerIndex + marker.length));
+      if (!objectPath.startsWith(`${farmerId}/`)) continue;
+      const ownProjectUrl = new URL(supabase.storage.from("products").getPublicUrl(objectPath).data.publicUrl);
+      if (ownProjectUrl.origin !== parsed.origin) continue;
+      const [imageUrlRefs, imageRefs] = await Promise.all([
+        supabase.from("products").select("id").eq("image_url", imageUrl).limit(1),
+        supabase.from("products").select("id").eq("image", imageUrl).limit(1),
+      ]);
+      if (imageUrlRefs.error) throw imageUrlRefs.error;
+      if (imageRefs.error) throw imageRefs.error;
+      if ((imageUrlRefs.data?.length || 0) > 0 || (imageRefs.data?.length || 0) > 0) continue;
+      const { error } = await supabase.storage.from("products").remove([objectPath]);
+      if (error) {
+        cleanupFailed = true;
+        console.warn("Could not remove unreferenced product image:", error.message);
+      }
+    } catch (error) {
+      cleanupFailed = true;
+      console.warn("Could not clean up deleted product image:", error);
+    }
+  }
+  return cleanupFailed;
 }
 
 
@@ -1757,17 +1800,17 @@ const renderFarmerSellForm = () => {
         <button onClick={() => setFarmerTab("sell")} className="rounded-full bg-[#2F6B3B] px-5 py-2.5 text-sm font-black text-white">Add Product</button>
       </div>
 
-      <div className="max-h-[620px] overflow-y-auto rounded-[24px] border border-green-100">
-        <div className="hidden overflow-x-auto md:block">
-          <table className="w-full min-w-[760px]">
+      <div className="max-h-[min(70vh,760px)] min-h-48 overflow-y-auto overscroll-contain rounded-[24px] border border-green-100">
+        <div className="hidden overflow-x-auto lg:block">
+          <table className="w-full min-w-[920px] table-fixed">
             <thead className="bg-[#F7FBF6] text-xs uppercase tracking-[2px] text-[#5C6B5D]">
               <tr>
-                <th className="px-6 py-4 text-left">Product</th>
-                <th className="px-6 py-4 text-left">Category</th>
-                <th className="px-6 py-4 text-left">Price</th>
-                <th className="px-6 py-4 text-left">Stock</th>
-                <th className="px-6 py-4 text-left">Status</th>
-                <th className="px-6 py-4 text-left">Manage</th>
+                <th className="w-[30%] px-5 py-4 text-left">Product</th>
+                <th className="w-[13%] px-4 py-4 text-left">Category</th>
+                <th className="w-[12%] px-4 py-4 text-left">Price</th>
+                <th className="w-[9%] px-4 py-4 text-left">Stock</th>
+                <th className="w-[14%] px-4 py-4 text-left">Status</th>
+                <th className="w-[22%] px-4 py-4 text-left">Manage</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-green-100 bg-white">
@@ -1775,31 +1818,31 @@ const renderFarmerSellForm = () => {
                 <tr><td colSpan={6} className="px-6 py-14 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</td></tr>
               ) : (
                 farmerProducts.map((product) => (
-                  <tr key={product.id} className="transition-colors hover:bg-green-50/60">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
+                  <tr key={product.id} className="align-middle transition-colors hover:bg-green-50/60">
+                    <td className="px-5 py-4">
+                      <div className="flex min-w-0 items-center gap-3">
                         {product.image_url || product.image ? (
-                          <div className="h-12 w-12 rounded-2xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
+                          <div className="h-14 w-14 shrink-0 rounded-2xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
                         ) : (
-                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 text-[10px] text-gray-400">
+                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gray-100 text-[10px] text-gray-400">
                             No Img
                           </div>
                         )}
-                        <div>
-                          <p className="font-black text-[#1E2A1F]">{product.name || "Unnamed Product"}</p>
-                          <p className="text-xs text-[#5C6B5D]">{formatDate(product.created_at)}</p>
+                        <div className="min-w-0">
+                          <p className="break-words text-sm font-black leading-5 text-[#1E2A1F]">{product.name || "Unnamed Product"}</p>
+                          <p className="mt-1 text-xs text-[#5C6B5D]">{formatDate(product.created_at)}</p>
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm font-bold text-[#5C6B5D]">{product.category || "N/A"}</td>
-                    <td className="px-6 py-4 text-sm font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</td>
-                    <td className="px-6 py-4 text-sm font-bold text-[#1E2A1F]">{product.stock || 0}</td>
-                    <td className="px-6 py-4"><StatusPill text={product.archived_at ? "Unlisted" : Number(product.stock || 0) <= 0 ? "Out of Stock" : "Available"} /></td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-2">
-                        <button type="button" disabled={Boolean(product.archived_at)} onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-3 py-2 text-xs font-black text-green-800 disabled:opacity-50">Edit</button>
-                        <button type="button" disabled={Boolean(product.archived_at) || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-black text-blue-800 disabled:opacity-50">Restock</button>
-                        <button type="button" disabled={Boolean(product.archived_at) || deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-black text-red-800 disabled:opacity-50">Unlist</button>
+                    <td className="whitespace-normal break-words px-4 py-4 text-sm font-bold leading-5 text-[#5C6B5D]">{product.category || "N/A"}</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm font-black tabular-nums text-[#2F6B3B]">₱{formatMoney(product.price)}</td>
+                    <td className="whitespace-nowrap px-4 py-4 text-sm font-bold tabular-nums text-[#1E2A1F]">{product.stock || 0}</td>
+                    <td className="whitespace-nowrap px-4 py-4"><StatusPill text={product.archived_at ? "Unlisted" : Number(product.stock || 0) <= 0 ? "Out of Stock" : "Available"} /></td>
+                    <td className="px-3 py-4">
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <button type="button" disabled={Boolean(product.archived_at)} onClick={() => startProductEdit(product)} className="whitespace-nowrap rounded-lg bg-green-50 px-2 py-2.5 text-[11px] font-black text-green-800 disabled:cursor-not-allowed disabled:opacity-50">Edit</button>
+                        <button type="button" disabled={Boolean(product.archived_at) || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="whitespace-nowrap rounded-lg bg-blue-50 px-1.5 py-2.5 text-[11px] font-black text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">Restock</button>
+                        <button type="button" disabled={deletingProductId === String(product.id)} onClick={() => deleteProduct(product)} className="whitespace-nowrap rounded-lg bg-red-50 px-1.5 py-2.5 text-[11px] font-black text-red-800 disabled:cursor-not-allowed disabled:opacity-50">Delete</button>
                       </div>
                     </td>
                   </tr>
@@ -1808,7 +1851,7 @@ const renderFarmerSellForm = () => {
             </tbody>
           </table>
         </div>
-        <div className="space-y-3 bg-[#F7FBF6] p-3 md:hidden">
+        <div className="space-y-3 bg-[#F7FBF6] p-3 lg:hidden">
           {farmerProducts.length === 0 ? (
             <p className="rounded-2xl bg-white px-4 py-8 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</p>
           ) : farmerProducts.map((product) => {
@@ -1816,22 +1859,25 @@ const renderFarmerSellForm = () => {
             const stock = Number(product.stock || 0);
             const status = archived ? "Unlisted" : stock <= 0 ? "Out of Stock" : "Available";
             return (
-              <article key={`mobile-${product.id}`} className="rounded-2xl border border-green-100 bg-white p-3 shadow-sm">
+              <article key={`mobile-${product.id}`} className="rounded-2xl border border-green-100 bg-white p-4 shadow-sm">
                 <div className="flex min-w-0 gap-3">
                   {product.image_url || product.image ? (
                     <div className="h-16 w-16 shrink-0 rounded-xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
                   ) : <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-green-50 text-xs text-[#5C6B5D]">No image</div>}
                   <div className="min-w-0 flex-1">
-                    <h4 className="break-words font-black text-[#1E2A1F]">{product.name || "Unnamed Product"}</h4>
-                    <p className="mt-1 text-sm font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</p>
-                    <p className="mt-1 text-xs font-semibold text-[#5C6B5D]">Stock: {stock}</p>
-                    <p className={`mt-1 text-xs font-black ${archived || stock <= 0 ? "text-red-700" : "text-green-800"}`}>{status}</p>
+                    <h4 className="break-words text-base font-black leading-5 text-[#1E2A1F]">{product.name || "Unnamed Product"}</h4>
+                    <p className="mt-1 break-words text-xs font-semibold text-[#5C6B5D]">{product.category || "N/A"}</p>
+                    <p className="mt-1 whitespace-nowrap text-sm font-black tabular-nums text-[#2F6B3B]">₱{formatMoney(product.price)}</p>
                   </div>
                 </div>
+                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-green-50 pt-3 text-sm">
+                  <span className="font-bold tabular-nums text-[#1E2A1F]">Stock: {stock}</span>
+                  <span className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-black ${archived || stock <= 0 ? "bg-red-50 text-red-700" : "bg-green-50 text-green-800"}`}>{status}</span>
+                </div>
                 <div className="mt-3 grid grid-cols-3 gap-2">
-                  <button type="button" disabled={archived} onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-2 py-2 text-xs font-black text-green-800 disabled:opacity-50">Edit</button>
-                  <button type="button" disabled={archived || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-2 py-2 text-xs font-black text-blue-800 disabled:opacity-50">Restock</button>
-                  <button type="button" disabled={archived || deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-2 py-2 text-xs font-black text-red-800 disabled:opacity-50">Unlist</button>
+                  <button type="button" disabled={archived} onClick={() => startProductEdit(product)} className="min-h-11 whitespace-nowrap rounded-xl bg-green-50 px-2 text-xs font-black text-green-800 disabled:cursor-not-allowed disabled:opacity-50">Edit</button>
+                  <button type="button" disabled={archived || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="min-h-11 whitespace-nowrap rounded-xl bg-blue-50 px-2 text-xs font-black text-blue-800 disabled:cursor-not-allowed disabled:opacity-50">Restock</button>
+                  <button type="button" disabled={deletingProductId === String(product.id)} onClick={() => deleteProduct(product)} className="min-h-11 whitespace-nowrap rounded-xl bg-red-50 px-2 text-xs font-black text-red-800 disabled:cursor-not-allowed disabled:opacity-50">Delete</button>
                 </div>
               </article>
             );

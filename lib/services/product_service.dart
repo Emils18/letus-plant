@@ -247,6 +247,74 @@ class ProductService {
     }
   }
 
+  Future<Map<String, dynamic>?> deleteFarmerProduct({
+    required int productId,
+    String? image,
+    String? imageUrl,
+  }) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return null;
+    try {
+      final response = await _supabase.rpc(
+        'delete_farmer_product',
+        params: {'p_product_id': productId},
+      );
+      if (response is! Map) return null;
+      final result = Map<String, dynamic>.from(response);
+      if (result['action'] == 'deleted' && result['image_cleanup_safe'] == true) {
+        final cleanupFailed = !await _removeUnreferencedProductImages(
+          user.id,
+          [image, imageUrl],
+        );
+        if (cleanupFailed) result['image_cleanup_failed'] = true;
+      }
+      return result;
+    } catch (e) {
+      debugPrint('ProductService delete failed: $e');
+      return {
+        'action': 'error',
+        'message': e is PostgrestException ? e.message : e.toString(),
+      };
+    }
+  }
+
+  Future<bool> _removeUnreferencedProductImages(
+    String farmerId,
+    List<String?> imageUrls,
+  ) async {
+    for (final imageUrl in imageUrls.whereType<String>().toSet()) {
+      try {
+        final uri = Uri.tryParse(imageUrl);
+        const marker = '/storage/v1/object/public/products/';
+        if (uri == null || !uri.path.contains(marker)) continue;
+        final objectPath = Uri.decodeComponent(uri.path.split(marker).last);
+        if (!objectPath.startsWith('$farmerId/')) continue;
+        final ownProjectUri = Uri.parse(
+          _supabase.storage.from('products').getPublicUrl(objectPath),
+        );
+        if (ownProjectUri.origin != uri.origin) continue;
+
+        final imageUrlRefs = await _supabase
+            .from('products')
+            .select('id')
+            .eq('image_url', imageUrl)
+            .limit(1);
+        final imageRefs = await _supabase
+            .from('products')
+            .select('id')
+            .eq('image', imageUrl)
+            .limit(1);
+        if (imageUrlRefs.isNotEmpty || imageRefs.isNotEmpty) continue;
+
+        await _supabase.storage.from('products').remove([objectPath]);
+      } catch (e) {
+        debugPrint('Product image cleanup skipped: $e');
+        return false;
+      }
+    }
+    return true;
+  }
+
   double _toDouble(dynamic value) {
     if (value is double) return value;
     if (value is int) return value.toDouble();

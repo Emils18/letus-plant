@@ -25,6 +25,7 @@ class _SellCropScreenState extends State<SellCropScreen> {
   String _category = 'Fresh Lettuce';
   String _badge = 'AI Verified';
   bool _isLoading = false;
+  String? _deletingProductId;
   XFile? _selectedImage;
   Uint8List? _imageBytes;   // For web + mobile preview
   List<Map<String, dynamic>> _myProducts = [];
@@ -83,10 +84,62 @@ class _SellCropScreenState extends State<SellCropScreen> {
     if(ok){_showMessage('Stock updated.');await _loadProducts();}else _showMessage('Could not restock product.',isError:true);
   }
 
-  Future<void> _unlist(Map<String,dynamic> product) async {
-    final yes=await showDialog<bool>(context:context,builder:(context)=>AlertDialog(title:const Text('Unlist product?'),content:const Text('This removes the listing from sale. Existing orders and order history will be preserved.'),actions:[TextButton(onPressed:()=>Navigator.pop(context,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(context,true),child:const Text('Unlist'))]));
-    if(yes!=true)return; final ok=await _service.archiveFarmerProduct(int.parse('${product['id']}'));
-    if(ok){_showMessage('Product unlisted.');await _loadProducts();}else _showMessage('Could not unlist product.',isError:true);
+  Future<void> _deleteProduct(Map<String, dynamic> product) async {
+    final productName = '${product['name'] ?? 'this product'}';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete product?'),
+        content: Text(
+          'Delete "$productName"? If it has no order history or related references, it will be permanently deleted. Otherwise, it will be archived.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete product'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final productId = product['id'].toString();
+    if (_deletingProductId != null) return;
+    setState(() => _deletingProductId = productId);
+    try {
+      final result = await _service.deleteFarmerProduct(
+        productId: int.parse(productId),
+        image: product['image']?.toString(),
+        imageUrl: product['image_url']?.toString(),
+      );
+      if (!mounted) return;
+      if (result == null || !['deleted', 'archived'].contains(result['action'])) {
+        _showMessage(
+          result?['message']?.toString() ?? 'Could not delete product. Please try again.',
+          isError: true,
+        );
+        return;
+      }
+
+      await _loadProducts();
+      if (result['action'] == 'deleted') {
+        _showMessage(result['image_cleanup_failed'] == true
+            ? 'Product deleted, but its photo could not be removed from storage.'
+            : 'Product deleted successfully.');
+      } else {
+        _showMessage(
+          'Product archived. Existing order history and related records were preserved.',
+        );
+      }
+    } catch (error) {
+      if (mounted) _showMessage(error.toString(), isError: true);
+    } finally {
+      if (mounted) setState(() => _deletingProductId = null);
+    }
   }
 
   Future<void> _pickImage() async {
@@ -302,28 +355,233 @@ class _SellCropScreenState extends State<SellCropScreen> {
   }
 
   Widget _buildManageListings() {
-    return Card(color: Colors.white, child: Padding(padding: const EdgeInsets.all(16), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [const Expanded(child: Text('Manage Listings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900))),
-          IconButton(onPressed: _loadProducts, icon: const Icon(Icons.refresh))]),
-        if (_loadingProducts) const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()))
-        else if (_myProducts.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No products listed yet.'))
-        else SizedBox(height: 310, child: ListView.separated(itemCount: _myProducts.length,
-          separatorBuilder: (_, __) => const Divider(height: 12),
-          itemBuilder: (context, index) {
-            final p = _myProducts[index];
-            final stock = int.tryParse('${p['stock'] ?? 0}') ?? 0;
-            final archived = p['archived_at'] != null;
-            final image = '${p['image_url'] ?? p['image'] ?? ''}';
-            return Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: const Color(0xFFF6FBF7), borderRadius: BorderRadius.circular(14)),
-              child: Column(children: [Row(children: [ClipRRect(borderRadius: BorderRadius.circular(10), child: image.isEmpty ? Container(width:64,height:64,color:Colors.green.shade100,child:const Icon(Icons.eco)) : Image.network(image,width:64,height:64,fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(width:64,height:64,color:Colors.green.shade100,child:const Icon(Icons.broken_image)))),
-                const SizedBox(width:12), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,children:[Text('${p['name'] ?? 'Product'}',style:const TextStyle(fontWeight:FontWeight.w800)),Text('${p['category'] ?? ''} • ₱${p['price'] ?? 0}',style:const TextStyle(fontSize:13)),Text('Stock: $stock • ${archived ? 'Unlisted' : stock == 0 ? 'Out of Stock' : 'Available'}',style:TextStyle(color:archived||stock==0?Colors.red:Colors.green,fontWeight:FontWeight.w700))]))]),
-                Wrap(spacing:8,children:[TextButton.icon(onPressed:archived?null:()=>_editProduct(p),icon:const Icon(Icons.edit),label:const Text('Edit')),TextButton.icon(onPressed:archived?null:()=>_restock(p),icon:const Icon(Icons.add_box),label:const Text('Restock')),TextButton.icon(onPressed:archived?null:()=>_unlist(p),icon:const Icon(Icons.archive),label:const Text('Unlist'))])
-              ]));
-          }))
-      ])));
+    return Card(
+      color: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Manage Listings',
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900)),
+                ),
+                IconButton(
+                  tooltip: 'Refresh listings',
+                  onPressed: _loadProducts,
+                  icon: const Icon(Icons.refresh),
+                  constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+                ),
+              ],
+            ),
+            if (_loadingProducts)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            else if (_myProducts.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No products listed yet.'),
+              )
+            else
+              SizedBox(
+                height: 430,
+                child: ListView.separated(
+                  primary: false,
+                  physics: const ClampingScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  itemCount: _myProducts.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final product = _myProducts[index];
+                    final stock = int.tryParse(product['stock'].toString()) ?? 0;
+                    final archived = product['archived_at'] != null;
+                    final status = archived
+                        ? 'Unlisted'
+                        : stock == 0
+                            ? 'Out of Stock'
+                            : 'Available';
+                    final image =
+                        (product['image_url'] ?? product['image'] ?? '').toString().trim();
+                    final price =
+                        double.tryParse((product['price'] ?? 0).toString()) ?? 0;
+                    final statusColor = archived || stock == 0
+                        ? const Color(0xFFB42318)
+                        : const Color(0xFF267341);
+
+                    return Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF6FBF7),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFE1EFE3)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: image.isEmpty
+                                    ? Container(
+                                        width: 76,
+                                        height: 76,
+                                        color: Colors.green.shade100,
+                                        child: const Icon(Icons.eco),
+                                      )
+                                    : Image.network(
+                                        image,
+                                        width: 76,
+                                        height: 76,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => Container(
+                                          width: 76,
+                                          height: 76,
+                                          color: Colors.green.shade100,
+                                          child: const Icon(Icons.broken_image),
+                                        ),
+                                      ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      (product['name'] ?? 'Product').toString(),
+                                      softWrap: true,
+                                      style: const TextStyle(
+                                        color: Color(0xFF1E2A1F),
+                                        fontSize: 16,
+                                        height: 1.25,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      (product['category'] ?? 'Uncategorized').toString(),
+                                      softWrap: true,
+                                      style: TextStyle(
+                                        color: Colors.grey.shade700,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 7),
+                                    Text(
+                                      '₱' + price.toStringAsFixed(2),
+                                      style: const TextStyle(
+                                        color: Color(0xFF2F6B3B),
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 8,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                'Quantity: ' + stock.toString(),
+                                style: const TextStyle(
+                                  color: Color(0xFF1E2A1F),
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: statusColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  status,
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: TextStyle(
+                                    color: statusColor,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          const Divider(height: 1, color: Color(0xFFE1EFE3)),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: archived ? null : () => _editProduct(product),
+                                  child: const Text('Edit', maxLines: 1),
+                                  style: _listingActionStyle(const Color(0xFF267341)),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: archived ? null : () => _restock(product),
+                                  child: const Text('Restock', maxLines: 1),
+                                  style: _listingActionStyle(const Color(0xFF245A9A)),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: _deletingProductId == product['id'].toString()
+                                      ? null
+                                      : () => _deleteProduct(product),
+                                  child: Text(
+                                    _deletingProductId == product['id'].toString()
+                                        ? 'Deleting'
+                                        : 'Delete',
+                                    maxLines: 1,
+                                  ),
+                                  style: _listingActionStyle(const Color(0xFFB42318)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
+  ButtonStyle _listingActionStyle(Color color) => OutlinedButton.styleFrom(
+        foregroundColor: color,
+        minimumSize: const Size(0, 46),
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+        side: BorderSide(color: color.withValues(alpha: 0.28)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      );
   Widget _buildDropdown() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
