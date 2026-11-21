@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 function json(data: unknown, status = 200) {
@@ -10,14 +11,6 @@ type CheckoutItem = {
   productName?: string;
   price?: number;
   quantity: number;
-};
-
-type ProductRow = {
-  id: number;
-  name: string;
-  price: number | string | null;
-  stock: number | string | null;
-  farmer_id: string | null;
 };
 
 function getBearerToken(request: NextRequest) {
@@ -44,7 +37,7 @@ export async function GET(request: NextRequest) {
 
       if (error) throw error;
 
-      const products = (data || []).map((product) => ({
+      const products = (data || []).filter((product) => product.archived_at == null).map((product) => ({
   id: product.id,
   name: product.name,
   farmer: product.farmer || product.farmer_name || "",
@@ -153,11 +146,20 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const buyerClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          auth: { persistSession: false, autoRefreshToken: false },
+          global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        },
+      );
+
       // Verify the signed-in user from the access token. Do not trust user IDs from the frontend.
       const {
         data: { user: authenticatedUser },
         error: authError,
-      } = await supabase.auth.getUser(accessToken);
+      } = await buyerClient.auth.getUser(accessToken);
 
       if (authError || !authenticatedUser) {
         return json(
@@ -169,7 +171,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const { data: profile, error: profileError } = await supabase
+      const { data: profile, error: profileError } = await buyerClient
         .from("users")
         .select("role")
         .eq("id", authenticatedUser.id)
@@ -259,159 +261,38 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const productIds = Array.from(requestedQuantities.keys());
-
-      // Read the real product owner, price, name, and stock from the database.
-      const { data: productRows, error: productsError } = await supabase
-        .from("products")
-        .select("id, name, price, stock, farmer_id")
-        .in("id", productIds);
-
-      if (productsError) throw productsError;
-
-      const databaseProducts = (productRows || []) as ProductRow[];
-
-      if (databaseProducts.length !== productIds.length) {
-        return json(
-          {
-            success: false,
-            message: "One or more products could not be found.",
-          },
-          404
-        );
-      }
-
-      const farmerIds = new Set(
-        databaseProducts.map((product) => product.farmer_id).filter(Boolean)
-      );
-
-      if (
-        farmerIds.size !== 1 ||
-        databaseProducts.some((product) => !product.farmer_id)
-      ) {
-        return json(
-          {
-            success: false,
-            message: "Please checkout products from one farmer at a time.",
-          },
-          400
-        );
-      }
-
-      const farmerId = Array.from(farmerIds)[0] as string;
-
-      const normalizedItems = databaseProducts.map((product) => {
-        const quantity = requestedQuantities.get(Number(product.id)) || 0;
-        const price = Number(product.price || 0);
-        const stock = Number(product.stock || 0);
-
-        return {
-          product_id: Number(product.id),
-          product_name: product.name,
-          price,
-          quantity,
-          subtotal: price * quantity,
-          current_stock: stock,
-        };
+      const { data: placedOrders, error: orderError } = await buyerClient.rpc("place_marketplace_order", {
+        p_contact: {
+          email,
+          shipping_name: fullName,
+          shipping_phone: phone,
+          shipping_address: address,
+          city,
+          postal_code: postalCode,
+          payment_method: agreedPaymentMethod,
+          delivery_method: deliveryMethod,
+        },
+        p_items: Array.from(requestedQuantities, ([product_id, quantity]) => ({ product_id, quantity })),
+        p_single_farmer: true,
       });
 
-      for (const item of normalizedItems) {
-        if (item.price <= 0 || item.quantity <= 0) {
-          return json(
-            {
-              success: false,
-              message: `Invalid product data for ${item.product_name}.`,
-            },
-            400
-          );
-        }
-
-        if (item.current_stock < item.quantity) {
-          return json(
-            {
-              success: false,
-              message: `Not enough stock for ${item.product_name}.`,
-            },
-            400
-          );
-        }
+      if (orderError) {
+        return json({ success: false, message: orderError.message }, orderError.code === "22023" ? 409 : 500);
       }
+      const orderData = placedOrders?.[0];
+      if (!orderData) throw new Error("The order was not created.");
 
-      const subtotal = normalizedItems.reduce(
-        (sum, item) => sum + item.subtotal,
-        0
-      );
-      const shipping = deliveryMethod === "Delivery" ? 50 : 0;
-      const totalAmount = subtotal + shipping;
-      const paymentStatus = "To be agreed in person";
-
-      const { data: orderData, error: orderError } = await supabase
-        .from("orders")
-        .insert([
-          {
-            user_id: authenticatedUser.id,
-            farmer_id: farmerId,
-            email,
-            status: "Pending",
-            delivery_status: "Pending",
-            shipping_name: fullName,
-            shipping_phone: phone,
-            shipping_address:
-              deliveryMethod === "Pickup" ? "Farm Pickup" : address,
-            city: deliveryMethod === "Pickup" ? "Farm Pickup" : city,
-            postal_code: deliveryMethod === "Pickup" ? "0000" : postalCode,
-            payment_method: agreedPaymentMethod,
-            delivery_method: deliveryMethod,
-            payment_status: paymentStatus,
-            total_amount: totalAmount,
-          },
-        ])
-        .select()
-        .single();
-
-      if (orderError) throw orderError;
-
-      const orderItemsPayload = normalizedItems.map((item) => ({
-        order_id: orderData.id,
-        product_id: item.product_id,
-        product_name: item.product_name,
-        price: item.price,
-        quantity: item.quantity,
-        subtotal: item.subtotal,
-      }));
-
-      const { error: itemsError } = await supabase
-        .from("order_items")
-        .insert(orderItemsPayload);
-
-      if (itemsError) throw itemsError;
-// CREATE NOTIFICATION FOR FARMER
-const { error: notificationError } = await supabase
-  .from("notifications")
-  .insert({
-    user_id: farmerId,
-    order_id: orderData.id,
-    title: "New Order",
-    message: "Someone ordered your product.",
-    type: "new_order",
-    is_read: false,
-  });
-
-if (notificationError) {
-  console.error("CREATE NOTIFICATION FAILED:", notificationError.message);
-  throw notificationError;
-}
-      // Reduce stock only after the order and order items are saved.
-      for (const item of normalizedItems) {
-        const newStock = Math.max(item.current_stock - item.quantity, 0);
-
-        const { error: stockError } = await supabase
-          .from("products")
-          .update({ stock: newStock })
-          .eq("id", item.product_id);
-
-        if (stockError) throw stockError;
-      }
+      const { error: notificationError } = await buyerClient
+        .from("notifications")
+        .insert({
+          user_id: orderData.farmer_id,
+          order_id: orderData.id,
+          title: "New Order",
+          message: "Someone ordered your product.",
+          type: "new_order",
+          is_read: false,
+        });
+      if (notificationError) console.error("CREATE NOTIFICATION FAILED:", notificationError.message);
 
       return json({
         success: true,

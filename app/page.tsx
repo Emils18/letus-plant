@@ -1,9 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useWeatherLocation } from "@/lib/use-weather-location";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { completeSignOut } from "@/lib/clear-auth";
+import { ScanReportDetails } from "@/app/components/scan-report-details";
+import { scanConfidencePercent, scanPathogen, type ScanRecord } from "@/lib/scan-guidance";
 
 // ==================== TYPES ====================
 type Product = {
@@ -15,7 +18,7 @@ type Product = {
   category: string;
   price: number;
   stock: number;
- 
+
   image: string;
   freshnessInfo: string;
   createdAt?: string;
@@ -104,21 +107,28 @@ type FarmerOrder = {
   created_at?: string | null;
 };
 
-type HealthLog = {
+type HealthLog = ScanRecord & {
   id: string;
   user_id?: string | null;
-  disease_name?: string | null;
-  result?: string | null;
-  confidence_score?: number | string | null;
-  confidence?: number | string | null;
-  temperature?: number | string | null;
-  temp?: number | string | null;
-  weather_condition?: string | null;
-  weather?: string | null;
-  location?: string | null;
-  image_url?: string | null;
-  captured_at?: string | null;
-  created_at?: string | null;
+};
+
+type ScanResultSummary = {
+  diseaseName?: string;
+  confidence?: string;
+  pathogenName?: string;
+  imageSaved?: boolean;
+  record?: ScanRecord;
+  error?: string;
+};
+
+type ScanSessionSummary = {
+  totalScanned: number;
+  healthyCount: number;
+  riskCount: number;
+  downyCount: number;
+  powderyCount: number;
+  septoriaCount: number;
+  averageConfidence: number | null;
 };
 
 type WeatherData = {
@@ -129,6 +139,7 @@ type WeatherData = {
   humidity: number;
   windSpeed: number;
   rainChance: number;
+  forecast: string;
   updatedAt: string;
 };
 
@@ -205,14 +216,6 @@ function getConfidence(log: HealthLog) {
   return `${value.toFixed(1)}%`;
 }
 
-function getTemperature(log: HealthLog) {
-  const raw = log.temperature ?? log.temp;
-  if (raw === null || raw === undefined) return "N/A";
-  const value = Number(raw);
-  if (Number.isNaN(value)) return String(raw);
-  return `${value.toFixed(1)}°C`;
-}
-
 function isUsefulLocation(value?: string | null) {
   const location = String(value || "").trim();
   const normalized = location.toLowerCase();
@@ -255,6 +258,7 @@ export default function HomePage() {
 
   const [currentView, setCurrentView] = useState<"home" | "shop" | "checkout" | "orders" | "about">("home");
   const [products, setProducts] = useState<Product[]>([]);
+  const productRequest = useRef(0);
   const [orders, setOrders] = useState<Order[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -300,15 +304,24 @@ const [savingProduct, setSavingProduct] =
   useState(false);
   const [restockingProductId, setRestockingProductId] =
   useState<string | null>(null);
+const [editingProductId, setEditingProductId] = useState<string | null>(null);
+const [editingProductStock, setEditingProductStock] = useState<number | null>(null);
+const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+const [restockDialogProduct, setRestockDialogProduct] = useState<FarmerProduct | null>(null);
+const [restockQuantity, setRestockQuantity] = useState("");
 const [scanImage, setScanImage] = useState<File | null>(null);
 const [scanPreview, setScanPreview] = useState("");
 const [scanLoading, setScanLoading] = useState(false);
-const [scanResult, setScanResult] = useState("");
+const [scanResult, setScanResult] = useState<ScanResultSummary | null>(null);
+const [scanSessionId, setScanSessionId] = useState("");
+const [scanSessionBusy, setScanSessionBusy] = useState(false);
+const [scanSessionSummary, setScanSessionSummary] = useState<ScanSessionSummary | null>(null);
 const scanInputRef = useRef<HTMLInputElement>(null);
 
 /* PRODUCT IMAGE SELECTED FROM PC */
 const [selectedProductImage, setSelectedProductImage] =
   useState<File | null>(null);
+const [productImagePreview, setProductImagePreview] = useState("");
 
 const [weather, setWeather] =
   useState<WeatherData | null>(null);
@@ -330,6 +343,37 @@ const [sellForm, setSellForm] = useState({
 });
 
   const isFarmer = account?.role === "farmer";
+  const { coordinates, locationError, useCurrentLocation } = useWeatherLocation();
+  const weatherRequest = useRef(0);
+
+  const farmerId = isFarmer ? account?.id : undefined;
+  useEffect(() => {
+    if (!farmerId) return;
+    let active = true;
+    let fetching = false;
+    const refresh = async () => {
+      if (fetching || document.visibilityState !== "visible") return;
+      fetching = true;
+      try {
+        const { data, error } = await supabase.from("diagnostic_logs")
+          .select("*").eq("user_id", farmerId).order("created_at", { ascending: false }).limit(50);
+        if (!error && active) setHealthLogs(data as HealthLog[]);
+      } finally {
+        fetching = false;
+      }
+    };
+    const channel = supabase.channel(`dashboard-scans-${farmerId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "diagnostic_logs", filter: `user_id=eq.${farmerId}` }, refresh)
+      .subscribe();
+    const timer = window.setInterval(refresh, 20000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      void supabase.removeChannel(channel);
+    };
+  }, [farmerId]);
 
   // ==================== IMPROVED FARMER WEATHER LOCATION ====================
   const farmerWeatherLocation = useMemo(() => {
@@ -339,13 +383,37 @@ const [sellForm, setSellForm] = useState({
     // Priority 2: Farmer Products
     const productLocation = farmerProducts.find((product) => isUsefulLocation(product.location))?.location;
 
-    // Final fallback
-    const finalLocation = logLocation || productLocation || "Lapu-Lapu City, Cebu, PH";
+    const finalLocation = coordinates || logLocation || productLocation || "";
 
     return finalLocation.trim();
-  }, [healthLogs, farmerProducts]);
+  }, [coordinates, healthLogs, farmerProducts]);
 
   // ==================== EFFECTS ====================
+  useEffect(() => () => {
+    if (productImagePreview) URL.revokeObjectURL(productImagePreview);
+  }, [productImagePreview]);
+
+  useEffect(() => {
+    const refreshListings = () => {
+      if (document.visibilityState === "visible") void loadProducts();
+    };
+    const channel = supabase.channel("marketplace-products")
+      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, refreshListings)
+      .subscribe();
+    const timer = window.setInterval(refreshListings, 20000);
+    window.addEventListener("focus", refreshListings);
+    return () => {
+      void supabase.removeChannel(channel);
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshListings);
+    };
+  }, []);
+
+  useEffect(() => {
+    const savedSessionId = sessionStorage.getItem("greenguard-web-scan-session");
+    if (savedSessionId) setScanSessionId(savedSessionId);
+  }, []);
+
   useEffect(() => {
     loadProducts();
     const savedCart = localStorage.getItem("letusplant-cart");
@@ -484,13 +552,15 @@ const [sellForm, setSellForm] = useState({
 
   // ==================== IMPROVED WEATHER LOADING ====================
   useEffect(() => {
-    if (!isFarmer || !account?.id) {
+    if (!isFarmer || !account?.id || !farmerWeatherLocation) {
+      weatherRequest.current++;
       setWeather(null);
+      setWeatherLoading(false);
       setWeatherError("");
       return;
     }
 
-    // Load immediately
+    setWeather(null);
     loadFarmerWeather(farmerWeatherLocation);
 
     // Auto refresh every 5 minutes
@@ -503,10 +573,17 @@ const [sellForm, setSellForm] = useState({
 
   // ==================== FUNCTIONS ====================
   async function loadProducts() {
+    const requestId = ++productRequest.current;
     try {
-      const res = await fetch("/api?type=products");
+      const res = await fetch("/api?type=products", { cache: "no-store" });
       const json = await res.json();
-      if (json.success) setProducts(json.data);
+      if (json.success && requestId === productRequest.current) {
+        const latestProducts: Product[] = json.data;
+        setProducts(latestProducts);
+        setSelectedProduct((current) => current
+          ? latestProducts.find((product) => product.id === current.id) ?? null
+          : null);
+      }
     } catch (e) {
       console.error("Failed to load products:", e);
     }
@@ -573,12 +650,13 @@ const [sellForm, setSellForm] = useState({
   }
 
  async function loadFarmerWeather(location = farmerWeatherLocation, showError = true) {
-  if (!isFarmer) return;
+  if (!isFarmer || !location) return;
+  const requestId = ++weatherRequest.current;
   setWeatherLoading(true);
   setWeatherError("");
 
   try {
-    const response = await fetch(`/api/weather?location=${encodeURIComponent(location || "Lapu-Lapu City, Cebu, PH")}`, { 
+    const response = await fetch(`/api/weather?location=${encodeURIComponent(location)}`, {
       cache: "no-store" 
     });
     
@@ -588,14 +666,17 @@ const [sellForm, setSellForm] = useState({
       throw new Error(result.message || "Unable to load live weather.");
     }
 
+    if (requestId !== weatherRequest.current) return;
     setWeather(result.data as WeatherData);
     setWeatherError("");
   } catch (error) {
+    if (requestId !== weatherRequest.current) return;
+    setWeather(null);
     const errorMessage = error instanceof Error ? error.message : "Unable to load live weather.";
     setWeatherError(errorMessage);
     if (showError) showNotification(errorMessage);
   } finally {
-    setWeatherLoading(false);
+    if (requestId === weatherRequest.current) setWeatherLoading(false);
   }
 }
 
@@ -611,7 +692,7 @@ const [sellForm, setSellForm] = useState({
       if (productsResult.error) throw new Error(productsResult.error.message);
       if (ordersResult.error) throw new Error(ordersResult.error.message);
       if (logsResult.error) throw new Error(logsResult.error.message);
-      setFarmerProducts((productsResult.data as FarmerProduct[]) || []);
+      setFarmerProducts((productsResult.data || []).filter((row) => row.archived_at == null) as FarmerProduct[]);
       setFarmerOrders((ordersResult.data as FarmerOrder[]) || []);
       setHealthLogs((logsResult.data as HealthLog[]) || []);
     } catch (error) {
@@ -745,38 +826,139 @@ const [sellForm, setSellForm] = useState({
     }
   }
 
-  async function handleFarmerScan() {
-    if (!scanImage || !account?.id) {
-      showNotification("Choose a clear lettuce photo first.");
-      return;
-    }
-    setScanLoading(true);
-    setScanResult("");
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) throw new Error("Your session expired. Please sign in again.");
-      const form = new FormData();
-      form.set("image", scanImage);
-      form.set("location", farmerWeatherLocation);
-      const response = await fetch("/api/scan", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.access_token}` },
-        body: form,
-      });
-      const result = await response.json();
-      if (!response.ok || !result.success) throw new Error(result.message || "The disease scan failed.");
-      setScanResult(`${result.disease_name} · ${(Number(result.confidence_score) * 100).toFixed(1)}% confidence`);
-      setScanImage(null);
-      setScanPreview("");
-      if (scanInputRef.current) scanInputRef.current.value = "";
-      await loadFarmerToolsData(account.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to scan this photo.";
-      setScanResult(message);
-    } finally {
-      setScanLoading(false);
-    }
+ async function handleFarmerScan() {
+  if (scanLoading || scanSessionBusy) return;
+  if (!scanImage || !account?.id) {
+    showNotification("Choose a clear lettuce photo first.");
+    return;
   }
+
+  setScanLoading(true);
+  setScanResult(null);
+  setScanSessionSummary(null);
+
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      throw new Error("Your session expired. Please sign in again.");
+    }
+
+    const form = new FormData();
+    form.set("image", scanImage);
+    const scanLocation = healthLogs.find((log) => isUsefulLocation(log.location))?.location?.trim()
+      || farmerProducts.find((product) => isUsefulLocation(product.location))?.location?.trim();
+    if (scanLocation) form.set("location", scanLocation);
+    if (scanLocation && weather && weather.location.trim().toLowerCase() === scanLocation.toLowerCase()) {
+      form.set("weather_condition", weather.condition);
+      if (Number.isFinite(weather.temperature)) form.set("temperature", String(weather.temperature));
+    }
+    if (scanSessionId) form.set("scan_session_id", scanSessionId);
+
+    const response = await fetch("/api/scan", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: form,
+    });
+
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      if (response.status === 409) {
+        setScanSessionId("");
+        sessionStorage.removeItem("greenguard-web-scan-session");
+      }
+      throw new Error(result.message || "The disease scan failed.");
+    }
+
+    const diseaseName = String(result.disease_name || "Unknown Result")
+      .replaceAll("_", " ")
+      .trim();
+    const confidencePercent = typeof result.confidence_percent === "number"
+      && Number.isFinite(result.confidence_percent)
+      ? result.confidence_percent
+      : scanConfidencePercent(result.confidence_score ?? result.confidence);
+    const savedRecord: ScanRecord = result.record && typeof result.record === "object"
+      ? result.record
+      : { disease_name: diseaseName, confidence_score: result.confidence_score };
+    const pathogenName = scanPathogen(savedRecord);
+
+    const nextSessionId = String(result.scan_session_id || scanSessionId || "");
+    if (!nextSessionId) {
+      throw new Error("The scan was saved, but the session ID was missing. Refresh Health Logs to verify the saved record.");
+    }
+    setScanSessionId(nextSessionId);
+    sessionStorage.setItem("greenguard-web-scan-session", nextSessionId);
+
+    setScanResult({
+      diseaseName,
+      confidence: confidencePercent === null ? "N/A" : `${confidencePercent.toFixed(1)}%`,
+      pathogenName,
+      imageSaved: result.image_saved === true,
+      record: savedRecord,
+    });
+    setScanImage(null);
+    setScanPreview("");
+    if (scanInputRef.current) scanInputRef.current.value = "";
+    await loadFarmerToolsData(account.id);
+  } catch (error) {
+    setScanResult({
+      error: error instanceof Error ? error.message : "Unable to scan this photo.",
+    });
+  } finally {
+    setScanLoading(false);
+  }
+}
+
+async function handleFinishScanSession() {
+  const farmerId = account?.id;
+  if (!farmerId || !scanSessionId || scanSessionBusy || scanLoading) return;
+  setScanSessionBusy(true);
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      throw new Error("Your session expired. Please sign in again.");
+    }
+
+    const response = await fetch("/api/scan/session", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ scan_session_id: scanSessionId }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.message || "Could not finish this scan session.");
+    }
+
+    const summary = result.summary || {};
+    setScanSessionSummary({
+      totalScanned: Number(summary.total_scanned || 0),
+      healthyCount: Number(summary.healthy_count || 0),
+      riskCount: Number(summary.risk_count || 0),
+      downyCount: Number(summary.downy_mildew_count || 0),
+      powderyCount: Number(summary.powdery_mildew_count || 0),
+      septoriaCount: Number(summary.septoria_blight_count || 0),
+      averageConfidence: summary.average_confidence != null && Number.isFinite(Number(summary.average_confidence))
+        ? Number(summary.average_confidence)
+        : null,
+    });
+    setScanSessionId("");
+    sessionStorage.removeItem("greenguard-web-scan-session");
+    await loadFarmerToolsData(farmerId);
+    showNotification("Final scan report saved. Open Health Logs to review every image.");
+  } catch (error) {
+    showNotification(error instanceof Error ? error.message : "Could not finish this scan session.");
+  } finally {
+    setScanSessionBusy(false);
+  }
+}
 
   const filteredProducts = useMemo(() => {
     let data = [...products];
@@ -1056,19 +1238,14 @@ const [sellForm, setSellForm] = useState({
   }
 
   setSelectedProductImage(file);
+  setProductImagePreview(URL.createObjectURL(file));
 }
 
 
-async function handleRestockProduct(product: FarmerProduct) {
-  if (!account || account.role !== "farmer") return;
+async function handleRestockProduct(product: FarmerProduct, quantityText: string) {
+  if (!account || account.role !== "farmer" || restockingProductId) return;
 
-  const input = window.prompt(
-    `How many additional units of ${product.name || "this crop"} would you like to add?`
-  );
-
-  if (input === null) return;
-
-  const additionalStock = Number(input.trim());
+  const additionalStock = Number(quantityText.trim());
 
   if (!Number.isSafeInteger(additionalStock) || additionalStock <= 0) {
     showNotification("Please enter a valid positive whole number.");
@@ -1078,7 +1255,7 @@ async function handleRestockProduct(product: FarmerProduct) {
   const currentStock = Math.max(0, Number(product.stock) || 0);
   const newStock = currentStock + additionalStock;
 
-  if (!Number.isSafeInteger(newStock)) {
+  if (newStock > 2147483647) {
     showNotification("The resulting stock quantity is too large.");
     return;
   }
@@ -1086,31 +1263,21 @@ async function handleRestockProduct(product: FarmerProduct) {
   setRestockingProductId(String(product.id));
 
   try {
-    const { data, error } = await supabase
-      .from("products")
-      .update({
-        stock: newStock,
-        status: "Available",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", product.id)
-      .eq("farmer_id", account.id)
-      .select("id, stock, status")
-      .maybeSingle();
-
+    const { data, error } = await supabase.rpc("restock_farmer_product", {
+      p_product_id: product.id,
+      p_quantity: additionalStock,
+    });
     if (error) throw new Error(error.message);
-
-    if (!data) {
-      throw new Error("Product not found or you do not own this listing.");
-    }
 
     await Promise.all([
       loadFarmerToolsData(account.id),
       loadProducts(),
     ]);
 
+    setRestockDialogProduct(null);
+    setRestockQuantity("");
     showNotification(
-      `${product.name} restocked successfully! New stock: ${data.stock}`
+      `${product.name || "Product"} restocked. New stock: ${data}`
     );
   } catch (error) {
     showNotification(
@@ -1121,12 +1288,74 @@ async function handleRestockProduct(product: FarmerProduct) {
   }
 }
 
+function handleStartProductEdit(product: FarmerProduct) {
+  setEditingProductId(String(product.id));
+  setEditingProductStock(product.stock == null ? null : Number(product.stock));
+  setSellForm({
+    name: product.name || "",
+    category: product.category || "Fresh Lettuce",
+    price: String(product.price ?? ""),
+    stock: String(product.stock ?? 0),
+    description: product.description || product.freshness_info || "",
+    imageUrl: product.image_url || product.image || "",
+    location: product.location || "",
+  });
+  setSelectedProductImage(null);
+  setProductImagePreview("");
+  setFarmerTab("sell");
+}
+
+function handleCancelProductEdit() {
+  setEditingProductId(null);
+  setEditingProductStock(null);
+  setSelectedProductImage(null);
+  setProductImagePreview("");
+  setSellForm({
+    name: "",
+    category: "Fresh Lettuce",
+    price: "",
+    stock: "",
+    description: "",
+    imageUrl: "",
+    location: "",
+  });
+  setFarmerTab("listings");
+}
+
+async function handleDeleteProduct(product: FarmerProduct) {
+  if (!account || account.role !== "farmer" || deletingProductId) return;
+  const confirmed = window.confirm(
+    `Remove “${product.name || "this product"}” from the marketplace? Existing orders and their history will be kept.`,
+  );
+  if (!confirmed) return;
+
+  setDeletingProductId(String(product.id));
+  try {
+    const { data, error } = await supabase.rpc("archive_farmer_product", {
+      p_product_id: product.id,
+    });
+    if (error) throw new Error(error.message);
+
+    if (String(selectedProduct?.id) === String(product.id)) setSelectedProduct(null);
+    if (editingProductId === String(product.id)) handleCancelProductEdit();
+    await Promise.all([loadProducts(), loadFarmerToolsData(account.id)]);
+    showNotification(data?.has_order_history
+      ? "Listing removed from sale. Its orders and order history were kept."
+      : "Listing removed from sale.");
+  } catch (error) {
+    showNotification(error instanceof Error ? error.message : "Could not delete this product.");
+  } finally {
+    setDeletingProductId(null);
+  }
+}
+
 
   async function handlePublishProduct(
   e: React.FormEvent
 ) {
   e.preventDefault();
 
+  if (savingProduct) return;
   if (!account || account.role !== "farmer") {
     showNotification(
       "Only farmer accounts can sell products."
@@ -1153,17 +1382,17 @@ async function handleRestockProduct(product: FarmerProduct) {
     return;
   }
 
-  if (!price || price <= 0) {
+  if (!Number.isFinite(price) || price <= 0) {
     showNotification("Valid price is required.");
     return;
   }
 
-  if (!stock || stock <= 0) {
-    showNotification("Valid stock is required.");
+  if (!sellForm.stock.trim() || !Number.isSafeInteger(stock) || stock < 0 || stock > 2147483647 || (!editingProductId && stock === 0)) {
+    showNotification(editingProductId ? "Stock must be zero or a positive whole number." : "Valid stock is required.");
     return;
   }
 
-  if (!selectedProductImage) {
+  if (!editingProductId && !selectedProductImage && !sellForm.imageUrl) {
     showNotification("Please select a product image.");
     return;
   }
@@ -1171,35 +1400,19 @@ async function handleRestockProduct(product: FarmerProduct) {
   setSavingProduct(true);
 
   try {
-    const fileExtension =
-      selectedProductImage.name
-        .split(".")
-        .pop() || "jpg";
-
-    const fileName =
-      `${account.id}/${Date.now()}.${fileExtension}`;
-
-    const { error: uploadError } =
-      await supabase.storage
+    let publicUrl = sellForm.imageUrl.trim();
+    if (selectedProductImage) {
+      const fileExtension = selectedProductImage.name.split(".").pop() || "jpg";
+      const fileName = `${account.id}/${Date.now()}.${fileExtension}`;
+      const { error: uploadError } = await supabase.storage
         .from("products")
-        .upload(
-          fileName,
-          selectedProductImage,
-          {
-            cacheControl: "3600",
-            upsert: false,
-          }
-        );
-
-    if (uploadError) {
-      throw new Error(uploadError.message);
+        .upload(fileName, selectedProductImage, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+      if (uploadError) throw new Error(uploadError.message);
+      publicUrl = supabase.storage.from("products").getPublicUrl(fileName).data.publicUrl;
     }
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage
-      .from("products")
-      .getPublicUrl(fileName);
 
     const payload = {
       name,
@@ -1209,22 +1422,38 @@ async function handleRestockProduct(product: FarmerProduct) {
       farmer_id: account.id,
       farmer: account.name,
       farmer_name: account.name,
-      
+
       description,
       freshness_info: description,
       image: publicUrl,
       image_url: publicUrl,
       location: sellForm.location.trim() || null,
-      status: "Available",
+      status: stock > 0 ? "Available" : "Out of Stock",
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase
-      .from("products")
-      .insert([payload]);
-
-    if (error) {
-      throw new Error(error.message);
+    if (editingProductId) {
+      const { stock: nextStock, status, image, image_url, ...details } = payload;
+      const stockChanged = nextStock !== (editingProductStock ?? 0);
+      let query = supabase
+        .from("products")
+        .update({
+          ...details,
+          ...(stockChanged ? { stock: nextStock, status } : {}),
+          ...(selectedProductImage ? { image, image_url } : {}),
+        })
+        .eq("id", editingProductId)
+        .eq("farmer_id", account.id)
+        .is("archived_at", null);
+      if (stockChanged) {
+        query = editingProductStock === null ? query.is("stock", null) : query.eq("stock", editingProductStock);
+      }
+      const { data, error } = await query.select("id").maybeSingle();
+      if (error) throw new Error(error.message);
+      if (!data) throw new Error("The listing or stock changed. Return to My Products, refresh, and try again.");
+    } else {
+      const { error } = await supabase.from("products").insert([payload]);
+      if (error) throw new Error(error.message);
     }
 
     setSellForm({
@@ -1238,6 +1467,10 @@ async function handleRestockProduct(product: FarmerProduct) {
     });
 
     setSelectedProductImage(null);
+    setProductImagePreview("");
+    const wasEditing = Boolean(editingProductId);
+    setEditingProductId(null);
+    setEditingProductStock(null);
 
     await Promise.all([
       loadProducts(),
@@ -1246,9 +1479,7 @@ async function handleRestockProduct(product: FarmerProduct) {
 
     setFarmerTab("listings");
 
-    showNotification(
-      "Product published successfully."
-    );
+    showNotification(wasEditing ? "Product updated successfully." : "Product published successfully.");
   } catch (error) {
     showNotification(
       error instanceof Error
@@ -1423,7 +1654,7 @@ await Promise.all([
 
           <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
             <FarmerStat
-              label="My Listings"
+              label="My Products"
               value={farmerProducts.length}
             />
 
@@ -1447,7 +1678,7 @@ await Promise.all([
         <div className="flex flex-wrap gap-2 border-b border-green-100 p-4">
           {[
             { id: "sell", label: "Sell Product" },
-            { id: "listings", label: "Manage Listings" },
+            { id: "listings", label: "My Products" },
             {
               id: "health",
               label: "Health Logs / Monitoring",
@@ -1490,9 +1721,7 @@ await Promise.all([
 
 
 const renderFarmerSellForm = () => {
-  const previewImage = selectedProductImage
-    ? URL.createObjectURL(selectedProductImage)
-    : "";
+  const previewImage = productImagePreview || sellForm.imageUrl;
 
        return (
     <div className="space-y-8">
@@ -1501,11 +1730,11 @@ const renderFarmerSellForm = () => {
         className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6"
       >
         <h3 className="text-2xl font-black text-[#1E2A1F]">
-          Sell Product
+          {editingProductId ? "Edit Product" : "Sell Product"}
         </h3>
 
         <p className="mt-2 text-sm text-[#5C6B5D]">
-          Publish a product to the marketplace.
+          {editingProductId ? "Update the details buyers see on this listing." : "Publish a product to the marketplace."}
         </p>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -1545,6 +1774,9 @@ const renderFarmerSellForm = () => {
               <option>Fresh Lettuce</option>
               <option>Seeds</option>
               <option>Bundles</option>
+              {!['Fresh Lettuce', 'Seeds', 'Bundles'].includes(sellForm.category) && (
+                <option>{sellForm.category}</option>
+              )}
             </select>
           </div>
 
@@ -1573,7 +1805,8 @@ const renderFarmerSellForm = () => {
 
             <input
               type="number"
-              min="1"
+              min="0.01"
+              step="0.01"
               value={sellForm.price}
               onChange={(e) =>
                 setSellForm({
@@ -1593,7 +1826,10 @@ const renderFarmerSellForm = () => {
 
             <input
               type="number"
-              min="1"
+              min={editingProductId ? 0 : 1}
+              max={2147483647}
+              step="1"
+              required
               value={sellForm.stock}
               onChange={(e) =>
                 setSellForm({
@@ -1611,7 +1847,7 @@ const renderFarmerSellForm = () => {
               Product Picture
             </label>
 
-            <label className="flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-green-200 bg-white px-6 py-8 text-center transition hover:border-[#2F6B3B] hover:bg-green-50">
+            <label className="flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-green-200 bg-white px-6 py-8 text-center transition hover:border-[#2F6B3B] hover:bg-green-50 focus-within:ring-2 focus-within:ring-green-700">
               <div>
                 <p className="text-base font-black text-[#1E2A1F]">
                   Choose Product Picture
@@ -1632,7 +1868,17 @@ const renderFarmerSellForm = () => {
                 type="file"
                 accept="image/*"
                 onChange={handleProductImageChange}
-                className="hidden"
+                className="sr-only"
+              />
+            </label>
+            <label className="mt-3 inline-flex min-h-12 cursor-pointer items-center rounded-full border border-green-200 px-5 py-2 text-sm font-bold text-[#2F6B3B] focus-within:ring-2 focus-within:ring-green-700">
+              Take a photo
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleProductImageChange}
+                className="sr-only"
               />
             </label>
           </div>
@@ -1663,9 +1909,14 @@ const renderFarmerSellForm = () => {
           className="mt-6 w-full rounded-full bg-[#2F6B3B] px-8 py-4 text-sm font-black text-white shadow-lg shadow-green-900/20 transition hover:-translate-y-1 hover:bg-[#1E2A1F] disabled:opacity-60"
         >
           {savingProduct
-            ? "Uploading & Publishing..."
-            : "Publish Product"}
+            ? editingProductId ? "Saving changes…" : "Uploading & Publishing..."
+            : editingProductId ? "Save Product Changes" : "Publish Product"}
         </button>
+        {editingProductId && (
+          <button type="button" onClick={handleCancelProductEdit} disabled={savingProduct} className="mt-3 w-full rounded-full border border-green-200 px-8 py-3 text-sm font-black text-[#2F6B3B] disabled:opacity-50">
+            Cancel editing
+          </button>
+        )}
       </form>
 
       <div className="rounded-[28px] border border-green-100 bg-white p-6">
@@ -1739,56 +1990,48 @@ const renderFarmerSellForm = () => {
     <div>
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h3 className="text-2xl font-black text-[#1E2A1F]">Manage My Listings</h3>
-          <p className="mt-1 text-sm text-[#5C6B5D]">Products owned by your farmer account.</p>
+          <h3 className="text-2xl font-black text-[#1E2A1F]">My Products</h3>
+          <p className="mt-1 text-base text-[#5C6B5D]">Add stock, change product details, or remove a listing from sale.</p>
         </div>
-        <button onClick={() => setFarmerTab("sell")} className="rounded-full bg-[#2F6B3B] px-5 py-2.5 text-sm font-black text-white">Add Product</button>
+        <button onClick={() => { if (editingProductId) handleCancelProductEdit(); setFarmerTab("sell"); }} className="min-h-12 rounded-full bg-[#2F6B3B] px-5 py-2.5 text-base font-bold text-white">Add product</button>
       </div>
 
-      <div className="overflow-hidden rounded-[24px] border border-green-100">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px]">
-            <thead className="bg-[#F7FBF6] text-xs uppercase tracking-[2px] text-[#5C6B5D]">
-              <tr>
-                <th className="px-6 py-4 text-left">Product</th>
-                <th className="px-6 py-4 text-left">Category</th>
-                <th className="px-6 py-4 text-left">Price</th>
-                <th className="px-6 py-4 text-left">Stock</th>
-                <th className="px-6 py-4 text-left">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-green-100 bg-white">
-              {farmerProducts.length === 0 ? (
-                <tr><td colSpan={5} className="px-6 py-14 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</td></tr>
-              ) : (
-                farmerProducts.map((product) => (
-                  <tr key={product.id}>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        {product.image_url || product.image ? (
-                          <div className="h-12 w-12 rounded-2xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
-                        ) : (
-                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 text-[10px] text-gray-400">
-                            No Img
-                          </div>
-                        )}
-                        <div>
-                          <p className="font-black text-[#1E2A1F]">{product.name || "Unnamed Product"}</p>
-                          <p className="text-xs text-[#5C6B5D]">{formatDate(product.created_at)}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-sm font-bold text-[#5C6B5D]">{product.category || "N/A"}</td>
-                    <td className="px-6 py-4 text-sm font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</td>
-                    <td className="px-6 py-4 text-sm font-bold text-[#1E2A1F]">{product.stock || 0}</td>
-                    <td className="px-6 py-4"><StatusPill text={product.status || "Available"} /></td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      {farmerProducts.length === 0 ? (
+        <p className="rounded-2xl border border-green-100 p-8 text-center text-base text-[#5C6B5D]">No products listed yet.</p>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {farmerProducts.map((product) => {
+            const image = product.image_url || product.image;
+            const stock = Number(product.stock) || 0;
+            const busy = Boolean(deletingProductId || restockingProductId || savingProduct);
+
+            return (
+              <article key={product.id} className="min-w-0 rounded-3xl border border-green-100 bg-white p-4 shadow-sm">
+                <div className="flex items-start gap-4">
+                  <div aria-hidden="true" className="h-20 w-20 shrink-0 rounded-2xl bg-[#EDF6EC] bg-cover bg-center" style={image ? { backgroundImage: `url(${image})` } : undefined} />
+                  <div className="min-w-0">
+                    <h4 className="break-words text-lg font-black text-[#1E2A1F]">{product.name || "Unnamed product"}</h4>
+                    <p className="text-base text-[#5C6B5D]">₱{formatMoney(product.price)} · {product.category || "Crop"}</p>
+                    <p className="mt-1 text-base font-bold text-[#1E2A1F]">{stock} in stock</p>
+                    <StatusPill text={stock > 0 ? product.status || "Available" : "Out of stock"} />
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => { setRestockDialogProduct(product); setRestockQuantity(""); }} disabled={busy} className="min-h-12 rounded-full bg-green-50 px-4 py-2 text-base font-bold text-[#2F6B3B] hover:bg-green-100 disabled:opacity-50">
+                    Restock
+                  </button>
+                  <button type="button" onClick={() => handleStartProductEdit(product)} disabled={busy} className="min-h-12 rounded-full border border-green-200 px-4 py-2 text-base font-bold text-[#2F6B3B] hover:bg-green-50 disabled:opacity-50">
+                    Edit
+                  </button>
+                  <button type="button" onClick={() => void handleDeleteProduct(product)} disabled={busy} className="min-h-12 rounded-full bg-red-50 px-4 py-2 text-base font-bold text-red-800 hover:bg-red-100 disabled:opacity-50">
+                    {deletingProductId === String(product.id) ? "Removing…" : "Delete"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
-      </div>
+      )}
     </div>
   );
 
@@ -1810,7 +2053,8 @@ const renderFarmerSellForm = () => {
             const file = event.target.files?.[0] || null;
             setScanImage(file);
             setScanPreview(file ? URL.createObjectURL(file) : "");
-            setScanResult("");
+            setScanResult(null);
+            setScanSessionSummary(null);
           }}
         />
         {scanPreview && <img src={scanPreview} alt="Selected lettuce for scanning" className="mt-5 max-h-80 w-full rounded-2xl object-contain bg-[#F7FBF6]" />}
@@ -1818,7 +2062,53 @@ const renderFarmerSellForm = () => {
           <button type="button" onClick={() => scanInputRef.current?.click()} className="rounded-full border border-green-200 px-6 py-3 text-sm font-black text-[#2F6B3B] hover:bg-green-50">{scanImage ? "Choose another photo" : "Choose / Take Photo"}</button>
           <button type="button" onClick={handleFarmerScan} disabled={!scanImage || scanLoading} className="rounded-full bg-[#2F6B3B] px-6 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{scanLoading ? "Scanning…" : "Scan and Save Result"}</button>
         </div>
-        {scanResult && <p role="status" className="mt-4 rounded-2xl bg-[#F7FBF6] p-4 text-sm font-bold text-[#2F6B3B]">{scanResult}</p>}
+        {scanSessionId && (
+          <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-green-100 bg-[#F7FBF6] p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-black text-[#1E2A1F]">Scan session in progress</p>
+              <p className="mt-1 text-xs text-[#5C6B5D]">Scans saved in this session will be grouped into one final report.</p>
+            </div>
+            <button type="button" onClick={handleFinishScanSession} disabled={scanSessionBusy || scanLoading} className="rounded-full bg-[#1E2A1F] px-5 py-3 text-sm font-black text-white disabled:opacity-50">
+              {scanSessionBusy ? "Finishing session…" : "Finish session"}
+            </button>
+          </div>
+        )}
+        {scanResult?.error && (
+          <div role="alert" className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-800">
+            {scanResult.error}
+          </div>
+        )}
+        {scanResult && !scanResult.error && (
+          <div role="status" className="mt-5 rounded-2xl border border-green-200 bg-[#F7FBF6] p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Scan result saved</p>
+                <h4 className="mt-1 text-2xl font-black text-[#1E2A1F]">{scanResult.diseaseName}</h4>
+                {scanResult.pathogenName && scanResult.pathogenName !== "Not recorded" && (
+                  <p className="mt-1 italic text-[#5C6B5D]">{scanResult.pathogenName}</p>
+                )}
+              </div>
+              <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-black text-[#2F6B3B]">Confidence {scanResult.confidence}</span>
+            </div>
+            <p className="mt-3 text-sm font-bold text-[#2F6B3B]">Diagnosis saved to your Health Logs{scanResult.imageSaved ? " with its photo." : ". Photo was not saved."}</p>
+            {scanResult.record && <ScanReportDetails log={scanResult.record} light />}
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button type="button" onClick={() => router.push("/health-logs")} className="rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white">Open full report in Health Logs</button>
+            </div>
+          </div>
+        )}
+        {scanSessionSummary && (
+          <div role="status" className="mt-4 rounded-2xl border border-green-200 bg-white p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Final session report</p>
+                <p className="mt-1 text-xl font-black text-[#1E2A1F]">{scanSessionSummary.totalScanned} lettuce scanned</p>
+              </div>
+              <button type="button" onClick={() => router.push("/health-logs")} className="rounded-full border border-green-200 px-4 py-2 text-sm font-black text-[#2F6B3B]">View all reports</button>
+            </div>
+            <p className="mt-3 text-sm text-[#5C6B5D]">Healthy {scanSessionSummary.healthyCount} · At risk {scanSessionSummary.riskCount} · Downy {scanSessionSummary.downyCount} · Powdery {scanSessionSummary.powderyCount} · Septoria {scanSessionSummary.septoriaCount} · Average confidence {scanSessionSummary.averageConfidence === null ? "N/A" : `${scanSessionSummary.averageConfidence.toFixed(1)}%`}</p>
+          </div>
+        )}
       </section>
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <div className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6">
@@ -1868,11 +2158,13 @@ const renderFarmerSellForm = () => {
                     {log.image_url ? <img src={log.image_url} alt="Health log" className="h-28 w-full rounded-2xl object-cover md:w-36" /> : <div className="flex h-28 w-full items-center justify-center rounded-2xl bg-white text-xs font-bold text-[#5C6B5D] md:w-36">No Image</div>}
                     <div className="flex-1">
                       <p className="text-lg font-black text-[#1E2A1F]">{getDiseaseName(log)}</p>
+                      <p className="text-sm italic text-[#435B47]">{scanPathogen(log)}</p>
                       <p className="mt-1 text-sm text-[#5C6B5D]">Confidence: <span className="font-black text-[#2F6B3B]">{getConfidence(log)}</span></p>
-                      
+
                       <p className="text-sm text-[#5C6B5D]">Date: {formatDate(log.captured_at || log.created_at)}</p>
                     </div>
                   </div>
+                  <ScanReportDetails log={log} light showPhoto={false} />
                 </div>
               ))
             )}
@@ -1884,7 +2176,10 @@ const renderFarmerSellForm = () => {
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Live Weather & Weather Advisory</p>
-            <h3 className="mt-2 text-2xl font-black text-[#1E2A1F]">{weather?.location || farmerWeatherLocation}</h3>
+            <h3 className="mt-2 text-2xl font-black text-[#1E2A1F]">{weather?.location || (coordinates ? "Current location" : farmerWeatherLocation) || "Choose a location"}</h3>
+            <button type="button" onClick={useCurrentLocation} className="mt-3 min-h-11 rounded-full border border-green-200 px-4 font-bold text-[#2F6B3B]">Use my location</button>
+            {locationError && <p role="status" className="mt-2 text-sm">{locationError}</p>}
+            {weather?.forecast && <p className="mt-2 text-sm">Today: {weather.forecast}</p>}
           </div>
           <button onClick={() => loadFarmerWeather(farmerWeatherLocation)} disabled={weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
             {weatherLoading ? "Refreshing..." : "Refresh"}
@@ -2497,6 +2792,48 @@ const renderHome = () => (
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {restockDialogProduct && (
+        <div className="fixed inset-0 z-[190] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restock-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleRestockProduct(restockDialogProduct, restockQuantity);
+            }}
+            className="w-full max-w-md rounded-[28px] border border-green-100 bg-white p-6 shadow-2xl"
+          >
+            <p className="text-xs font-black uppercase tracking-[2px] text-[#2F6B3B]">Inventory</p>
+            <h2 id="restock-title" className="mt-2 text-2xl font-black text-[#1E2A1F]">Restock {restockDialogProduct.name || "product"}</h2>
+            <p className="mt-2 text-sm text-[#5C6B5D]">Current stock: {restockDialogProduct.stock || 0}. Enter the additional units you have ready.</p>
+            <label className="mt-5 block text-sm font-black text-[#1E2A1F]" htmlFor="restock-quantity">Units to add</label>
+            <input
+              id="restock-quantity"
+              type="number"
+              min="1"
+              max={Math.max(0, 2147483647 - (Number(restockDialogProduct.stock) || 0))}
+              step="1"
+              required
+              autoFocus
+              value={restockQuantity}
+              disabled={Boolean(restockingProductId)}
+              onChange={(event) => setRestockQuantity(event.target.value)}
+              className="mt-2 w-full rounded-2xl border border-green-200 bg-[#F7FBF6] px-4 py-3 text-lg font-bold text-[#1E2A1F] outline-none focus:border-[#2F6B3B] focus:ring-4 focus:ring-green-100"
+            />
+            <p role="status" className="mt-3 text-base font-bold text-[#2F6B3B]">
+              Estimated total stock: {(Number(restockDialogProduct.stock) || 0) + Math.max(0, Number(restockQuantity) || 0)}
+            </p>
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setRestockDialogProduct(null)} disabled={Boolean(restockingProductId)} className="rounded-full border border-green-200 px-5 py-3 text-sm font-black text-[#2F6B3B] disabled:opacity-50">Cancel</button>
+              <button type="submit" disabled={Boolean(restockingProductId)} className="rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white disabled:opacity-50">
+                {restockingProductId ? "Updating stock…" : "Add stock"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

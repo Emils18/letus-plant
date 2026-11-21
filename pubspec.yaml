@@ -76,6 +76,7 @@ flutter:
   assets:
     - assets/images/Greenguard.png
     - assets/models/greenguard_best.tflite
+    - assets/data/lettuce_scan_guidance.json
 
 
 

@@ -1,90 +1,51 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 
 class WeatherService {
   
-  Future<Map<String, dynamic>> fetchWeather({String? location}) async {
-    if (AppConfig.isDemoMode) {
-      await Future.delayed(const Duration(milliseconds: 400));
-      return _getDemoData();
+  Future<Map<String, dynamic>> fetchWeather({required String location}) async {
+    final query = location.trim();
+    if (query.isEmpty) throw ArgumentError('Choose a weather location.');
+    final url = Uri.https('api.weatherapi.com', '/v1/forecast.json', {
+      'key': AppConfig.weatherApiKey,
+      'q': query,
+      'days': '1',
+      'aqi': 'no',
+      'alerts': 'no',
+    });
+    final response = await http.get(url).timeout(const Duration(seconds: 10));
+    if (response.statusCode != 200) {
+      throw StateError('Weather is unavailable for this location.');
     }
-
-    if (location == null || location.trim().isEmpty) {
-      return _getErrorData('No farm location found. Please update your product location.');
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final area = data['location'] as Map<String, dynamic>?;
+    final current = data['current'] as Map<String, dynamic>?;
+    final forecast = data['forecast']?['forecastday'] as List?;
+    final day = forecast?.isNotEmpty == true ? forecast!.first['day'] : null;
+    final city = area?['name'] as String?;
+    final region = area?['region'] as String?;
+    final temperature = current?['temp_c'] as num?;
+    final humidity = current?['humidity'] as num?;
+    final condition = current?['condition']?['text'] as String?;
+    if (city == null || city.isEmpty || temperature == null ||
+        humidity == null || condition == null || condition.isEmpty) {
+      throw StateError('The weather service returned incomplete data.');
     }
-
-    final apiKey = AppConfig.weatherApiKey;
-    if (apiKey.isEmpty) {
-      return _getErrorData('Missing API key');
-    }
-
-    // Try the original location first
-    final locationsToTry = [
-      location.trim(),
-      '${location.trim()}, Cebu, PH',
-      '${location.trim()}, Philippines',
-    ];
-
-    for (final loc in locationsToTry) {
-      try {
-        final url = Uri.parse(
-          'https://api.weatherapi.com/v1/forecast.json?key=$apiKey&q=$loc&days=1&aqi=no&alerts=no',
-        );
-
-        final response = await http.get(url).timeout(const Duration(seconds: 10));
-
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-
-          final temp = (data['current']['temp_c'] as num).round();
-          final humidity = data['current']['humidity'];
-          final conditionText = data['current']['condition']['text'] ?? 'Unknown';
-          final rainChance = data['forecast']?['forecastday']?[0]?['day']?['daily_chance_of_rain'] ?? 0;
-          final updatedAt = data['current']?['last_updated']?.toString();
-
-          final condition = conditionText.split(' ').first;
-          final description = conditionText;
-
-          return {
-            'temp': '$temp°C',
-            'humidity': '$humidity%',
-            'condition': condition,
-            'rain_chance': '$rainChance%',
-            'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
-            'recommendation': _getRecommendation(temp, humidity, condition, description),
-            'planted_weather': '$temp°C $condition',
-          };
-        }
-      } catch (e) {
-        debugPrint('WeatherService try failed for "$loc": $e');
-      }
-    }
-
-    // All attempts failed
-    return _getErrorData('Could not find weather for your farm location.');
-  }
-
-  Map<String, dynamic> _getDemoData() {
+    final rain = day?['daily_chance_of_rain'] as num?;
+    final low = day?['mintemp_c'] as num?;
+    final high = day?['maxtemp_c'] as num?;
+    final forecastCondition = day?['condition']?['text'] as String?;
     return {
-      'temp': '22°C',
-      'humidity': '69%',
-      'condition': 'Clouds',
-      'rain_chance': '27%',
-      'recommendation': 'Cloudy conditions today. Inspect leaves for prolonged moisture.',
-      'planted_weather': '22°C Clouds',
-    };
-  }
-
-  Map<String, dynamic> _getErrorData(String message) {
-    return {
-      'temp': 'N/A',
-      'humidity': 'N/A',
-      'condition': 'Error',
-      'rain_chance': 'N/A',
-      'recommendation': message,
-      'planted_weather': 'N/A',
+      'location': [city, if (region != null && region.isNotEmpty && region != city) region].join(', '),
+      'temp': '${temperature.toStringAsFixed(1)}°C',
+      'humidity': '${humidity.round()}%',
+      'condition': condition,
+      if (rain != null) 'rain_chance': '${rain.round()}%',
+      if (low != null && high != null) 'forecast':
+        ['${low.round()}°C to ${high.round()}°C', if (forecastCondition != null) forecastCondition].join(' · '),
+      'updated_at': current?['last_updated'],
+      'recommendation': _getRecommendation(temperature.round(), humidity.round(), condition, condition),
     };
   }
 

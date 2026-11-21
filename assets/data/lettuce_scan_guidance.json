@@ -1,0 +1,49 @@
+{
+  "healthy": {
+    "pathogen_name": "No pathogen detected",
+    "disease_description": "The photo did not show signs of the three lettuce diseases GreenGuard checks for.",
+    "pathogen_description": "There is no associated pathogen for this result. A photo may miss early symptoms or problems outside the scanned area.",
+    "treatment_recommendations": [
+      "No disease treatment is indicated by this photo.",
+      "Keep checking new leaves and the underside of leaves. Maintain good spacing and clean tools."
+    ],
+    "selling_recommendation": "Consider selling after inspection",
+    "selling_explanation": "The photo showed no signs of the supported diseases. Inspect the whole head and use normal harvesting and handling checks before selling."
+  },
+  "downy mildew": {
+    "pathogen_name": "Bremia lactucae",
+    "disease_description": "Look for yellow patches on top of leaves and pale, fuzzy growth underneath.",
+    "pathogen_description": "Bremia lactucae is a fungus-like organism associated with lettuce downy mildew. The photo suggests the disease but cannot confirm the organism.",
+    "treatment_recommendations": [
+      "Remove badly affected leaves or plants and clear diseased debris from the bed.",
+      "Space plants so air can move. Water near the roots to help leaves stay dry.",
+      "Look under nearby leaves and ask a local agriculture technician about treatments approved for lettuce if symptoms spread."
+    ],
+    "selling_recommendation": "Hold for inspection",
+    "selling_explanation": "Separate affected heads from healthy produce. Yellow or fuzzy leaves reduce quality, so do not sell visibly affected leaves."
+  },
+  "powdery mildew": {
+    "pathogen_name": "Golovinomyces cichoracearum (syn. Erysiphe cichoracearum)",
+    "disease_description": "Look for a white or gray powder on the leaf surface. Older leaves may turn yellow.",
+    "pathogen_description": "This fungus grows on lettuce leaves and forms the powdery coating. A photo cannot confirm the species.",
+    "treatment_recommendations": [
+      "Remove badly affected leaves and clear diseased crop debris.",
+      "Give plants room for airflow and check both sides of nearby leaves.",
+      "Ask a local agriculture technician about locally approved lettuce treatments if the coating spreads."
+    ],
+    "selling_recommendation": "Hold for inspection",
+    "selling_explanation": "The powdery coating can affect appearance and quality. Keep affected heads separate and do not sell visibly coated or damaged leaves."
+  },
+  "septoria blight": {
+    "pathogen_name": "Septoria lactucae",
+    "disease_description": "This leaf spot disease can cause brown spots that grow larger and damage the leaf.",
+    "pathogen_description": "Septoria lactucae is a fungus associated with lettuce Septoria leaf spot. Other problems can produce similar spots, so inspect the plant in person.",
+    "treatment_recommendations": [
+      "Remove spotted leaves and clear diseased crop debris from the bed.",
+      "Water near the roots to reduce splashing. Avoid handling plants while the leaves are wet.",
+      "Check nearby heads and seek local crop advice if spotting continues."
+    ],
+    "selling_recommendation": "Hold for inspection",
+    "selling_explanation": "Spotted or damaged lettuce may not meet market quality. Keep affected heads separate and do not sell visibly damaged leaves."
+  }
+}

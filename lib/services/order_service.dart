@@ -166,232 +166,42 @@ class OrderService {
     }
 
     try {
-      // ==========================================================
-      // GET PRODUCT IDS FROM CART
-      // ==========================================================
-
-      final List<int> productIds = [];
-
-      for (final item in cartItems) {
-        final int productId = _toInt(item['id']);
-
-        if (productId <= 0) {
-          return const CheckoutResult(
-            success: false,
-            error: 'Invalid product detected.',
-          );
-        }
-
-        if (!productIds.contains(productId)) {
-          productIds.add(productId);
-        }
+      final requestedItems = cartItems.map((item) => {
+        'product_id': _toInt(item['id']),
+        'quantity': _toInt(item['quantity']),
+      }).toList();
+      final orders = await supabase.rpc('place_marketplace_order', params: {
+        'p_contact': {
+          'email': user.email,
+          'shipping_name': cleanName,
+          'shipping_phone': cleanPhone,
+          'shipping_address': cleanAddress,
+          'city': 'Cebu City',
+          'postal_code': '6000',
+          'payment_method': cleanPayment,
+          'delivery_method': 'Delivery',
+        },
+        'p_items': requestedItems,
+        'p_single_farmer': false,
+      });
+      if (orders is! List || orders.isEmpty) {
+        return const CheckoutResult(success: false, error: 'The order was not created.');
       }
 
-      // ==========================================================
-      // GET CURRENT PRODUCTS FROM SUPABASE
-      // ==========================================================
-
-      final response = await supabase
-          .from('products')
-          .select('id, name, price, stock, farmer_id')
-          .inFilter('id', productIds);
-
-      final List<Map<String, dynamic>> databaseProducts =
-          List<Map<String, dynamic>>.from(response);
-
-      if (databaseProducts.length != productIds.length) {
-        return const CheckoutResult(
-          success: false,
-          error: 'One or more products are no longer available.',
-        );
-      }
-
-      // ==========================================================
-      // BUILD VALIDATED CART USING DATABASE VALUES
-      // ==========================================================
-
-      final List<Map<String, dynamic>> validatedItems = [];
-
-      for (final cartItem in cartItems) {
-        final int productId = _toInt(cartItem['id']);
-
-        final int quantity = _toInt(cartItem['quantity']);
-
-        if (quantity <= 0) {
-          return const CheckoutResult(
-            success: false,
-            error: 'Invalid quantity.',
-          );
-        }
-
-        final Map<String, dynamic> databaseProduct = databaseProducts
-            .firstWhere((product) => _toInt(product['id']) == productId);
-
-        final int currentStock = _toInt(databaseProduct['stock']);
-
-        final double currentPrice = _toDouble(databaseProduct['price']);
-
-        final String productName =
-            databaseProduct['name']?.toString() ?? 'Lettuce Product';
-
-        final String farmerId =
-            databaseProduct['farmer_id']?.toString().trim() ?? '';
-
-        if (farmerId.isEmpty) {
-          return CheckoutResult(
-            success: false,
-            error: '$productName has no farmer owner.',
-          );
-        }
-
-        if (currentStock < quantity) {
-          return CheckoutResult(
-            success: false,
-            error:
-                'Not enough stock for $productName. '
-                'Available: $currentStock',
-          );
-        }
-
-        validatedItems.add({
-          'id': productId,
-          'name': productName,
-          'price': currentPrice,
-          'quantity': quantity,
-          'stock': currentStock,
-          'farmer_id': farmerId,
-        });
-      }
-
-      // ==========================================================
-      // GROUP BY FARMER
-      // ==========================================================
-
-      final Map<String, List<Map<String, dynamic>>> groupedByFarmer = {};
-
-      for (final item in validatedItems) {
-        final String farmerId = item['farmer_id'].toString();
-
-        groupedByFarmer.putIfAbsent(farmerId, () => []);
-
-        groupedByFarmer[farmerId]!.add(item);
-      }
-
-      int createdOrders = 0;
-
-      // ==========================================================
-      // CREATE ORDERS
-      // ==========================================================
-
-      for (final entry in groupedByFarmer.entries) {
-        final String farmerId = entry.key;
-
-        final List<Map<String, dynamic>> items = entry.value;
-
-        final double totalAmount = items.fold<double>(0, (sum, item) {
-          return sum + (_toDouble(item['price']) * _toInt(item['quantity']));
-        });
-
-        final insertedOrder = await supabase
-            .from('orders')
-            .insert({
-              'order_code': _generateOrderCode(),
-              'user_id': user.id,
-              'farmer_id': farmerId,
-              'email': user.email,
-              'status': 'Pending',
-              'shipping_name': cleanName,
-              'shipping_phone': cleanPhone,
-              'shipping_address': cleanAddress,
-              'city': 'Cebu City',
-              'postal_code': '6000',
-              'payment_method': cleanPayment,
-              'payment_status': cleanPayment,
-              'delivery_method': 'Delivery',
-              'delivery_status': 'Pending',
-              'total_amount': totalAmount,
-              'confirmed_received': false,
-              'updated_at': DateTime.now().toIso8601String(),
-            })
-            .select('id')
-            .single();
-
-        final String orderId = insertedOrder['id'].toString();
-
-        // ========================================================
-        // ORDER ITEMS
-        // ========================================================
-
-        final orderItems = items.map((item) {
-          final double price = _toDouble(item['price']);
-
-          final int quantity = _toInt(item['quantity']);
-
-          return {
-            'order_id': orderId,
-            'product_id': item['id'],
-            'product_name': item['name'],
-            'quantity': quantity,
-            'price': price,
-            'price_at_time': price,
-            'subtotal': price * quantity,
-          };
-        }).toList();
-
-        await supabase.from('order_items').insert(orderItems);
-
-        // ========================================================
-        // REDUCE STOCK
-        // ========================================================
-
-        for (final item in items) {
-          final int oldStock = _toInt(item['stock']);
-
-          final int quantity = _toInt(item['quantity']);
-
-          final int newStock = oldStock - quantity;
-
-          if (newStock < 0) {
-            return CheckoutResult(
-              success: false,
-              error:
-                  'Stock changed while ordering ${item['name']}. Please try again.',
-            );
-          }
-
-          await supabase
-              .from('products')
-              .update({
-                'stock': newStock,
-                'status': newStock > 0 ? 'Available' : 'Out of Stock',
-                'updated_at': DateTime.now().toIso8601String(),
-              })
-              .eq('id', item['id']);
-        }
-
-        // ========================================================
-        // NOTIFICATION
-        // ========================================================
-
+      for (final order in orders) {
         final notificationError = await _notificationService.createNotification(
-          userId: farmerId,
-          orderId: orderId,
+          userId: order['farmer_id'].toString(),
+          orderId: order['id'].toString(),
           title: 'New Order',
           message: 'Someone ordered your product.',
           type: 'new_order',
         );
-
         if (notificationError != null) {
-          print(
-            'CREATE NOTIFICATION FAILED: '
-            '$notificationError',
-          );
+          print('CREATE NOTIFICATION FAILED: $notificationError');
         }
-
-        createdOrders++;
       }
 
-      return CheckoutResult(success: true, orderCount: createdOrders);
+      return CheckoutResult(success: true, orderCount: orders.length);
     } on PostgrestException catch (e) {
       return CheckoutResult(
         success: false,
@@ -592,14 +402,7 @@ class OrderService {
     }
   }
 
-  String _generateOrderCode() {
-    final now = DateTime.now();
-    return 'ORD-${now.year}${_two(now.month)}${_two(now.day)}-${now.millisecondsSinceEpoch.toString().substring(8)}';
-  }
 
-  String _two(int value) {
-    return value.toString().padLeft(2, '0');
-  }
 
   String _extensionFromName(String name) {
     final lower = name.toLowerCase();
@@ -619,12 +422,6 @@ class OrderService {
     return 'image/jpeg';
   }
 
-  double _toDouble(dynamic value) {
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-
-    return double.tryParse(value?.toString() ?? '0') ?? 0;
-  }
 
   int _toInt(dynamic value) {
     if (value is int) return value;

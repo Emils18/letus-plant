@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/auth_service.dart';
 import '../services/order_service.dart';
@@ -29,6 +32,10 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   List<Map<String, dynamic>> _products = [];
   List<Map<String, dynamic>> _orders = [];
   final List<Map<String, dynamic>> _cart = [];
+  RealtimeChannel? _productsChannel;
+  Timer? _productsRefreshTimer;
+  bool _fetchingProducts = false;
+  bool _productLoadFailed = false;
 
   static const String _fallbackImage =
       'https://images.unsplash.com/photo-1540420773420-3366772f4999?q=80&w=1200&auto=format&fit=crop';
@@ -38,6 +45,19 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     super.initState();
     _loadProducts();
     _loadOrders();
+    _productsChannel =
+        Supabase.instance.client.channel('buyer-marketplace-products')
+          ..onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'products',
+            callback: (_) => _refreshVisibleProducts(),
+          )
+          ..subscribe();
+    _productsRefreshTimer = Timer.periodic(
+      const Duration(seconds: 20),
+      (_) => _refreshVisibleProducts(),
+    );
 
     _searchController.addListener(() {
       if (mounted) {
@@ -49,20 +69,38 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    _productsRefreshTimer?.cancel();
+    if (_productsChannel != null) {
+      Supabase.instance.client.removeChannel(_productsChannel!);
+    }
     super.dispose();
   }
 
-  Future<void> _loadProducts() async {
-    setState(() => _isLoadingProducts = true);
+  void _refreshVisibleProducts() {
+    if (!mounted || _isCheckingOut || ModalRoute.of(context)?.isCurrent != true)
+      return;
+    unawaited(_loadProducts(showLoading: false));
+  }
 
-    final products = await _productService.getProducts();
+  Future<void> _loadProducts({bool showLoading = true}) async {
+    if (_fetchingProducts || !mounted) return;
+    _fetchingProducts = true;
+    if (showLoading) setState(() => _isLoadingProducts = true);
 
-    if (!mounted) return;
-
-    setState(() {
-      _products = products;
-      _isLoadingProducts = false;
-    });
+    try {
+      final products = await _productService.getProducts();
+      if (!mounted) return;
+      setState(() {
+        _products = products;
+        _productLoadFailed = false;
+      });
+    } catch (error) {
+      debugPrint('Marketplace refresh failed: $error');
+      if (mounted) setState(() => _productLoadFailed = true);
+    } finally {
+      _fetchingProducts = false;
+      if (mounted) setState(() => _isLoadingProducts = false);
+    }
   }
 
   Future<void> _loadOrders() async {
@@ -116,11 +154,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
       _currentIndex = 2;
     });
 
-          await Future.wait([
-        _loadOrders(),
-        _loadProducts(),
-      ]);
-
+    await Future.wait([_loadOrders(), _loadProducts()]);
 
     _showMessage(
       result.orderCount > 1
@@ -188,9 +222,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
   void _addToCart(Map<String, dynamic> product) {
     final productId = product['id'];
 
-    final existingIndex = _cart.indexWhere(
-      (item) => item['id'] == productId,
-    );
+    final existingIndex = _cart.indexWhere((item) => item['id'] == productId);
 
     setState(() {
       if (existingIndex >= 0) {
@@ -204,10 +236,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
           return;
         }
       } else {
-        _cart.add({
-          ...product,
-          'quantity': 1,
-        });
+        _cart.add({...product, 'quantity': 1});
       }
     });
 
@@ -258,12 +287,12 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     });
   }
 
-   List<String> get _categories => const [
-  'All',
-  'Fresh Lettuce',
-  'Seeds',
-  'Bundles',
-];
+  List<String> get _categories => const [
+    'All',
+    'Fresh Lettuce',
+    'Seeds',
+    'Bundles',
+  ];
 
   List<Map<String, dynamic>> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
@@ -275,14 +304,16 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
       final badge = product['badge']?.toString().toLowerCase() ?? '';
       final freshness = _freshnessInfo(product).toLowerCase();
 
-      final matchesSearch = query.isEmpty ||
+      final matchesSearch =
+          query.isEmpty ||
           name.contains(query) ||
           category.contains(query) ||
           farmer.contains(query) ||
           badge.contains(query) ||
           freshness.contains(query);
 
-      final matchesCategory = _selectedCategory == 'All' ||
+      final matchesCategory =
+          _selectedCategory == 'All' ||
           category == _selectedCategory.toLowerCase();
 
       return matchesSearch && matchesCategory;
@@ -296,32 +327,23 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
       SnackBar(
         content: Text(
           message,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
+          style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         backgroundColor: isError ? Colors.redAccent : const Color(0xFF2F6B3B),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
 
- 
-Future<_CheckoutInfo?> _showCheckoutDialog() {
-  return showDialog<_CheckoutInfo>(
-    context: context,
-    builder: (context) {
-      return _CheckoutDialog(
-        total: _subtotal,
-      );
-    },
-  );
-}
-
-
+  Future<_CheckoutInfo?> _showCheckoutDialog() {
+    return showDialog<_CheckoutInfo>(
+      context: context,
+      builder: (context) {
+        return _CheckoutDialog(total: _subtotal);
+      },
+    );
+  }
 
   double _toDouble(dynamic value) {
     if (value is double) return value;
@@ -337,7 +359,8 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
   }
 
   String _productImage(Map<String, dynamic> product) {
-    final value = product['image_url'] ??
+    final value =
+        product['image_url'] ??
         product['image'] ??
         product['product_image'] ??
         product['photo_url'];
@@ -364,7 +387,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
         'Local Farmer';
   }
 
-   Widget _safeProductImage(
+  Widget _safeProductImage(
     Map<String, dynamic> product, {
     double height = 180,
     double width = double.infinity,
@@ -451,7 +474,8 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
     if (status.contains('confirmed')) return 'Farmer accepted your order.';
     if (status.contains('preparing')) return 'Farmer is preparing your order.';
     if (status.contains('shipped')) return 'Order is on the way.';
-    if (status.contains('delivered')) return 'Delivered. Please confirm received.';
+    if (status.contains('delivered'))
+      return 'Delivered. Please confirm received.';
     if (status.contains('completed') || status.contains('received')) {
       return 'Order completed.';
     }
@@ -482,9 +506,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
             return Container(
               decoration: const BoxDecoration(
                 color: Color(0xFFF6FBF7),
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(32),
-                ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
               ),
               child: ListView(
                 controller: scrollController,
@@ -594,7 +616,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
                           ),
                         ),
                         ElevatedButton.icon(
-                          onPressed: stock <= 0
+                          onPressed: stock <= 0 || product['farmer_id'] == null
                               ? null
                               : () {
                                   Navigator.pop(context);
@@ -635,9 +657,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
         foregroundColor: const Color(0xFF1E2A1F),
         title: const Text(
           'GreenGuard AI',
-          style: TextStyle(
-            fontWeight: FontWeight.w900,
-          ),
+          style: TextStyle(fontWeight: FontWeight.w900),
         ),
         actions: [
           IconButton(
@@ -648,11 +668,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
       ),
       body: IndexedStack(
         index: _currentIndex,
-        children: [
-          _buildMarketplaceTab(),
-          _buildCartTab(),
-          _buildOrdersTab(),
-        ],
+        children: [_buildMarketplaceTab(), _buildCartTab(), _buildOrdersTab()],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
@@ -696,9 +712,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
   Widget _buildMarketplaceTab() {
     if (_isLoadingProducts) {
       return const Center(
-        child: CircularProgressIndicator(
-          color: Color(0xFF2F6B3B),
-        ),
+        child: CircularProgressIndicator(color: Color(0xFF2F6B3B)),
       );
     }
 
@@ -708,19 +722,30 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
       color: const Color(0xFF2F6B3B),
       onRefresh: _loadProducts,
       child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(20),
         children: [
           _buildShopHeader(),
           const SizedBox(height: 18),
           _buildSearchAndFilters(),
           const SizedBox(height: 18),
-          if (_products.isEmpty)
+          if (_productLoadFailed)
+            OutlinedButton.icon(
+              onPressed: _loadProducts,
+              icon: const Icon(Icons.refresh_rounded),
+              label: Text(
+                _products.isEmpty
+                    ? 'Could not load products. Try again'
+                    : 'Could not refresh products. Try again',
+              ),
+            ),
+          if (_products.isEmpty && !_productLoadFailed)
             _buildEmptyState(
               icon: Icons.storefront_rounded,
               title: 'No products yet.',
               subtitle: 'Farmer-published crops will appear here.',
             )
-          else if (filteredProducts.isEmpty)
+          else if (_products.isNotEmpty && filteredProducts.isEmpty)
             _buildEmptyState(
               icon: Icons.search_off_rounded,
               title: 'No matching products.',
@@ -751,11 +776,7 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
       child: const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.eco_rounded,
-            color: Color(0xFF5DBB63),
-            size: 36,
-          ),
+          Icon(Icons.eco_rounded, color: Color(0xFF5DBB63), size: 36),
           SizedBox(height: 14),
           Text(
             'Fresh Lettuce Marketplace',
@@ -779,157 +800,150 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
     );
   }
 
-Widget _buildSearchAndFilters() {
-  final categories = _categories;
-  final selectedCategory =
-      categories.contains(_selectedCategory) ? _selectedCategory : 'All';
+  Widget _buildSearchAndFilters() {
+    final categories = _categories;
+    final selectedCategory = categories.contains(_selectedCategory)
+        ? _selectedCategory
+        : 'All';
 
-  return Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(26),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.04),
-          blurRadius: 14,
-          offset: const Offset(0, 8),
-        ),
-      ],
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Find Products',
-          style: TextStyle(
-            color: Color(0xFF1E2A1F),
-            fontSize: 16,
-            fontWeight: FontWeight.w900,
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 14,
+            offset: const Offset(0, 8),
           ),
-        ),
-
-        const SizedBox(height: 12),
-
-        TextField(
-          controller: _searchController,
-          decoration: InputDecoration(
-            hintText: 'Search product or farmer...',
-            prefixIcon: const Icon(
-              Icons.search_rounded,
-              color: Color(0xFF2F6B3B),
-            ),
-            suffixIcon: _searchController.text.trim().isEmpty
-                ? null
-                : IconButton(
-                    onPressed: () {
-                      _searchController.clear();
-                    },
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-            filled: true,
-            fillColor: const Color(0xFFF6FBF7),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 18,
-              vertical: 16,
-            ),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(20),
-              borderSide: BorderSide.none,
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Find Products',
+            style: TextStyle(
+              color: Color(0xFF1E2A1F),
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
             ),
           ),
-          style: const TextStyle(
-            fontWeight: FontWeight.w700,
-          ),
-        ),
 
-        const SizedBox(height: 14),
+          const SizedBox(height: 12),
 
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF6FBF7),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: const Color(0xFFE8F3EA),
-            ),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: selectedCategory,
-              isExpanded: true,
-              icon: const Icon(
-                Icons.keyboard_arrow_down_rounded,
+          TextField(
+            controller: _searchController,
+            decoration: InputDecoration(
+              hintText: 'Search product or farmer...',
+              prefixIcon: const Icon(
+                Icons.search_rounded,
                 color: Color(0xFF2F6B3B),
               ),
-              items: categories.map((category) {
-                return DropdownMenuItem<String>(
-                  value: category,
-                  child: Text(
-                    category == 'All'
-                        ? 'All Categories'
-                        : category,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFF1E2A1F),
-                      fontWeight: FontWeight.w800,
+              suffixIcon: _searchController.text.trim().isEmpty
+                  ? null
+                  : IconButton(
+                      onPressed: () {
+                        _searchController.clear();
+                      },
+                      icon: const Icon(Icons.close_rounded),
                     ),
-                  ),
-                );
-              }).toList(),
-              onChanged: (value) {
-                if (value == null) return;
-
-                setState(() {
-                  _selectedCategory = value;
-                });
-              },
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        Row(
-          children: [
-            const Icon(
-              Icons.tune_rounded,
-              size: 18,
-              color: Color(0xFF2F6B3B),
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                '${_filteredProducts.length} product result${_filteredProducts.length == 1 ? '' : 's'}',
-                style: TextStyle(
-                  color: Colors.grey.shade600,
-                  fontWeight: FontWeight.w700,
-                ),
+              filled: true,
+              fillColor: const Color(0xFFF6FBF7),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 16,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(20),
+                borderSide: BorderSide.none,
               ),
             ),
-            if (_selectedCategory != 'All' ||
-                _searchController.text.trim().isNotEmpty)
-              TextButton(
-                onPressed: () {
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+
+          const SizedBox(height: 14),
+
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF6FBF7),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE8F3EA)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: selectedCategory,
+                isExpanded: true,
+                icon: const Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  color: Color(0xFF2F6B3B),
+                ),
+                items: categories.map((category) {
+                  return DropdownMenuItem<String>(
+                    value: category,
+                    child: Text(
+                      category == 'All' ? 'All Categories' : category,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF1E2A1F),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  if (value == null) return;
+
                   setState(() {
-                    _selectedCategory = 'All';
-                    _searchController.clear();
+                    _selectedCategory = value;
                   });
                 },
-                child: const Text(
-                  'Reset',
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          Row(
+            children: [
+              const Icon(
+                Icons.tune_rounded,
+                size: 18,
+                color: Color(0xFF2F6B3B),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '${_filteredProducts.length} product result${_filteredProducts.length == 1 ? '' : 's'}',
                   style: TextStyle(
-                    fontWeight: FontWeight.w900,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
-          ],
-        ),
-      ],
-    ),
-  );
-}
+              if (_selectedCategory != 'All' ||
+                  _searchController.text.trim().isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _selectedCategory = 'All';
+                      _searchController.clear();
+                    });
+                  },
+                  child: const Text(
+                    'Reset',
+                    style: TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildProductCard(Map<String, dynamic> product) {
     final name = product['name']?.toString() ?? 'Lettuce Product';
@@ -966,11 +980,7 @@ Widget _buildSearchAndFilters() {
                     top: Radius.circular(28),
                   ),
                 ),
-                Positioned(
-                  top: 14,
-                  left: 14,
-                  child: _buildBadge(badge),
-                ),
+                Positioned(top: 14, left: 14, child: _buildBadge(badge)),
                 Positioned(
                   top: 14,
                   right: 14,
@@ -1017,13 +1027,13 @@ Widget _buildSearchAndFilters() {
                     children: [
                       Expanded(
                         child: Text(
-  '₱${price.toStringAsFixed(2)}',
-  style: const TextStyle(
-    fontSize: 24,
-    fontWeight: FontWeight.w900,
-    color: Color(0xFF2F6B3B),
-  ),
-),
+                          '₱${price.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF2F6B3B),
+                          ),
+                        ),
                       ),
                       TextButton(
                         onPressed: () => _openProductDetails(product),
@@ -1034,7 +1044,9 @@ Widget _buildSearchAndFilters() {
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
-                        onPressed: stock <= 0 ? null : () => _addToCart(product),
+                        onPressed: stock <= 0 || product['farmer_id'] == null
+                            ? null
+                            : () => _addToCart(product),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF2F6B3B),
                           foregroundColor: Colors.white,
@@ -1044,9 +1056,7 @@ Widget _buildSearchAndFilters() {
                         ),
                         child: const Text(
                           'Add',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                          ),
+                          style: TextStyle(fontWeight: FontWeight.w900),
                         ),
                       ),
                     ],
@@ -1171,9 +1181,7 @@ Widget _buildSearchAndFilters() {
                     ),
                     Text(
                       quantity.toString(),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w900,
-                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w900),
                     ),
                     IconButton(
                       onPressed: () => _updateCartQuantity(item['id'], 1),
@@ -1243,9 +1251,7 @@ Widget _buildSearchAndFilters() {
                         )
                       : const Text(
                           'Checkout',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w900,
-                          ),
+                          style: TextStyle(fontWeight: FontWeight.w900),
                         ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF5DBB63),
@@ -1266,9 +1272,7 @@ Widget _buildSearchAndFilters() {
   Widget _buildOrdersTab() {
     if (_isLoadingOrders) {
       return const Center(
-        child: CircularProgressIndicator(
-          color: Color(0xFF2F6B3B),
-        ),
+        child: CircularProgressIndicator(color: Color(0xFF2F6B3B)),
       );
     }
 
@@ -1298,7 +1302,8 @@ Widget _buildSearchAndFilters() {
           final items = List<Map<String, dynamic>>.from(
             order['order_items'] ?? [],
           );
-          final proofUrl = order['proof_image_url']?.toString() ??
+          final proofUrl =
+              order['proof_image_url']?.toString() ??
               order['delivery_proof_url']?.toString();
 
           return Container(
@@ -1470,10 +1475,7 @@ Widget _buildSearchAndFilters() {
 
   Widget _buildBadge(String text) {
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 5,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: const Color(0xFFE8F3EA),
         borderRadius: BorderRadius.circular(30),
@@ -1500,11 +1502,7 @@ Widget _buildSearchAndFilters() {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              icon,
-              size: 82,
-              color: Colors.grey.shade300,
-            ),
+            Icon(icon, size: 82, color: Colors.grey.shade300),
             const SizedBox(height: 16),
             Text(
               title,
@@ -1533,26 +1531,20 @@ Widget _buildSearchAndFilters() {
 }
 
 class _CheckoutDialog extends StatefulWidget {
-  const _CheckoutDialog({
-    required this.total,
-  });
+  const _CheckoutDialog({required this.total});
 
   final double total;
 
   @override
-  State<_CheckoutDialog> createState() =>
-      _CheckoutDialogState();
+  State<_CheckoutDialog> createState() => _CheckoutDialogState();
 }
 
 class _CheckoutDialogState extends State<_CheckoutDialog> {
-  final TextEditingController _nameController =
-      TextEditingController();
+  final TextEditingController _nameController = TextEditingController();
 
-  final TextEditingController _phoneController =
-      TextEditingController();
+  final TextEditingController _phoneController = TextEditingController();
 
-  final TextEditingController _addressController =
-      TextEditingController();
+  final TextEditingController _addressController = TextEditingController();
 
   static const String _paymentMethod = 'To be agreed in person';
 
@@ -1570,14 +1562,10 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     final phone = _phoneController.text.trim();
     final address = _addressController.text.trim();
 
-    if (name.isEmpty ||
-        phone.isEmpty ||
-        address.isEmpty) {
+    if (name.isEmpty || phone.isEmpty || address.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Please complete all checkout details.',
-          ),
+          content: Text('Please complete all checkout details.'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -1599,14 +1587,10 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(24),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       title: const Text(
         'Checkout',
-        style: TextStyle(
-          fontWeight: FontWeight.w900,
-        ),
+        style: TextStyle(fontWeight: FontWeight.w900),
       ),
       content: SingleChildScrollView(
         child: Column(
@@ -1636,9 +1620,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Recipient Name',
-                prefixIcon: Icon(
-                  Icons.person_rounded,
-                ),
+                prefixIcon: Icon(Icons.person_rounded),
               ),
             ),
 
@@ -1650,9 +1632,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Phone Number',
-                prefixIcon: Icon(
-                  Icons.phone_rounded,
-                ),
+                prefixIcon: Icon(Icons.phone_rounded),
               ),
             ),
 
@@ -1664,9 +1644,7 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
               textInputAction: TextInputAction.done,
               decoration: const InputDecoration(
                 labelText: 'Delivery Address',
-                prefixIcon: Icon(
-                  Icons.location_on_rounded,
-                ),
+                prefixIcon: Icon(Icons.location_on_rounded),
               ),
             ),
 
@@ -1674,7 +1652,9 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
 
             const Padding(
               padding: EdgeInsets.only(top: 8),
-              child: Text('Payment will be agreed directly with the farmer in person.'),
+              child: Text(
+                'Payment will be agreed directly with the farmer in person.',
+              ),
             ),
           ],
         ),
@@ -1688,16 +1668,10 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
         ),
         ElevatedButton.icon(
           onPressed: _placeOrder,
-          icon: const Icon(
-            Icons.check_circle_rounded,
-          ),
-          label: const Text(
-            'Place Order',
-          ),
+          icon: const Icon(Icons.check_circle_rounded),
+          label: const Text('Place Order'),
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(
-              0xFF2F6B3B,
-            ),
+            backgroundColor: const Color(0xFF2F6B3B),
             foregroundColor: Colors.white,
           ),
         ),
@@ -1705,7 +1679,6 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
     );
   }
 }
-
 
 class _CheckoutInfo {
   final String shippingName;

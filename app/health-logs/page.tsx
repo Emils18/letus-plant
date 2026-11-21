@@ -4,10 +4,14 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
+import { useWeatherLocation } from "@/lib/use-weather-location";
 import { supabase } from "@/lib/supabase";
+import { reportGuidance, scanClass, scanConfidencePercent, scanPathogen } from "@/lib/scan-guidance";
+import { ScanReportDetails } from "@/app/components/scan-report-details";
 
 type HealthLog = {
   id: string;
@@ -25,6 +29,35 @@ type HealthLog = {
   device_id?: string | null;
   captured_at?: string | null;
   created_at?: string | null;
+  scan_session_id?: string | null;
+  pathogen_name?: string | null;
+  disease_description?: string | null;
+  pathogen_description?: string | null;
+  treatment_recommendations?: string[] | string | null;
+  selling_recommendation?: string | null;
+  selling_explanation?: string | null;
+};
+
+async function readHealthLogs(ownerId?: string) {
+  const pageSize = 250;
+  const logs = new Map<string, HealthLog>();
+  for (let offset = 0; ; offset += pageSize) {
+    let query = supabase.from("diagnostic_logs").select("*");
+    if (ownerId) query = query.eq("user_id", ownerId);
+    const { data, error } = await query.order("created_at", { ascending: false })
+      .order("id", { ascending: false }).range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    for (const row of (data || []) as HealthLog[]) logs.set(row.id, row);
+    if (!data || data.length < pageSize) return [...logs.values()];
+  }
+}
+
+type ScanSession = {
+  id: string;
+  user_id?: string | null;
+  status?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
 };
 
 type UserProfile = {
@@ -45,6 +78,7 @@ type FarmerOrder = {
 };
 
 type WeatherData = {
+  forecast?: string;
   location: string;
   temperature: number;
   condition: string;
@@ -145,29 +179,12 @@ function getDiseaseName(log: HealthLog) {
     log,
     ["disease_name", "result"],
     "Unknown Result"
-  );
+  ).replaceAll("_", " ").trim();
 }
 
 function getConfidence(log: HealthLog) {
-  const raw =
-    log.confidence_score ??
-    log.confidence;
-
-  if (raw === null || raw === undefined) {
-    return "N/A";
-  }
-
-  const value = Number(raw);
-
-  if (Number.isNaN(value)) {
-    return String(raw);
-  }
-
-  if (value <= 1) {
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  return `${value.toFixed(1)}%`;
+  const value = getConfidencePercent(log);
+  return value === null ? "N/A" : `${value.toFixed(1)}%`;
 }
 
 function getTemperature(log: HealthLog) {
@@ -223,13 +240,15 @@ function formatWeatherTime(
 }
 
 function isHealthy(name: string) {
-  const value = name.toLowerCase();
+  return scanClass(name) === "healthy";
+}
 
-  return (
-    value.includes("healthy") ||
-    value.includes("none") ||
-    value.includes("no disease")
-  );
+function getPathogenName(log: HealthLog) {
+  return scanPathogen(log);
+}
+
+function getConfidencePercent(log: HealthLog) {
+  return scanConfidencePercent(log.confidence_score ?? log.confidence);
 }
 
 function isUsefulLocation(
@@ -284,6 +303,12 @@ export default function HealthLogsPage() {
   const [logs, setLogs] =
     useState<HealthLog[]>([]);
 
+  const [scanSessions, setScanSessions] =
+    useState<ScanSession[]>([]);
+
+  const [sessionLoadError, setSessionLoadError] =
+    useState("");
+
   const [profile, setProfile] =
     useState<UserProfile | null>(null);
 
@@ -312,6 +337,8 @@ export default function HealthLogsPage() {
     String(profile?.role || "").toLowerCase() ===
     "farmer";
 
+  const { coordinates, locationError, useCurrentLocation } = useWeatherLocation();
+  const weatherRequest = useRef(0);
   const weatherLocation = useMemo(() => {
     const logLocation =
       logs.find((log) =>
@@ -324,17 +351,17 @@ export default function HealthLogsPage() {
       )?.location;
 
     return String(
-      logLocation ||
-        productLocation ||
-        "Lapu-Lapu City, Cebu, PH"
+      coordinates || logLocation || productLocation || ""
     ).trim();
-  }, [farmerProducts, logs]);
+  }, [coordinates, farmerProducts, logs]);
 
   const loadWeather = useCallback(
     async (
       location: string,
       showError = true
     ) => {
+      if (!location) return;
+      const requestId = ++weatherRequest.current;
       setWeatherLoading(true);
 
       try {
@@ -360,12 +387,15 @@ export default function HealthLogsPage() {
           );
         }
 
+        if (requestId !== weatherRequest.current) return;
         setWeather(
           result.data as WeatherData
         );
 
         setWeatherError("");
       } catch (error) {
+        if (requestId !== weatherRequest.current) return;
+        setWeather(null);
         const message =
           error instanceof Error
             ? error.message
@@ -377,15 +407,18 @@ export default function HealthLogsPage() {
           alert(message);
         }
       } finally {
-        setWeatherLoading(false);
+        if (requestId === weatherRequest.current) setWeatherLoading(false);
       }
     },
     []
   );
 
+  const loadingLogs = useRef(false);
   const loadLogs =
-    useCallback(async () => {
-      setLoading(true);
+    useCallback(async (background = false) => {
+      if (loadingLogs.current) return;
+      loadingLogs.current = true;
+      if (!background) setLoading(true);
 
       try {
         const {
@@ -431,19 +464,9 @@ export default function HealthLogsPage() {
             logsResult,
             productsResult,
             ordersResult,
+            sessionsResult,
           ] = await Promise.all([
-            supabase
-              .from(
-                "diagnostic_logs"
-              )
-              .select("*")
-              .eq(
-                "user_id",
-                user.id
-              )
-              .order("created_at", {
-                ascending: false,
-              }),
+            readHealthLogs(user.id),
 
             supabase
               .from("products")
@@ -468,13 +491,13 @@ export default function HealthLogsPage() {
               .order("created_at", {
                 ascending: false,
               }),
-          ]);
 
-          if (logsResult.error) {
-            throw new Error(
-              logsResult.error.message
-            );
-          }
+            supabase
+              .from("scan_sessions")
+              .select("id, user_id, status, started_at, completed_at")
+              .eq("user_id", user.id)
+              .order("started_at", { ascending: false }),
+          ]);
 
           if (productsResult.error) {
             throw new Error(
@@ -488,10 +511,7 @@ export default function HealthLogsPage() {
             );
           }
 
-          setLogs(
-            (logsResult.data as HealthLog[]) ||
-              []
-          );
+          setLogs(logsResult);
 
           setFarmerProducts(
             (productsResult.data as FarmerProduct[]) ||
@@ -502,43 +522,38 @@ export default function HealthLogsPage() {
             (ordersResult.data as FarmerOrder[]) ||
               []
           );
-        } else {
-          const {
-            data,
-            error,
-          } = await supabase
-            .from("diagnostic_logs")
-            .select("*")
-            .order("created_at", {
-              ascending: false,
-            });
 
-          if (error) {
-            throw new Error(
-              error.message
-            );
+          if (sessionsResult.error) {
+            setScanSessions([]);
+            setSessionLoadError(sessionsResult.error.message);
+          } else {
+            setScanSessions((sessionsResult.data as ScanSession[]) || []);
+            setSessionLoadError("");
           }
-
-          setLogs(
-            (data as HealthLog[]) || []
-          );
+        } else {
+          setLogs(await readHealthLogs());
 
           setFarmerProducts([]);
 
           setFarmerOrders([]);
+
+          setScanSessions([]);
+
+          setSessionLoadError("");
 
           setWeather(null);
 
           setWeatherError("");
         }
       } catch (error) {
-        alert(
+        if (!background) alert(
           error instanceof Error
             ? error.message
             : "Failed to load health logs."
         );
       } finally {
-        setLoading(false);
+        loadingLogs.current = false;
+        if (!background) setLoading(false);
       }
     }, []);
 
@@ -546,12 +561,34 @@ export default function HealthLogsPage() {
     loadLogs();
   }, [loadLogs]);
 
+  const profileId = profile?.id;
   useEffect(() => {
-    if (!isFarmer) {
+    if (!profileId) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadLogs(true);
+    };
+    const channel = isFarmer ? supabase.channel(`health-logs-${profileId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "diagnostic_logs", filter: `user_id=eq.${profileId}` }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "scan_sessions", filter: `user_id=eq.${profileId}` }, refresh)
+      .subscribe() : null;
+    const timer = window.setInterval(refresh, 20000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      if (channel) void supabase.removeChannel(channel);
+    };
+  }, [profileId, isFarmer, loadLogs]);
+
+  useEffect(() => {
+    setWeather(null);
+    if (!isFarmer || !weatherLocation) {
+      weatherRequest.current++;
+      setWeatherLoading(false);
       return;
     }
 
-    loadWeather(weatherLocation);
+    loadWeather(weatherLocation, false);
 
     const intervalId =
       window.setInterval(() => {
@@ -610,6 +647,30 @@ export default function HealthLogsPage() {
 
   const riskCount =
     logs.length - healthyCount;
+  const overallReport = useMemo(() => {
+    const diseaseCounts = { "downy mildew": 0, "powdery mildew": 0, "septoria blight": 0 };
+    let confidenceSum = 0;
+    let confidenceCount = 0;
+    let needsReview = 0;
+    for (const log of logs) {
+      const disease = scanClass(getDiseaseName(log));
+      if (Object.hasOwn(diseaseCounts, disease)) {
+        diseaseCounts[disease as keyof typeof diseaseCounts]++;
+      } else if (disease !== "healthy") {
+        needsReview++;
+      }
+      const confidence = getConfidencePercent(log);
+      if (confidence !== null) {
+        confidenceSum += confidence;
+        confidenceCount++;
+      }
+    }
+    return {
+      diseaseCounts,
+      needsReview,
+      averageConfidence: confidenceCount ? `${(confidenceSum / confidenceCount).toFixed(1)}%` : "Unavailable",
+    };
+  }, [logs]);
 
   const recentLogs =
     logs.slice(0, 3);
@@ -855,7 +916,10 @@ export default function HealthLogsPage() {
           </p>
         </section>
 
-        <section className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-3">
+        <section className="mb-8 rounded-[2rem] border border-white/10 bg-white/[0.035] p-5 sm:p-7" aria-labelledby="overall-health-report">
+          <h3 id="overall-health-report" className="text-2xl font-black">Overall Health Report</h3>
+          <p className="mb-5 mt-2 text-base text-white/75">All saved scans you can view, including individual scans outside a session.</p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-6">
             <p className="text-4xl font-black text-white">
               {logs.length}
@@ -885,6 +949,24 @@ export default function HealthLogsPage() {
               Risk Results
             </p>
           </div>
+          </div>
+          <details className="mt-4 rounded-2xl border border-white/15 bg-black/10">
+            <summary className="cursor-pointer px-4 py-3 text-base font-bold text-[#A6E59D]">View disease breakdown and average confidence</summary>
+            <dl className="grid grid-cols-1 gap-3 border-t border-white/10 p-4 text-base sm:grid-cols-2 lg:grid-cols-3">
+              {([
+                ["Downy Mildew", overallReport.diseaseCounts["downy mildew"]],
+                ["Powdery Mildew", overallReport.diseaseCounts["powdery mildew"]],
+                ["Septoria Blight", overallReport.diseaseCounts["septoria blight"]],
+                ["Needs review", overallReport.needsReview],
+                ["Average confidence", overallReport.averageConfidence],
+              ] as const).map(([label, value]) => (
+                <div key={label} className="rounded-xl bg-white/[0.04] p-3">
+                  <dt className="text-white/75">{label}</dt>
+                  <dd className="mt-1 text-xl font-bold text-white">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
         </section>
 
         <section className="mb-8 rounded-[2rem] border border-white/10 bg-white/[0.035] p-7 shadow-2xl shadow-black/20 backdrop-blur-xl">
@@ -969,6 +1051,11 @@ export default function HealthLogsPage() {
                           </p>
                         )}
                       </div>
+
+                      <p className="mt-3 text-sm italic text-white/50">
+                        {getPathogenName(log)}
+                      </p>
+                      <ScanReportDetails log={log} />
                     </div>
                   );
                 }
@@ -976,6 +1063,100 @@ export default function HealthLogsPage() {
             </div>
           )}
         </section>
+
+        {isFarmer && (
+          <section className="mb-8 rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 to-[#0A140E]/95 p-7 shadow-2xl shadow-black/20">
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">Grouped by scan session</p>
+                <h3 className="mt-2 text-2xl font-black tracking-tight">Final Scan Reports</h3>
+                <p className="mt-1 text-sm text-white/50">Each report summarizes only the images saved in that session.</p>
+              </div>
+              <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-bold text-white/60">
+                {scanSessions.length} sessions
+              </span>
+            </div>
+
+            {sessionLoadError && (
+              <div role="status" className="mb-4 rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+                Session summaries are unavailable: {sessionLoadError}. Individual scan records are still shown below.
+              </div>
+            )}
+
+            {scanSessions.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-black/10 p-5 text-sm text-white/45">
+                No scan sessions with saved records yet. Older standalone scans remain in Diagnostic Records.
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {scanSessions.map((session) => {
+                  const sessionLogs = logs
+                    .filter((log) => String(log.scan_session_id || "") === String(session.id))
+                    .sort((left, right) => new Date(left.captured_at || left.created_at || 0).getTime() - new Date(right.captured_at || right.created_at || 0).getTime());
+                  if (sessionLogs.length === 0) return null;
+
+                  const countDisease = (key: string) => sessionLogs.filter((log) => scanClass(getDiseaseName(log)) === key).length;
+                  const treatments = [...new Set(sessionLogs.flatMap((log) => reportGuidance(log).treatments))];
+                  const healthy = sessionLogs.filter((log) => isHealthy(getDiseaseName(log))).length;
+                  const confidences = sessionLogs
+                    .map(getConfidencePercent)
+                    .filter((value): value is number => value !== null);
+                  const averageConfidence = confidences.length
+                    ? `${(confidences.reduce((sum, value) => sum + value, 0) / confidences.length).toFixed(1)}%`
+                    : "Not available";
+                  const completed = session.status?.toLowerCase() === "completed" || Boolean(session.completed_at);
+
+                  return (
+                    <details key={session.id} className="group rounded-2xl border border-white/10 bg-black/10">
+                      <summary className="cursor-pointer list-none p-5 outline-none focus-visible:ring-2 focus-visible:ring-[#5DBB63]">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-lg font-black text-white">{completed ? "Completed scan session" : "Scan session in progress"}</p>
+                            <p className="mt-1 text-sm text-white/45">Started {formatWeatherTime(session.started_at)}{completed ? ` • completed ${formatWeatherTime(session.completed_at)}` : ""}</p>
+                          </div>
+                          <span className="rounded-full border border-[#5DBB63]/25 bg-[#5DBB63]/10 px-3 py-1 text-xs font-black text-[#9BE49F]">{sessionLogs.length} lettuce scanned</span>
+                        </div>
+                        <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                          <p className="rounded-xl bg-white/[0.04] p-3">Healthy <b className="block text-lg text-[#9BE49F]">{healthy}</b></p>
+                          <p className="rounded-xl bg-white/[0.04] p-3">At risk <b className="block text-lg text-orange-200">{sessionLogs.length - healthy}</b></p>
+                          <p className="rounded-xl bg-white/[0.04] p-3">Downy <b className="block text-lg text-white">{countDisease("downy mildew")}</b></p>
+                          <p className="rounded-xl bg-white/[0.04] p-3">Powdery / Septoria <b className="block text-lg text-white">{countDisease("powdery mildew")} / {countDisease("septoria blight")}</b></p>
+                          <p className="rounded-xl bg-white/[0.04] p-3">Average confidence <b className="block text-lg text-[#9BE49F]">{averageConfidence}</b></p>
+                        </div>
+                        <p className="mt-3 text-xs font-black text-[#8DDA79] group-open:hidden">Open final report and individual scans ↓</p>
+                        <p className="mt-3 hidden text-xs font-black text-[#8DDA79] group-open:block">Close final report ↑</p>
+                      </summary>
+                      <div className="grid gap-4 border-t border-white/10 p-4">
+                        <div className="space-y-3 rounded-xl bg-white/[0.04] p-4 text-base leading-relaxed text-white/85">
+                          <p><strong className="text-white">Selling guidance</strong><br />
+                            {healthy < sessionLogs.length
+                              ? "Set aside heads with disease or unclear results. Review their individual reports and inspect them before selling."
+                              : "Inspect each head before offering it for sale. A photo cannot confirm food safety."}
+                          </p>
+                          {treatments.length > 0 && <>
+                            <p className="font-bold text-white">Care and prevention</p>
+                            <ul className="list-disc space-y-1 pl-6">
+                              {treatments.map((step) => <li key={step}>{step}</li>)}
+                            </ul>
+                          </>}
+                        </div>
+                        {sessionLogs.map((log) => (
+                          <article key={log.id} className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-black text-white">{getDiseaseName(log).replaceAll("_", " ")} <span className="font-normal italic text-white/50">· {getPathogenName(log)}</span></p>
+                              <span className="text-xs font-bold text-[#9BE49F]">{getConfidence(log)}</span>
+                            </div>
+                            <ScanReportDetails log={log} />
+                          </article>
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        )}
 
         {isFarmer && (
           <section className="mb-8 grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
@@ -987,8 +1168,7 @@ export default function HealthLogsPage() {
                   </p>
 
                   <h3 className="mt-2 text-2xl font-black">
-                    {weather?.location ||
-                      weatherLocation}
+                    {weather?.location || (coordinates ? "Current location" : weatherLocation) || "Choose a location"}
                   </h3>
                 </div>
 
@@ -1009,6 +1189,9 @@ export default function HealthLogsPage() {
                 </button>
               </div>
 
+              <button type="button" onClick={useCurrentLocation} className="mt-3 min-h-11 rounded-xl border border-[#5DBB63]/40 px-4 font-bold text-[#A6E59D]">Use my location</button>
+              {locationError && <p role="status" className="mt-2 text-sm text-white/85">{locationError}</p>}
+              {weather?.forecast && <p className="mt-2 text-sm text-white/85">Today: {weather.forecast}</p>}
               {weather ? (
                 <div className="mt-6 grid grid-cols-2 gap-3">
                   <WeatherMetric
@@ -1217,6 +1400,8 @@ export default function HealthLogsPage() {
                               )}
                             </p>
                           </div>
+                          <p className="mt-2 text-sm italic text-white/50">{getPathogenName(log)}</p>
+                          <ScanReportDetails log={log} showPhoto={false} />
                         </div>
                       </div>
                     </div>

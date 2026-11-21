@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Order = {
@@ -22,8 +22,29 @@ type Message = {
   created_at: string;
   read_at?: string | null;
 };
+type Conversation = {
+  orderId: string;
+  messages: Message[];
+  receiptsAvailable: boolean;
+  loadError: string;
+};
 
 const terminalStatuses = new Set(["delivered", "received", "completed"]);
+const twoPanelLayout = "(min-width: 48rem)";
+
+function subscribeToLayout(onChange: () => void) {
+  const query = window.matchMedia(twoPanelLayout);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function isTwoPanelLayout() {
+  return window.matchMedia(twoPanelLayout).matches;
+}
+
+function getInitialLayout() {
+  return false;
+}
 
 function shortOrderReference(order?: Order) {
   if (!order) return "";
@@ -39,13 +60,17 @@ function readableStatus(value?: string) {
 }
 
 function orderIsClosed(order?: Order) {
-  return terminalStatuses.has((order?.status || "").toLowerCase()) || terminalStatuses.has((order?.delivery_status || "").toLowerCase());
+  return terminalStatuses.has(order?.status?.trim().toLowerCase() || "")
+    || terminalStatuses.has(order?.delivery_status?.trim().toLowerCase() || "");
 }
 
 function orderStatusLabel(order?: Order) {
-  if (terminalStatuses.has((order?.delivery_status || "").toLowerCase())) return readableStatus(order?.delivery_status);
-  if (order?.delivery_status?.trim() && order.delivery_status.toLowerCase() !== "pending") return readableStatus(order.delivery_status);
-  return readableStatus(order?.status);
+  const status = order?.status?.trim();
+  const deliveryStatus = order?.delivery_status?.trim();
+  if (terminalStatuses.has(deliveryStatus?.toLowerCase() || "")) return readableStatus(deliveryStatus);
+  if (terminalStatuses.has(status?.toLowerCase() || "")) return readableStatus(status);
+  if (deliveryStatus && deliveryStatus.toLowerCase() !== "pending") return readableStatus(deliveryStatus);
+  return readableStatus(status);
 }
 
 function messageTime(value: string) {
@@ -53,58 +78,60 @@ function messageTime(value: string) {
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+function participantName(order: Order, userId: string, names: Record<string, string>) {
+  if (order.user_id === userId) return names[order.farmer_id || ""] || "Farmer";
+  return names[order.user_id || ""] || order.shipping_name || "Buyer";
+}
+
 export default function MessagesPage() {
   const [userId, setUserId] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [peerNames, setPeerNames] = useState<Record<string, string>>({});
   const [activeOrder, setActiveOrder] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [draft, setDraft] = useState("");
+  const [conversation, setConversation] = useState<Conversation>();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [seenReceiptsAvailable, setSeenReceiptsAvailable] = useState(true);
+  const [sendError, setSendError] = useState<{ orderId: string; message: string }>();
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const shellRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const conversationHeadingRef = useRef<HTMLHeadingElement>(null);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const keepAtBottom = useRef(true);
+  const scrolledOrder = useRef("");
+  const channelId = useId();
+  const subscriptionNumber = useRef(0);
+  const refreshChat = useRef<{ orderId: string; load: () => Promise<void> }>(null);
+  const desktop = useSyncExternalStore(subscribeToLayout, isTwoPanelLayout, getInitialLayout);
+  const visibleOrder = desktop || mobileChatOpen ? activeOrder : "";
+  const thread = conversation?.orderId === visibleOrder ? conversation : undefined;
+  const draft = drafts[activeOrder] || "";
 
-  const loadMessages = useCallback(async (orderId: string) => {
-    if (!orderId) return;
-    const primary = await supabase.from("order_messages")
-      .select("id, order_id, sender_id, message, created_at, read_at")
-      .eq("order_id", orderId).order("created_at", { ascending: true });
-    let data: Message[] | null = primary.data as Message[] | null;
-    let loadError = primary.error;
-    let receiptsAvailable = true;
+  useEffect(() => {
+    const shell = shellRef.current;
+    const viewport = window.visualViewport;
+    if (!shell || !viewport) return;
+    const resize = () => {
+      if (viewport.scale === 1) shell.style.setProperty("--chat-viewport-height", `${viewport.height}px`);
+      else shell.style.removeProperty("--chat-viewport-height");
+    };
+    resize();
+    viewport.addEventListener("resize", resize);
+    return () => viewport.removeEventListener("resize", resize);
+  }, []);
 
-    if (loadError && (loadError.code === "42703" || loadError.message.toLowerCase().includes("read_at"))) {
-      receiptsAvailable = false;
-      const fallback = await supabase.from("order_messages")
-        .select("id, order_id, sender_id, message, created_at")
-        .eq("order_id", orderId).order("created_at", { ascending: true });
-      data = fallback.data as Message[] | null;
-      loadError = fallback.error;
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list || !thread) return;
+    if (keepAtBottom.current || scrolledOrder.current !== visibleOrder) {
+      list.scrollTop = list.scrollHeight;
+      keepAtBottom.current = true;
     }
-
-    if (loadError) {
-      setError(loadError.code === "PGRST205"
-        ? "Chat database setup is required. Apply the included order_messages migration, then refresh."
-        : "Could not load this chat. Check your connection and try again.");
-      return;
-    }
-
-    const loadedMessages = (data || []) as Message[];
-    setMessages(loadedMessages);
-    setSeenReceiptsAvailable(receiptsAvailable);
-    setError(receiptsAvailable ? "" : "Seen receipts need the chat read receipts SQL update in Supabase.");
-    requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }));
-
-    if (receiptsAvailable && userId) {
-      await supabase.from("order_messages")
-        .update({ read_at: new Date().toISOString() })
-        .eq("order_id", orderId)
-        .neq("sender_id", userId)
-        .is("read_at", null);
-    }
-  }, [userId]);
+    scrolledOrder.current = visibleOrder;
+  }, [thread, visibleOrder]);
 
   useEffect(() => {
     let alive = true;
@@ -159,8 +186,9 @@ export default function MessagesPage() {
 
       if (!alive) return;
       const requestedOrder = new URLSearchParams(window.location.search).get("orderId") || "";
-      const initial = available.find((order) => order.id === requestedOrder)?.id || available[0]?.id || "";
-      setActiveOrder(initial);
+      const requested = available.find((order) => order.id === requestedOrder);
+      setActiveOrder(requested?.id || available[0]?.id || "");
+      setMobileChatOpen(Boolean(requested));
       setLoading(false);
     }
     void start();
@@ -168,13 +196,67 @@ export default function MessagesPage() {
   }, []);
 
   useEffect(() => {
-    if (!activeOrder) return;
-    void Promise.resolve().then(() => loadMessages(activeOrder));
-    const channel = supabase.channel(`web-order-chat-${activeOrder}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "order_messages", filter: `order_id=eq.${activeOrder}` }, () => void loadMessages(activeOrder))
-      .subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  }, [activeOrder, loadMessages]);
+    if (!visibleOrder || !userId) return;
+    let active = true;
+    let requestNumber = 0;
+
+    async function loadMessages() {
+      const request = ++requestNumber;
+      const primary = await supabase.from("order_messages")
+        .select("id, order_id, sender_id, message, created_at, read_at")
+        .eq("order_id", visibleOrder).order("created_at", { ascending: true });
+      if (!active || request !== requestNumber) return;
+
+      let data: Message[] | null = primary.data;
+      let loadError = primary.error;
+      let receiptsAvailable = true;
+      if (loadError && (loadError.code === "42703" || loadError.message.toLowerCase().includes("read_at"))) {
+        receiptsAvailable = false;
+        const fallback = await supabase.from("order_messages")
+          .select("id, order_id, sender_id, message, created_at")
+          .eq("order_id", visibleOrder).order("created_at", { ascending: true });
+        if (!active || request !== requestNumber) return;
+        data = fallback.data;
+        loadError = fallback.error;
+      }
+
+      if (loadError) {
+        const message = loadError.code === "PGRST205"
+          ? "Chat database setup is required. Apply the included order_messages migration, then refresh."
+          : "Could not load this chat. Check your connection and try again.";
+        setConversation((previous) => ({
+          orderId: visibleOrder,
+          messages: previous?.orderId === visibleOrder ? previous.messages : [],
+          receiptsAvailable,
+          loadError: message,
+        }));
+        return;
+      }
+
+      const messages = data || [];
+      setConversation({ orderId: visibleOrder, messages, receiptsAvailable, loadError: "" });
+      if (receiptsAvailable && messages.some((message) => message.sender_id !== userId && !message.read_at)) {
+        await supabase.from("order_messages")
+          .update({ read_at: new Date().toISOString() })
+          .eq("order_id", visibleOrder)
+          .neq("sender_id", userId)
+          .is("read_at", null);
+      }
+    }
+
+    refreshChat.current = { orderId: visibleOrder, load: loadMessages };
+    void loadMessages();
+    const channel = supabase.channel(`web-order-chat-${visibleOrder}-${channelId}-${++subscriptionNumber.current}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "order_messages", filter: `order_id=eq.${visibleOrder}` }, () => void loadMessages())
+      .subscribe((status) => {
+        if (active && status === "SUBSCRIBED") void loadMessages();
+      });
+    return () => {
+      active = false;
+      refreshChat.current = null;
+      void supabase.removeChannel(channel);
+    };
+  }, [visibleOrder, userId, channelId]);
 
   useEffect(() => {
     if (!activeOrder) return;
@@ -195,80 +277,202 @@ export default function MessagesPage() {
   async function sendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
-    if (!message || !activeOrder || sending || !userId || isClosed) return;
+    if (!message || !activeOrder || sending || !userId || isClosed || !thread || thread.loadError) return;
+    const orderId = activeOrder;
     setSending(true);
-    setError("");
-    const { error: sendError } = await supabase.from("order_messages").insert({ order_id: activeOrder, sender_id: userId, message });
-    if (sendError) setError("Message not sent. Check your internet and try again.");
-    else { setDraft(""); await loadMessages(activeOrder); }
-    setSending(false);
+    setSendError(undefined);
+    try {
+      const { error: insertError } = await supabase.from("order_messages")
+        .insert({ order_id: orderId, sender_id: userId, message });
+      if (insertError) {
+        setSendError({ orderId, message: "Message not sent. Check the order status and your connection, then try again." });
+        return;
+      }
+      setDrafts((previous) => ({ ...previous, [orderId]: "" }));
+      if (refreshChat.current?.orderId === orderId) {
+        keepAtBottom.current = true;
+        await refreshChat.current.load();
+      }
+    } finally {
+      setSending(false);
+    }
   }
 
   const current = orders.find((order) => order.id === activeOrder);
-  const otherName = current
-    ? current.user_id === userId
-      ? peerNames[current.farmer_id || ""] || "Farmer"
-      : peerNames[current.user_id || ""] || current.shipping_name || "Buyer"
-    : "Choose an order";
+  const otherName = current ? participantName(current, userId, peerNames) : "Choose an order";
   const isClosed = orderIsClosed(current);
-  const lastOutgoingId = [...messages].reverse().find((item) => item.sender_id === userId)?.id;
+  const messages = thread?.messages || [];
+  const lastOutgoingId = messages.findLast((item) => item.sender_id === userId)?.id;
+  const searchTerm = search.trim().toLowerCase();
+  const filteredOrders = orders.filter((order) => (
+    `${participantName(order, userId, peerNames)} Order #${shortOrderReference(order)} ${order.order_code || ""} ${orderStatusLabel(order)}`
+      .toLowerCase().includes(searchTerm)
+  ));
 
-  return <main className="min-h-[100dvh] bg-[#F3F7F3] px-3 py-4 text-[#1E2A1F] sm:px-6 sm:py-7">
-    <div className="mx-auto max-w-6xl">
-      <div className="mb-4 flex items-center justify-between gap-3 sm:mb-6">
-        <div><p className="text-xs font-black uppercase tracking-[.16em] text-[#2F6B3B] sm:text-sm">GreenGuard marketplace</p><h1 className="mt-1 text-2xl font-black sm:text-3xl">Messages</h1></div>
-        <Link href="/" className="shrink-0 rounded-full border border-green-200 bg-white px-4 py-2.5 text-sm font-bold text-[#2F6B3B] sm:px-5 sm:py-3 sm:text-base">Back to store</Link>
-      </div>
-      {error && <div role="alert" className="mb-3 rounded-2xl bg-amber-50 p-3 text-sm font-semibold text-amber-900 sm:mb-4 sm:p-4">{error}</div>}
-      {loading ? <div className="rounded-3xl bg-white p-8">Loading conversations…</div> : !userId ? <div className="rounded-3xl bg-white p-8"><p>Sign in to open your order conversations.</p><Link className="mt-4 inline-block rounded-full bg-[#2F6B3B] px-6 py-3 font-bold text-white" href="/">Sign in</Link></div> : <div className="grid min-h-[calc(100dvh-8.5rem)] overflow-hidden rounded-3xl border border-green-100 bg-white shadow-lg md:min-h-[70vh] md:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="max-h-40 overflow-y-auto border-b border-green-100 md:max-h-none md:border-b-0 md:border-r">
-          <h2 className="sticky top-0 z-10 border-b border-green-100 bg-white px-4 py-3 text-base font-black sm:p-5 sm:text-lg">Order chats</h2>
-          {orders.length ? orders.map((order) => {
-            const participant = order.user_id === userId
-              ? peerNames[order.farmer_id || ""] || "Farmer"
-              : peerNames[order.user_id || ""] || order.shipping_name || "Buyer";
-            return <button key={order.id} onClick={() => setActiveOrder(order.id)} className={`block w-full border-b border-green-50 px-4 py-3 text-left transition hover:bg-green-50 sm:p-4 ${activeOrder === order.id ? "bg-[#EAF5EB]" : "bg-white"}`}>
-              <span className="block truncate font-bold">{participant}</span>
-              <span className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-600 sm:text-sm"><span>Order #{shortOrderReference(order)}</span><span className="truncate">{orderStatusLabel(order)}</span></span>
-            </button>;
-          }) : <p className="p-5 text-sm text-gray-600">Your order conversations will appear here.</p>}
-        </aside>
-        <section className="flex min-h-[calc(100dvh-18.5rem)] min-w-0 flex-col md:min-h-0">
-          <header className="flex items-center justify-between gap-3 border-b border-green-100 px-4 py-3 sm:px-5 sm:py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EAF5EB] text-lg font-black text-[#2F6B3B] sm:h-11 sm:w-11">{otherName.slice(0, 1).toUpperCase()}</div>
-              <div className="min-w-0"><h2 className="truncate font-black sm:text-lg">{otherName}</h2><p className="truncate text-xs text-gray-600 sm:text-sm">{current ? `Order #${shortOrderReference(current)} · ${orderStatusLabel(current)}` : "Select an order conversation"}</p></div>
-            </div>
-            {current && <span className={`shrink-0 rounded-full px-2.5 py-1.5 text-[10px] font-black leading-tight sm:px-3 sm:text-xs ${isClosed ? "bg-amber-100 text-amber-900" : "bg-green-100 text-green-800"}`}>{isClosed ? "CHAT CLOSED" : "CHAT OPEN"}</span>}
-          </header>
-          {current && <div className={`mx-3 mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm sm:mx-5 sm:mt-4 sm:rounded-2xl sm:px-4 ${isClosed ? "border border-amber-200 bg-amber-50 text-amber-950" : "border border-green-100 bg-[#F5FAF5] text-[#355D3A]"}`}>
-            <span aria-hidden="true">{isClosed ? "🔒" : "📦"}</span><span><strong>{orderStatusLabel(current)}.</strong> {isClosed ? "The order is complete; both people can read the chat but cannot send new messages." : "Messages are about this order."}</span>
-          </div>}
-          <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto bg-[#F7FAF7] px-3 py-4 sm:px-5 sm:py-5">
-            {messages.length ? messages.map((item) => {
-              const mine = item.sender_id === userId;
-              const isLastOutgoing = item.id === lastOutgoingId;
-              const time = messageTime(item.created_at);
-              return <div key={item.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 shadow-sm sm:max-w-[75%] sm:px-4 sm:py-3 ${mine ? "rounded-br-sm bg-[#2F6B3B] text-white" : "rounded-bl-sm border border-green-100 bg-white text-[#1E2A1F]"}`}>
-                  <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">{item.message}</p>
-                  <div className={`mt-1.5 flex items-center justify-end gap-1.5 text-[10px] ${mine ? "text-green-100" : "text-gray-500"}`}>
-                    {time && <span>{time}</span>}
-                    {mine && isLastOutgoing && <><span aria-hidden="true">·</span><span>{item.read_at ? "Seen" : seenReceiptsAvailable ? "Sent" : "Seen unavailable"}</span></>}
+  function openConversation(orderId: string) {
+    setActiveOrder(orderId);
+    setMobileChatOpen(true);
+    if (!desktop) requestAnimationFrame(() => backRef.current?.focus({ preventScroll: true }));
+  }
+
+  function showConversations() {
+    setMobileChatOpen(false);
+    requestAnimationFrame(() => conversationHeadingRef.current?.focus({ preventScroll: true }));
+  }
+
+  return (
+    <main ref={shellRef} className="flex h-[var(--chat-viewport-height,100dvh)] min-w-0 flex-col overflow-hidden bg-[#F3F7F3] px-3 pt-3 pb-[max(.75rem,env(safe-area-inset-bottom))] text-[#1E2A1F] sm:px-6 sm:py-5">
+      <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col">
+        <div className="mb-3 flex shrink-0 items-center justify-between gap-2 sm:mb-5 sm:gap-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-black uppercase tracking-wider text-[#2F6B3B] sm:text-sm">GreenGuard marketplace</p>
+            <h1 className="text-2xl leading-tight font-black sm:mt-1 sm:text-3xl">Messages</h1>
+          </div>
+          <Link href="/" className="flex min-h-11 shrink-0 items-center rounded-full border border-green-200 bg-white px-4 text-sm font-bold text-[#2F6B3B] hover:bg-green-50 focus-visible:outline-2 focus-visible:outline-[#2F6B3B] sm:px-5 sm:text-base">Back to store</Link>
+        </div>
+
+        {error && <div role="alert" className="mb-3 shrink-0 rounded-2xl bg-amber-50 p-3 text-sm font-semibold text-amber-900 sm:p-4">{error}</div>}
+        {loading ? (
+          <div role="status" className="rounded-3xl bg-white p-8">Loading conversations…</div>
+        ) : !userId ? (
+          <div className="rounded-3xl bg-white p-8">
+            <p>Sign in to open your order conversations.</p>
+            <Link className="mt-4 inline-block rounded-full bg-[#2F6B3B] px-6 py-3 font-bold text-white" href="/">Sign in</Link>
+          </div>
+        ) : (
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden rounded-2xl border border-green-100 bg-white shadow-lg sm:rounded-3xl md:grid-cols-[minmax(15rem,18rem)_minmax(0,1fr)]">
+            <aside aria-labelledby="orders-heading" className={`${mobileChatOpen ? "hidden" : "flex"} min-h-0 min-w-0 flex-col md:flex md:border-r md:border-green-100`}>
+              <div className="shrink-0 border-b border-green-100 px-4 py-3 sm:px-5 sm:py-4">
+                <h2 id="orders-heading" ref={conversationHeadingRef} tabIndex={-1} className="text-lg font-black">Order chats</h2>
+                {orders.length > 0 && (
+                  <input
+                    type="search"
+                    aria-label="Search order chats"
+                    placeholder="Search by name, order, or status"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    className="mt-2 min-h-11 w-full rounded-xl border border-green-200 bg-[#FAFCFA] px-3 text-base placeholder:text-gray-500 focus-visible:outline-2 focus-visible:outline-[#2F6B3B] md:text-sm"
+                  />
+                )}
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {filteredOrders.length > 0 ? filteredOrders.map((order) => (
+                  <button
+                    key={order.id}
+                    type="button"
+                    onClick={() => openConversation(order.id)}
+                    aria-current={visibleOrder === order.id ? "true" : undefined}
+                    title={order.order_code || undefined}
+                    className={`block w-full border-b border-green-50 border-l-4 py-3 pr-4 pl-3 text-left transition hover:bg-green-50 focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#2F6B3B] sm:py-4 ${visibleOrder === order.id ? "border-l-[#2F6B3B] bg-[#EAF5EB]" : "border-l-transparent bg-white"}`}
+                  >
+                    <span className="block truncate font-bold">{participantName(order, userId, peerNames)}</span>
+                    <span className="mt-1 flex items-center justify-between gap-2 text-sm text-gray-600">
+                      <span className="shrink-0">Order #{shortOrderReference(order)}</span>
+                      <span className="truncate">{orderStatusLabel(order)}</span>
+                    </span>
+                  </button>
+                )) : (
+                  <p className="px-5 py-6 leading-relaxed text-gray-600">
+                    {searchTerm ? "No conversations match your search." : "Your order conversations will appear here."}
+                  </p>
+                )}
+              </div>
+            </aside>
+
+            <section aria-labelledby="chat-heading" className={`${mobileChatOpen ? "flex" : "hidden"} min-h-0 min-w-0 flex-col md:flex`}>
+              <header className="flex shrink-0 items-center justify-between gap-2 border-b border-green-100 p-3 sm:gap-3 sm:px-5 sm:py-4">
+                <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                  <button ref={backRef} type="button" onClick={showConversations} className="flex min-h-11 shrink-0 items-center gap-1 rounded-xl bg-[#EAF5EB] px-3 text-sm font-bold text-[#2F6B3B] hover:bg-green-100 focus-visible:outline-2 focus-visible:outline-[#2F6B3B] md:hidden">
+                    <span aria-hidden="true">←</span> Chats
+                  </button>
+                  <div aria-hidden="true" className="hidden h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#EAF5EB] text-lg font-black text-[#2F6B3B] md:flex">{otherName.slice(0, 1).toUpperCase()}</div>
+                  <div className="min-w-0">
+                    <h2 id="chat-heading" className="truncate text-base font-black sm:text-lg" title={otherName}>{otherName}</h2>
+                    <p className="text-sm text-gray-600" title={current?.order_code}>
+                      {current ? `Order #${shortOrderReference(current)} · ${orderStatusLabel(current)}`: "Select an order conversation"}
+                    </p>
                   </div>
                 </div>
-              </div>;
-            }) : <div className="flex h-full min-h-48 flex-col items-center justify-center px-5 text-center text-gray-500">
-              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-[#EAF5EB] text-2xl text-[#2F6B3B]">✉</span>
-              <p className="mt-3 font-bold text-[#1E2A1F]">No messages yet</p><p className="mt-1 text-sm">{isClosed ? "This order is complete. The conversation is read-only." : "Send a message to start the conversation."}</p>
-            </div>}
+                {current && <span className={`hidden shrink-0 rounded-full px-3 py-1.5 text-xs font-black sm:inline-flex ${isClosed ? "bg-amber-100 text-amber-900" : "bg-green-100 text-green-800"}`}>{isClosed ? "Chat closed" : "Chat open"}</span>}
+              </header>
+
+              {current && isClosed && (
+                <p className="shrink-0 border-b border-amber-100 bg-amber-50 px-4 py-2 text-sm leading-snug text-amber-950 sm:px-5">
+                  This order is complete. You can read the chat history.
+                </p>
+              )}
+
+              <div
+                key={visibleOrder}
+                ref={listRef}
+                aria-label="Message history"
+                role="log"
+                tabIndex={0}
+                onScroll={(event) => {
+                  const list = event.currentTarget;
+                  keepAtBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight < 64;
+                }}
+                className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain bg-[#F7FAF7] p-3 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[#2F6B3B] sm:p-5"
+              >
+                {messages.length > 0 ? messages.map((item) => {
+                  const mine = item.sender_id === userId;
+                  const isLastOutgoing = item.id === lastOutgoingId;
+                  const time = messageTime(item.created_at);
+                  return (
+                    <div key={item.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                      <div className={`min-w-0 max-w-[88%] rounded-2xl px-3.5 py-2.5 shadow-sm sm:max-w-[75%] sm:px-4 sm:py-3 ${mine ? "rounded-br-sm bg-[#2F6B3B] text-white" : "rounded-bl-sm border border-green-100 bg-white text-[#1E2A1F]"}`}>
+                        <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-base leading-relaxed">{item.message}</p>
+                        <div className={`mt-1.5 flex flex-wrap items-center justify-end gap-1.5 text-xs ${mine ? "text-green-100" : "text-gray-600"}`}>
+                          {time && <time dateTime={item.created_at}>{time}</time>}
+                          {mine && isLastOutgoing && (
+                            <><span aria-hidden="true">·</span><span>{item.read_at ? "Seen" : thread?.receiptsAvailable ? "Sent" : "Seen unavailable"}</span></>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="grid min-h-full place-content-center px-3 py-4 text-center text-gray-600">
+                    {!current ? <p>Choose an order to see its messages.</p> : !thread ? <p>Loading messages…</p> : !thread.loadError ? (
+                      <>
+                        <p className="font-bold text-[#1E2A1F]">No messages yet</p>
+                        {!isClosed && <p className="mt-1 text-sm">Send a message to start the conversation.</p>}
+                      </>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              {thread?.loadError && (
+                <div className="flex shrink-0 flex-wrap items-center gap-x-3 border-t border-amber-100 bg-amber-50 px-4 py-2 text-sm text-amber-950 sm:px-5">
+                  <p role="alert" className="flex-1">{thread.loadError}</p>
+                  <button type="button" onClick={() => void refreshChat.current?.load()} className="min-h-11 rounded-lg px-3 font-bold underline focus-visible:outline-2">Retry</button>
+                </div>
+              )}
+              {sendError?.orderId === visibleOrder && (
+                <p role="alert" className="shrink-0 bg-amber-50 px-4 py-2 text-sm text-amber-950 sm:px-5">{sendError.message}</p>
+              )}
+              {current && !isClosed && !thread?.loadError && (
+                <form onSubmit={sendMessage} className="flex shrink-0 gap-2 border-t border-green-100 bg-white p-3 sm:gap-3 sm:p-4">
+                  <input
+                    aria-label="Message"
+                    value={draft}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setDrafts((previous) => ({ ...previous, [activeOrder]: value }));
+                    }}
+                    disabled={!thread}
+                    readOnly={sending}
+                    placeholder={`Message ${otherName}…`}
+                    className="min-h-12 min-w-0 flex-1 rounded-2xl border border-green-200 bg-[#FAFCFA] px-3 text-base text-[#1E2A1F] placeholder:text-gray-500 focus-visible:outline-2 focus-visible:outline-[#2F6B3B] sm:px-4"
+                  />
+                  <button type="submit" disabled={!thread || !draft.trim() || sending} className="min-h-12 shrink-0 rounded-2xl bg-[#2F6B3B] px-4 font-black text-white hover:bg-[#244D2B] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2F6B3B] disabled:opacity-50 sm:px-6">{sending ? "Sending…" : "Send"}</button>
+                </form>
+              )}
+            </section>
           </div>
-          {!isClosed && <form onSubmit={sendMessage} className="flex gap-2 border-t border-green-100 bg-white p-3 sm:gap-3 sm:p-4">
-            <input value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!activeOrder || sending} placeholder={`Message ${otherName}…`} className="min-w-0 flex-1 rounded-full border border-green-200 bg-[#FAFCFA] px-4 py-3 text-[#1E2A1F] placeholder:text-gray-500 outline-none focus:border-[#2F6B3B] sm:px-5"/>
-            <button disabled={!activeOrder || !draft.trim() || sending} className="shrink-0 rounded-full bg-[#2F6B3B] px-5 py-3 font-black text-white transition hover:bg-[#1E2A1F] disabled:opacity-50 sm:px-6">{sending ? "…" : "Send"}</button>
-          </form>}
-        </section>
-      </div>}
-    </div>
-  </main>;
+        )}
+      </div>
+    </main>
+  );
 }

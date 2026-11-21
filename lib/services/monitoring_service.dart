@@ -1,15 +1,12 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HealthLogSaveResult {
-  const HealthLogSaveResult({
-    required this.success,
-    this.error,
-    this.record,
-  });
+  const HealthLogSaveResult({required this.success, this.error, this.record});
 
   final bool success;
   final String? error;
@@ -187,46 +184,31 @@ class MonitoringService {
   //
   // ============================================================
 
-  Future<String> createScanSession() async {
-    final user =
-        _supabase.auth.currentUser;
+  Future<String> createScanSession({DateTime? startedAt}) async {
+    final user = _supabase.auth.currentUser;
 
     if (user == null) {
-      throw Exception(
-        'No logged-in farmer account.',
-      );
+      throw Exception('No logged-in farmer account.');
     }
 
     try {
-      final dynamic data =
-          await _supabase
-              .from(
-                'scan_sessions',
-              )
-              .insert({
-                'user_id':
-                    user.id,
-                'started_at':
-                    DateTime.now()
-                        .toIso8601String(),
-                'status':
-                    'active',
-              })
-              .select(
-                'id',
-              )
-              .single();
+      final dynamic data = await _supabase
+          .from('scan_sessions')
+          .insert({
+            'user_id': user.id,
+            'started_at': (startedAt ?? DateTime.now())
+                .toUtc()
+                .toIso8601String(),
+            'status': 'active',
+          })
+          .select('id')
+          .single();
 
-      return data['id']
-          .toString();
+      return data['id'].toString();
     } on PostgrestException catch (e) {
-      throw Exception(
-        'Database error: ${e.message}',
-      );
+      throw Exception('Database error: ${e.message}');
     } catch (e) {
-      throw Exception(
-        'Unable to start scan session: $e',
-      );
+      throw Exception('Unable to start scan session: $e');
     }
   }
 
@@ -234,69 +216,57 @@ class MonitoringService {
   // SAVE ONE LETTUCE HEALTH LOG
   // ============================================================
 
-  Future<HealthLogSaveResult>
-      saveHealthLog({
+  Future<HealthLogSaveResult> saveHealthLog({
     required String diseaseName,
-    required double confidence,
-    String location =
-        'Lapu-Lapu City, Cebu',
-    String deviceId =
-        'GreenGuard-CAM-01',
+    required double? confidence,
+    String? location,
+    String deviceId = 'GreenGuard-CAM-01',
     double? temperature,
     String? weatherCondition,
     String? imageUrl,
-
-    // Connect this lettuce to a scan session.
     String? scanSessionId,
+    String? scanCaptureId,
+    DateTime? capturedAt,
+    Map<String, dynamic> report = const {},
   }) async {
-    final user =
-        _supabase.auth.currentUser;
+    final user = _supabase.auth.currentUser;
 
     if (user == null) {
       return const HealthLogSaveResult(
         success: false,
-        error:
-            'No logged-in farmer account.',
+        error: 'No logged-in farmer account.',
       );
     }
 
-    final DateTime now =
-        DateTime.now();
+    final now = DateTime.now().toUtc().toIso8601String();
 
-    final Map<String, dynamic>
-        payload = {
-      'user_id':
-          user.id,
-
-      'disease_name':
-          diseaseName.trim(),
-
-      'confidence_score':
-          confidence,
-
-      'location':
-          location,
-
-      'device_id':
-          deviceId,
-
-      'captured_at':
-          now.toIso8601String(),
-
-      'created_at':
-          now.toIso8601String(),
+    final Map<String, dynamic> payload = {
+      'user_id': user.id,
+      'disease_name': diseaseName.trim(),
+      'confidence_score': confidence,
+      if (location != null && location.trim().isNotEmpty)
+        'location': location.trim(),
+      'device_id': deviceId,
+      'captured_at': capturedAt?.toUtc().toIso8601String() ?? now,
+      'created_at': now,
+      'id': ?scanCaptureId,
+      for (final field in [
+        'pathogen_name',
+        'disease_description',
+        'pathogen_description',
+        'treatment_recommendations',
+        'selling_recommendation',
+        'selling_explanation',
+      ])
+        if (report[field] != null) field: report[field],
     };
 
     // ==========================================================
     // SCAN SESSION
     // ==========================================================
 
-    if (scanSessionId != null &&
-        scanSessionId
-            .trim()
-            .isNotEmpty) {
-      payload['scan_session_id'] =
-          scanSessionId.trim();
+    if (scanSessionId != null && scanSessionId.trim().isNotEmpty) {
+      payload['scan_session_id'] = scanSessionId.trim();
     }
 
     // ==========================================================
@@ -304,64 +274,60 @@ class MonitoringService {
     // ==========================================================
 
     if (temperature != null) {
-      payload['temperature'] =
-          temperature;
+      payload['temperature'] = temperature;
     }
 
     // ==========================================================
     // WEATHER
     // ==========================================================
 
-    if (weatherCondition != null &&
-        weatherCondition
-            .trim()
-            .isNotEmpty) {
-      payload['weather_condition'] =
-          weatherCondition.trim();
+    if (weatherCondition != null && weatherCondition.trim().isNotEmpty) {
+      payload['weather_condition'] = weatherCondition.trim();
     }
 
     // ==========================================================
     // LETTUCE PHOTO
     // ==========================================================
 
-    if (imageUrl != null &&
-        imageUrl
-            .trim()
-            .isNotEmpty) {
-      payload['image_url'] =
-          imageUrl.trim();
+    if (imageUrl != null && imageUrl.trim().isNotEmpty) {
+      payload['image_url'] = imageUrl.trim();
     }
 
     try {
-      final dynamic data =
-          await _supabase
-              .from(
-                'diagnostic_logs',
-              )
-              .insert(
-                payload,
-              )
-              .select()
-              .single();
+      final dynamic data = await _supabase
+          .from('diagnostic_logs')
+          .insert(payload)
+          .select()
+          .single();
 
       return HealthLogSaveResult(
         success: true,
-        record:
-            Map<String, dynamic>.from(
-          data as Map,
-        ),
+        record: Map<String, dynamic>.from(data as Map),
       );
     } on PostgrestException catch (e) {
+      if (e.code == '23505' && scanCaptureId != null) {
+        try {
+          final existing = await _supabase
+              .from('diagnostic_logs')
+              .select()
+              .eq('user_id', user.id)
+              .eq('id', scanCaptureId)
+              .maybeSingle();
+          if (existing != null) {
+            return HealthLogSaveResult(success: true, record: existing);
+          }
+        } catch (error) {
+          debugPrint('Unable to recover saved scan: $error');
+        }
+      }
       return HealthLogSaveResult(
         success: false,
-        error:
-            'Database error: ${e.message}',
+        error: 'Database error: ${e.message}',
       );
     } catch (e) {
       return HealthLogSaveResult(
         success: false,
-        error:
-            'Health log save error: $e',
+        error: 'Health log save error: $e',
       );
     }
   }
@@ -369,14 +335,8 @@ class MonitoringService {
   // ============================================================
   // COMPLETE SCAN SESSION
   // ============================================================
-  //
-  // Runs when farmer presses:
-  //
-  // DONE SCANNING
-  //
-  // ============================================================
 
-  Future<void> completeScanSession({
+  Future<DateTime> completeScanSession({
     required String sessionId,
     required int totalScanned,
     required int healthyCount,
@@ -388,99 +348,65 @@ class MonitoringService {
     required double powderyAverageConfidence,
     required double septoriaAverageConfidence,
   }) async {
-    final user =
-        _supabase.auth.currentUser;
+    final user = _supabase.auth.currentUser;
 
     if (user == null) {
-      throw Exception(
-        'No logged-in farmer account.',
-      );
+      throw Exception('No logged-in farmer account.');
     }
 
-    final int notHealthyCount =
-        downyCount +
-        powderyCount +
-        septoriaCount;
+    final int notHealthyCount = downyCount + powderyCount + septoriaCount;
 
-    final double healthyPercentage =
-        totalScanned == 0
-            ? 0.0
-            : healthyCount /
-                totalScanned *
-                100.0;
+    final double healthyPercentage = totalScanned == 0
+        ? 0.0
+        : healthyCount / totalScanned * 100.0;
 
-    final double notHealthyPercentage =
-        totalScanned == 0
-            ? 0.0
-            : notHealthyCount /
-                totalScanned *
-                100.0;
+    final double notHealthyPercentage = totalScanned == 0
+        ? 0.0
+        : notHealthyCount / totalScanned * 100.0;
 
     try {
-      await _supabase
-          .from(
-            'scan_sessions',
-          )
+      final completedAt = DateTime.now().toUtc();
+      final updated = await _supabase
+          .from('scan_sessions')
           .update({
-            'completed_at':
-                DateTime.now()
-                    .toIso8601String(),
-
-            'total_scanned':
-                totalScanned,
-
-            'healthy_count':
-                healthyCount,
-
-            'not_healthy_count':
-                notHealthyCount,
-
-            'downy_mildew_count':
-                downyCount,
-
-            'powdery_mildew_count':
-                powderyCount,
-
-            'septoria_blight_count':
-                septoriaCount,
-
-            'healthy_percentage':
-                healthyPercentage,
-
-            'not_healthy_percentage':
-                notHealthyPercentage,
-
-            'healthy_avg_confidence':
-                healthyAverageConfidence,
-
-            'downy_avg_confidence':
-                downyAverageConfidence,
-
-            'powdery_avg_confidence':
-                powderyAverageConfidence,
-
-            'septoria_avg_confidence':
-                septoriaAverageConfidence,
-
-            'status':
-                'completed',
+            'completed_at': completedAt.toIso8601String(),
+            'total_scanned': totalScanned,
+            'healthy_count': healthyCount,
+            'not_healthy_count': notHealthyCount,
+            'downy_mildew_count': downyCount,
+            'powdery_mildew_count': powderyCount,
+            'septoria_blight_count': septoriaCount,
+            'healthy_percentage': healthyPercentage,
+            'not_healthy_percentage': notHealthyPercentage,
+            'healthy_avg_confidence': healthyAverageConfidence,
+            'downy_avg_confidence': downyAverageConfidence,
+            'powdery_avg_confidence': powderyAverageConfidence,
+            'septoria_avg_confidence': septoriaAverageConfidence,
+            'status': 'completed',
           })
-          .eq(
-            'id',
-            sessionId,
-          )
-          .eq(
-            'user_id',
-            user.id,
-          );
+          .eq('id', sessionId)
+          .eq('user_id', user.id)
+          .eq('status', 'active')
+          .select('completed_at')
+          .maybeSingle();
+      if (updated != null) return completedAt;
+
+      final completed = await _supabase
+          .from('scan_sessions')
+          .select('completed_at')
+          .eq('id', sessionId)
+          .eq('user_id', user.id)
+          .eq('status', 'completed')
+          .maybeSingle();
+      final previous = DateTime.tryParse(
+        completed?['completed_at']?.toString() ?? '',
+      );
+      if (previous != null) return previous;
+      throw StateError('The scan session could not be found.');
     } on PostgrestException catch (e) {
-      throw Exception(
-        'Database error: ${e.message}',
-      );
+      throw Exception('Database error: ${e.message}');
     } catch (e) {
-      throw Exception(
-        'Unable to complete scan session: $e',
-      );
+      throw Exception('Unable to complete scan session: $e');
     }
   }
 
@@ -491,23 +417,15 @@ class MonitoringService {
   Future<bool> saveHealthLogDemo({
     required String diseaseName,
     required double confidence,
-    String location =
-        'Lapu-Lapu City, Cebu',
+    String location = 'Lapu-Lapu City, Cebu',
   }) async {
-    final HealthLogSaveResult result =
-        await saveHealthLog(
-      diseaseName:
-          diseaseName,
-      confidence:
-          confidence,
-      temperature:
-          26.5,
-      weatherCondition:
-          'Clear',
-      location:
-          location,
-      deviceId:
-          'DEMO_MODE',
+    final HealthLogSaveResult result = await saveHealthLog(
+      diseaseName: diseaseName,
+      confidence: confidence,
+      temperature: 26.5,
+      weatherCondition: 'Clear',
+      location: location,
+      deviceId: 'DEMO_MODE',
     );
 
     return result.success;
@@ -517,45 +435,25 @@ class MonitoringService {
   // GET ALL FARMER HEALTH LOGS
   // ============================================================
 
-  Future<List<Map<String, dynamic>>>
-      fetchHealthLogs() async {
-    final user =
-        _supabase.auth.currentUser;
+  Future<List<Map<String, dynamic>>> fetchHealthLogs() async {
+    final user = _supabase.auth.currentUser;
 
     if (user == null) {
-      throw Exception(
-        'No logged-in farmer account.',
-      );
+      throw Exception('No logged-in farmer account.');
     }
 
     try {
-      final dynamic data =
-          await _supabase
-              .from(
-                'diagnostic_logs',
-              )
-              .select('*')
-              .eq(
-                'user_id',
-                user.id,
-              )
-              .order(
-                'created_at',
-                ascending: false,
-              );
+      final dynamic data = await _supabase
+          .from('diagnostic_logs')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', ascending: false);
 
-      return List<Map<String, dynamic>>
-          .from(
-        data as List,
-      );
+      return List<Map<String, dynamic>>.from(data as List);
     } on PostgrestException catch (e) {
-      throw Exception(
-        'Database error: ${e.message}',
-      );
+      throw Exception('Database error: ${e.message}');
     } catch (e) {
-      throw Exception(
-        'Unable to load health logs: $e',
-      );
+      throw Exception('Unable to load health logs: $e');
     }
   }
 
@@ -563,51 +461,34 @@ class MonitoringService {
   // GET HEALTH LOGS FROM ONE SESSION
   // ============================================================
 
-  Future<List<Map<String, dynamic>>>
-      fetchSessionHealthLogs(
+  Future<List<Map<String, dynamic>>> fetchSessionHealthLogs(
     String sessionId,
   ) async {
-    final user =
-        _supabase.auth.currentUser;
+    final user = _supabase.auth.currentUser;
 
     if (user == null) {
-      throw Exception(
-        'No logged-in farmer account.',
-      );
+      throw Exception('No logged-in farmer account.');
     }
 
     try {
-      final dynamic data =
-          await _supabase
-              .from(
-                'diagnostic_logs',
-              )
-              .select('*')
-              .eq(
-                'user_id',
-                user.id,
-              )
-              .eq(
-                'scan_session_id',
-                sessionId,
-              )
-              .order(
-                'captured_at',
-                ascending: true,
-              );
-
-      return List<Map<String, dynamic>>
-          .from(
-        data as List,
-      );
+      final records = <Map<String, dynamic>>[];
+      const pageSize = 250;
+      for (var from = 0; ; from += pageSize) {
+        final page = await _supabase
+            .from('diagnostic_logs')
+            .select()
+            .eq('user_id', user.id)
+            .eq('scan_session_id', sessionId)
+            .order('captured_at', ascending: true)
+            .order('id', ascending: true)
+            .range(from, from + pageSize - 1);
+        records.addAll(page);
+        if (page.length < pageSize) return records;
+      }
     } on PostgrestException catch (e) {
-      throw Exception(
-        'Database error: ${e.message}',
-      );
+      throw Exception('Database error: ${e.message}');
     } catch (e) {
-      throw Exception(
-        'Unable to load scan session: $e',
-      );
+      throw Exception('Unable to load scan session: $e');
     }
   }
 }

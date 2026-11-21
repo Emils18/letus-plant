@@ -21,6 +21,9 @@ class _WeatherScreenState extends State<WeatherScreen> {
   bool _isLoading = true;
   String _locationSource = '';
   Timer? _weatherRefreshTimer;
+  StreamSubscription<Position>? _movement;
+  bool _requesting = false;
+  String? _error;
 
   @override
   void initState() {
@@ -32,107 +35,98 @@ class _WeatherScreenState extends State<WeatherScreen> {
   @override
   void dispose() {
     _weatherRefreshTimer?.cancel();
+    _movement?.cancel();
     super.dispose();
   }
 
-  /// Main method: Try farmer location → GPS fallback
   Future<void> _loadWeatherWithFallback({bool showSpinner = true}) async {
-    if (showSpinner && mounted) setState(() => _isLoading = true);
-
-    String? locationToUse;
-
-    // 1. Try to get location from farmer's products or health logs
-    final user = _supabase.auth.currentUser;
-    if (user != null) {
-      // Try Products first
-      Map<String, dynamic>? product;
+    if (_requesting || !mounted) return;
+    _requesting = true;
+    if (showSpinner && data == null) setState(() => _isLoading = true);
+    try {
+      String? query;
       try {
-        product = await _supabase
-            .from('products')
-            .select('location')
-            .eq('farmer_id', user.id)
-            .not('location', 'is', null)
-            .order('created_at', ascending: false)
-            .limit(1)
-            .maybeSingle();
-      } catch (e) {
-        debugPrint('Weather product location lookup failed: $e');
+        query = await _currentCoordinates(requestPermission: showSpinner);
+      } catch (error) {
+        debugPrint('Current location unavailable: $error');
       }
-
-      if (product != null && product['location'] != null) {
-        locationToUse = product['location'].toString().trim();
-        _locationSource = 'From your products';
+      final source = query == null ? 'Saved farm location' : 'Current location';
+      if (query != null && mounted) {
+        _movement ??= Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.medium,
+            distanceFilter: 1000,
+          ),
+        ).listen(
+          (_) {
+            if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+              unawaited(_loadWeatherWithFallback(showSpinner: false));
+            }
+          },
+          onError: (Object error) => debugPrint('Weather location updates stopped: $error'),
+        );
       }
-
-      // If still no location, try Health Logs
-      if (locationToUse == null || locationToUse.isEmpty) {
-        Map<String, dynamic>? log;
-        try {
-          log = await _supabase
-            .from('diagnostic_logs')
-            .select('location')
-            .eq('user_id', user.id)
-            .not('location', 'is', null)
-            .order('created_at', ascending: false)
-            .limit(1)
-            .maybeSingle();
-        } catch (e) {
-          debugPrint('Weather health log location lookup failed: $e');
-        }
-
-        if (log != null && log['location'] != null) {
-          locationToUse = log['location'].toString().trim();
-          _locationSource = 'From your health logs';
-        }
+      query ??= await _savedLocation();
+      if (query == null) {
+        if (mounted) setState(() {
+          data = null;
+          _error = 'Allow location access and switch on GPS, then tap Refresh.';
+        });
+        return;
       }
+      final result = await _service.fetchWeather(location: query);
+      if (!mounted) return;
+      setState(() {
+        data = result;
+        _locationSource = source;
+        _lastUpdated = DateTime.tryParse(result['updated_at']?.toString() ?? '');
+        _error = null;
+      });
+    } catch (error) {
+      debugPrint('Weather request failed: $error');
+      if (mounted) setState(() {
+        data = null;
+        _error = 'Could not load weather. Check your connection and try again.';
+      });
+    } finally {
+      _requesting = false;
+      if (mounted) setState(() => _isLoading = false);
     }
-
-    // 2. GPS Fallback if no farmer location found
-    if (locationToUse == null || locationToUse.isEmpty) {
-      try {
-        final position = await _getCurrentPosition();
-        if (position != null) {
-          locationToUse = '${position.latitude},${position.longitude}';
-          _locationSource = 'Using your current location (GPS)';
-        }
-      } catch (e) {
-        debugPrint('GPS Error: $e');
-      }
-    }
-
-    // 3. Load weather
-    final result = await _service.fetchWeather(location: locationToUse);
-    if (!mounted) return;
-    setState(() {
-      data = result;
-      _lastUpdated = DateTime.tryParse(result['updated_at']?.toString() ?? '') ?? DateTime.now();
-      _isLoading = false;
-    });
   }
 
-  /// Get current device GPS location
-  Future<Position?> _getCurrentPosition() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      await Geolocator.openLocationSettings();
+  Future<String?> _currentCoordinates({required bool requestPermission}) async {
+    if (!await Geolocator.isLocationServiceEnabled()) return null;
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied && requestPermission) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission != LocationPermission.always && permission != LocationPermission.whileInUse) {
       return null;
     }
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.medium,
+        timeLimit: Duration(seconds: 12),
+      ),
+    );
+    return '${position.latitude.toStringAsFixed(3)},${position.longitude.toStringAsFixed(3)}';
+  }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        return null;
+  Future<String?> _savedLocation() async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return null;
+    for (final source in [('products', 'farmer_id'), ('diagnostic_logs', 'user_id')]) {
+      final rows = await _supabase.from(source.$1).select('location')
+          .eq(source.$2, user.id).not('location', 'is', null)
+          .order('created_at', ascending: false).limit(10);
+      for (final row in rows) {
+        final location = row['location']?.toString().trim() ?? '';
+        if (location.isNotEmpty && !['n/a', 'unknown', 'local farm'].contains(location.toLowerCase())) {
+          return location;
+        }
       }
     }
-
-    if (permission == LocationPermission.deniedForever) {
-      return null;
-    }
-
-    return await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
+    return null;
   }
 
   @override
@@ -158,7 +152,13 @@ class _WeatherScreenState extends State<WeatherScreen> {
         child: _isLoading
             ? const Center(child: CircularProgressIndicator(color: Color(0xFF2F6B3B)))
             : data == null
-                ? const Center(child: Text('Unable to load weather'))
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(24),
+                    children: [Text(_error ?? 'Weather is unavailable.'),
+                      const SizedBox(height: 12),
+                      OutlinedButton(onPressed: _loadWeatherWithFallback, child: const Text('Try again'))],
+                  )
                 : SingleChildScrollView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     padding: const EdgeInsets.all(24),
@@ -196,6 +196,8 @@ class _WeatherScreenState extends State<WeatherScreen> {
                                 data!['condition'] ?? 'N/A',
                                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white70),
                               ),
+                              Text(data!['location'] ?? '', textAlign: TextAlign.center,
+                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
                               if (_locationSource.isNotEmpty)
                                 Padding(
                                   padding: const EdgeInsets.only(top: 8),
@@ -234,6 +236,12 @@ class _WeatherScreenState extends State<WeatherScreen> {
                         ),
 
                         const SizedBox(height: 32),
+
+                        if (data!['forecast'] case final String forecast)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 20),
+                            child: Text('Today: $forecast', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                          ),
 
                         // Agricultural Impact
                         const Text(

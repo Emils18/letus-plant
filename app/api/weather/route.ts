@@ -16,58 +16,42 @@ export async function GET(request: NextRequest) {
     request.nextUrl.searchParams.get("location") || ""
   ).trim();
 
-  // Priority locations for Lapu-Lapu / Cebu
-  const locationsToTry = [
-    requestedLocation,
-    "Lapu-Lapu City, Cebu, Philippines",
-    "Lapu-Lapu City",
-    "Cebu City, Philippines",
-    "Mandaue City, Cebu",
-    "Cebu, Philippines",
-  ].filter(Boolean);
-
-  let lastError = "Unable to load weather data.";
-
-  for (const location of locationsToTry) {
-    try {
-      const url = new URL("https://api.weatherapi.com/v1/forecast.json");
-      url.searchParams.set("key", apiKey);
-      url.searchParams.set("q", location);
-      url.searchParams.set("days", "1");
-      url.searchParams.set("aqi", "no");
-      url.searchParams.set("alerts", "no");
-
-      const response = await fetch(url.toString(), { cache: "no-store" });
-
-      const data = await response.json();
-
-      if (!response.ok || data.error) {
-        lastError = data.error?.message || `Failed for ${location}`;
-        continue;
-      }
-
-      const fullText = data.current?.condition?.text || "Unknown";
-
-      return json({
-        success: true,
-        data: {
-          location: `${data.location?.name || "Lapu-Lapu City"}, Cebu`,
-          temperature: Number(data.current?.temp_c || 0),
-          condition: fullText.split(",")[0].trim(), // e.g. "Clear", "Cloudy"
-          description: fullText,
-          humidity: Number(data.current?.humidity || 0),
-          windSpeed: Number(data.current?.wind_kph || 0) / 3.6, // to m/s
-          rainChance: Number(data.forecast?.forecastday?.[0]?.day?.daily_chance_of_rain || 0),
-          updatedAt: data.current?.last_updated || new Date().toISOString(),
-        },
-      });
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown error";
-    }
+  if (!requestedLocation || requestedLocation.length > 160) {
+    return json({ success: false, message: "Choose a location to see weather." }, 400);
   }
 
-  return json({
-    success: false,
-    message: lastError,
-  }, 502);
+  try {
+    const url = new URL("https://api.weatherapi.com/v1/forecast.json");
+    url.searchParams.set("key", process.env.WEATHER_API_KEY || apiKey);
+    url.searchParams.set("q", requestedLocation);
+    url.searchParams.set("days", "1");
+    url.searchParams.set("aqi", "no");
+    url.searchParams.set("alerts", "no");
+    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+    const data = await response.json();
+    const current = data.current;
+    const forecast = data.forecast?.forecastday?.[0]?.day;
+    if (!response.ok || !data.location?.name || !current?.condition?.text ||
+        ![current.temp_c, current.humidity, current.wind_kph,
+          forecast?.daily_chance_of_rain, forecast?.mintemp_c, forecast?.maxtemp_c].every(Number.isFinite)) {
+      return json({ success: false, message: "Weather data is unavailable for this location." }, 502);
+    }
+
+    return json({
+      success: true,
+      data: {
+        location: [...new Set([data.location.name, data.location.region].filter(Boolean))].join(", "),
+        temperature: current.temp_c,
+        condition: current.condition.text,
+        description: current.condition.text,
+        humidity: current.humidity,
+        windSpeed: current.wind_kph / 3.6,
+        rainChance: forecast.daily_chance_of_rain,
+        forecast: `${forecast.mintemp_c}°C to ${forecast.maxtemp_c}°C · ${forecast.condition?.text || ""}`.replace(/ · $/, ""),
+        updatedAt: current.last_updated || null,
+      },
+    });
+  } catch {
+    return json({ success: false, message: "The weather service could not be reached. Try again shortly." }, 502);
+  }
 }
