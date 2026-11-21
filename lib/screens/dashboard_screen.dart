@@ -6,6 +6,7 @@ import 'notifications_screen.dart';
 import '../services/auth_service.dart';
 import '../services/order_service.dart';
 import 'order_detail_screen.dart';
+import 'messages_screen.dart';
 import 'scan_mode_screen.dart';
 import 'sell_crop_screen.dart';
 
@@ -49,6 +50,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       MaterialPageRoute<void>(builder: (_) => OrderDetailScreen(order: order)),
     );
     if (mounted) _refreshOrders();
+  }
+
+  Future<void> _openMessages() async {
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute<void>(builder: (_) => const MessagesScreen()),
+    );
   }
 
   Future<void> _openNotificationsAndFocusOrder() async {
@@ -261,6 +269,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
                                 Row(
                                   children: [
+                                      Container(
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(17),
+                                        ),
+                                        child: IconButton(
+                                          tooltip: 'Messages',
+                                          onPressed: _openMessages,
+                                          icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.white, size: 27),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
                                     FutureBuilder<int>(
                                       future: _loadUnreadNotifications(),
                                       builder: (context, snapshot) {

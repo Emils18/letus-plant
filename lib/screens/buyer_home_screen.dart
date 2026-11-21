@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import '../services/order_service.dart';
 import '../services/product_service.dart';
+import 'messages_screen.dart';
 import 'shared/profile_screen.dart';
 
 class BuyerHomeScreen extends StatefulWidget {
@@ -640,6 +641,14 @@ Future<_CheckoutInfo?> _showCheckoutDialog() {
           ),
         ),
         actions: [
+          IconButton(
+            tooltip: 'Messages',
+            onPressed: () => Navigator.push<void>(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const MessagesScreen()),
+            ),
+            icon: const Icon(Icons.chat_bubble_outline_rounded),
+          ),
           IconButton(
             onPressed: _logout,
             icon: const Icon(Icons.logout_rounded),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/order_service.dart';
+import 'order_chat_screen.dart';
 
 class OrderDetailScreen extends StatefulWidget {
   final Map<String, dynamic> order;
@@ -128,6 +129,26 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
               address: address,
               city: city,
               postalCode: postalCode,
+            ),
+
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => Navigator.push<void>(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => OrderChatScreen(order: order, peerName: customer),
+                  ),
+                ),
+                icon: const Icon(Icons.chat_bubble_outline_rounded),
+                label: Text('Message $customer'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF2F6B3B),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
             ),
 
             const SizedBox(height: 24),

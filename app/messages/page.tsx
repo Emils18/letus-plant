@@ -22,6 +22,7 @@ type Message = {
   created_at: string;
   read_at?: string | null;
 };
+type MessagePreview = Pick<Message, "message" | "created_at">;
 
 const terminalStatuses = new Set(["delivered", "received", "completed"]);
 
@@ -53,10 +54,17 @@ function messageTime(value: string) {
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+function previewTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
 export default function MessagesPage() {
   const [userId, setUserId] = useState("");
   const [orders, setOrders] = useState<Order[]>([]);
   const [peerNames, setPeerNames] = useState<Record<string, string>>({});
+  const [previews, setPreviews] = useState<Record<string, MessagePreview>>({});
   const [activeOrder, setActiveOrder] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -93,6 +101,8 @@ export default function MessagesPage() {
 
     const loadedMessages = (data || []) as Message[];
     setMessages(loadedMessages);
+    const latest = loadedMessages.at(-1);
+    if (latest) setPreviews((previous) => ({ ...previous, [orderId]: { message: latest.message, created_at: latest.created_at } }));
     setSeenReceiptsAvailable(receiptsAvailable);
     setError(receiptsAvailable ? "" : "Seen receipts need the chat read receipts SQL update in Supabase.");
     requestAnimationFrame(() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" }));
@@ -121,6 +131,18 @@ export default function MessagesPage() {
       if (orderError) { setError("Could not load your orders. Please retry."); setLoading(false); return; }
       const available = (data || []) as Order[];
       setOrders(available);
+
+      void Promise.all(available.map(async (order) => {
+        const { data: latest } = await supabase.from("order_messages")
+          .select("message, created_at")
+          .eq("order_id", order.id)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        return latest ? [order.id, latest as MessagePreview] as const : null;
+      })).then((latestMessages) => {
+        if (alive) setPreviews(Object.fromEntries(latestMessages.filter((item): item is NonNullable<typeof item> => item !== null)));
+      });
 
       const counterpartIds = [...new Set(available
         .map((order) => order.user_id === user.id ? order.farmer_id : order.user_id)
@@ -220,20 +242,23 @@ export default function MessagesPage() {
         <Link href="/" className="shrink-0 rounded-full border border-green-200 bg-white px-4 py-2.5 text-sm font-bold text-[#2F6B3B] sm:px-5 sm:py-3 sm:text-base">Back to store</Link>
       </div>
       {error && <div role="alert" className="mb-3 rounded-2xl bg-amber-50 p-3 text-sm font-semibold text-amber-900 sm:mb-4 sm:p-4">{error}</div>}
-      {loading ? <div className="rounded-3xl bg-white p-8">Loading conversations…</div> : !userId ? <div className="rounded-3xl bg-white p-8"><p>Sign in to open your order conversations.</p><Link className="mt-4 inline-block rounded-full bg-[#2F6B3B] px-6 py-3 font-bold text-white" href="/">Sign in</Link></div> : <div className="grid min-h-[calc(100dvh-8.5rem)] overflow-hidden rounded-3xl border border-green-100 bg-white shadow-lg md:min-h-[70vh] md:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="max-h-40 overflow-y-auto border-b border-green-100 md:max-h-none md:border-b-0 md:border-r">
-          <h2 className="sticky top-0 z-10 border-b border-green-100 bg-white px-4 py-3 text-base font-black sm:p-5 sm:text-lg">Order chats</h2>
+      {loading ? <div className="rounded-3xl bg-white p-8">Loading conversations…</div> : !userId ? <div className="rounded-3xl bg-white p-8"><p>Sign in to open your order conversations.</p><Link className="mt-4 inline-block rounded-full bg-[#2F6B3B] px-6 py-3 font-bold text-white" href="/">Sign in</Link></div> : <div className="grid h-[calc(100dvh-8.5rem)] min-h-[560px] max-h-[900px] grid-rows-[170px_minmax(0,1fr)] overflow-hidden rounded-3xl border border-green-100 bg-white shadow-lg md:grid-rows-1 md:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col overflow-hidden border-b border-green-100 md:border-b-0 md:border-r">
+          <div className="shrink-0 border-b border-green-100 bg-white px-4 py-3 sm:p-5"><h2 className="text-base font-black sm:text-lg">Conversations</h2><p className="mt-0.5 text-xs text-gray-500">Your order chats</p></div><div className="min-h-0 flex-1 overflow-y-auto">
           {orders.length ? orders.map((order) => {
             const participant = order.user_id === userId
               ? peerNames[order.farmer_id || ""] || "Farmer"
               : peerNames[order.user_id || ""] || order.shipping_name || "Buyer";
-            return <button key={order.id} onClick={() => setActiveOrder(order.id)} className={`block w-full border-b border-green-50 px-4 py-3 text-left transition hover:bg-green-50 sm:p-4 ${activeOrder === order.id ? "bg-[#EAF5EB]" : "bg-white"}`}>
-              <span className="block truncate font-bold">{participant}</span>
-              <span className="mt-1 flex items-center justify-between gap-2 text-xs text-gray-600 sm:text-sm"><span>Order #{shortOrderReference(order)}</span><span className="truncate">{orderStatusLabel(order)}</span></span>
+            const preview = previews[order.id];
+            return <button key={order.id} onClick={() => setActiveOrder(order.id)} aria-current={activeOrder === order.id ? "true" : undefined} className={`block w-full border-b border-green-50 px-4 py-3 text-left transition hover:bg-green-50 sm:px-4 sm:py-3.5 ${activeOrder === order.id ? "bg-[#EAF5EB]" : "bg-white"}`}>
+              <span className="flex items-center justify-between gap-2"><span className="truncate font-extrabold text-[#1E2A1F]">{participant}</span><span className="shrink-0 text-[11px] text-gray-500">{previewTime(preview?.created_at)}</span></span>
+              <span className="mt-1 block truncate text-sm text-gray-600">{preview?.message || `Order #${shortOrderReference(order)}`}</span>
+              <span className="mt-1.5 flex items-center justify-between gap-2"><span className="truncate text-[11px] text-gray-500">Order #{shortOrderReference(order)}</span><span className="shrink-0 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-bold text-green-800">{orderStatusLabel(order)}</span></span>
             </button>;
           }) : <p className="p-5 text-sm text-gray-600">Your order conversations will appear here.</p>}
+          </div>
         </aside>
-        <section className="flex min-h-[calc(100dvh-18.5rem)] min-w-0 flex-col md:min-h-0">
+        <section className="flex min-h-0 min-w-0 flex-col">
           <header className="flex items-center justify-between gap-3 border-b border-green-100 px-4 py-3 sm:px-5 sm:py-4">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#EAF5EB] text-lg font-black text-[#2F6B3B] sm:h-11 sm:w-11">{otherName.slice(0, 1).toUpperCase()}</div>
@@ -242,7 +267,7 @@ export default function MessagesPage() {
             {current && <span className={`shrink-0 rounded-full px-2.5 py-1.5 text-[10px] font-black leading-tight sm:px-3 sm:text-xs ${isClosed ? "bg-amber-100 text-amber-900" : "bg-green-100 text-green-800"}`}>{isClosed ? "CHAT CLOSED" : "CHAT OPEN"}</span>}
           </header>
           {current && <div className={`mx-3 mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm sm:mx-5 sm:mt-4 sm:rounded-2xl sm:px-4 ${isClosed ? "border border-amber-200 bg-amber-50 text-amber-950" : "border border-green-100 bg-[#F5FAF5] text-[#355D3A]"}`}>
-            <span aria-hidden="true">{isClosed ? "🔒" : "📦"}</span><span><strong>{orderStatusLabel(current)}.</strong> {isClosed ? "The order is complete; both people can read the chat but cannot send new messages." : "Messages are about this order."}</span>
+            <span><strong>{orderStatusLabel(current)}.</strong> {isClosed ? "The order is complete; both people can read the chat but cannot send new messages." : "Messages are about this order."}</span>
           </div>}
           <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto bg-[#F7FAF7] px-3 py-4 sm:px-5 sm:py-5">
             {messages.length ? messages.map((item) => {
@@ -254,12 +279,12 @@ export default function MessagesPage() {
                   <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">{item.message}</p>
                   <div className={`mt-1.5 flex items-center justify-end gap-1.5 text-[10px] ${mine ? "text-green-100" : "text-gray-500"}`}>
                     {time && <span>{time}</span>}
-                    {mine && isLastOutgoing && <><span aria-hidden="true">·</span><span>{item.read_at ? "Seen" : seenReceiptsAvailable ? "Sent" : "Seen unavailable"}</span></>}
+                    {mine && isLastOutgoing && <><span>{item.read_at ? "Seen" : seenReceiptsAvailable ? "Sent" : "Seen unavailable"}</span></>}
                   </div>
                 </div>
               </div>;
             }) : <div className="flex h-full min-h-48 flex-col items-center justify-center px-5 text-center text-gray-500">
-              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-[#EAF5EB] text-2xl text-[#2F6B3B]">✉</span>
+              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-[#EAF5EB] text-2xl text-[#2F6B3B]">☘</span>
               <p className="mt-3 font-bold text-[#1E2A1F]">No messages yet</p><p className="mt-1 text-sm">{isClosed ? "This order is complete. The conversation is read-only." : "Send a message to start the conversation."}</p>
             </div>}
           </div>
