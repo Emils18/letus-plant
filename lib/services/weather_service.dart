@@ -4,101 +4,88 @@ import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 
 class WeatherService {
-  
-  Future<Map<String, dynamic>> fetchWeather({String? location}) async {
-    if (AppConfig.isDemoMode) {
-      await Future.delayed(const Duration(milliseconds: 400));
-      return _getDemoData();
-    }
-
-    if (location == null || location.trim().isEmpty) {
-      return _getErrorData('No farm location found. Please update your product location.');
+  Future<Map<String, dynamic>> fetchWeather({
+    required double latitude,
+    required double longitude,
+  }) async {
+    if (!latitude.isFinite || latitude < -90 || latitude > 90 ||
+        !longitude.isFinite || longitude < -180 || longitude > 180) {
+      return _getErrorData('Location unavailable. Allow location access and try again.');
     }
 
     final apiKey = AppConfig.weatherApiKey;
-    if (apiKey.isEmpty) {
-      return _getErrorData('Missing API key');
-    }
+    if (apiKey.isEmpty) return _getErrorData('Weather service is not configured.');
 
-    // Try the original location first
-    final locationsToTry = [
-      location.trim(),
-      '${location.trim()}, Cebu, PH',
-      '${location.trim()}, Philippines',
-    ];
-
-    for (final loc in locationsToTry) {
-      try {
-        final url = Uri.parse(
-          'https://api.weatherapi.com/v1/forecast.json?key=$apiKey&q=$loc&days=1&aqi=no&alerts=no',
-        );
-
-        final response = await http.get(url).timeout(const Duration(seconds: 10));
-
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-
-          final temp = (data['current']['temp_c'] as num).round();
-          final humidity = data['current']['humidity'];
-          final conditionText = data['current']['condition']['text'] ?? 'Unknown';
-          final rainChance = data['forecast']?['forecastday']?[0]?['day']?['daily_chance_of_rain'] ?? 0;
-          final updatedAt = data['current']?['last_updated']?.toString();
-
-          final condition = conditionText.split(' ').first;
-          final description = conditionText;
-
-          return {
-            'temp': '$temp°C',
-            'humidity': '$humidity%',
-            'condition': condition,
-            'rain_chance': '$rainChance%',
-            'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
-            'recommendation': _getRecommendation(temp, humidity, condition, description),
-            'planted_weather': '$temp°C $condition',
-          };
-        }
-      } catch (e) {
-        debugPrint('WeatherService try failed for "$loc": $e');
+    try {
+      final uri = Uri.https('api.weatherapi.com', '/v1/forecast.json', {
+        'key': apiKey,
+        'q': '$latitude,$longitude',
+        'days': '1',
+        'aqi': 'no',
+        'alerts': 'no',
+      });
+      final response = await http.get(uri).timeout(const Duration(seconds: 12));
+      final data = jsonDecode(response.body);
+      if (response.statusCode != 200 || data is! Map || data['error'] != null) {
+        return _getErrorData('Unable to load weather for your current location.');
       }
+
+      final current = data['current'] as Map? ?? {};
+      final location = data['location'] as Map? ?? {};
+      final temperatureValue = current['temp_c'];
+      final humidityValue = current['humidity'];
+      final conditionValue = current['condition']?['text'];
+      if (temperatureValue is! num || humidityValue is! num ||
+          conditionValue == null || conditionValue.toString().trim().isEmpty) {
+        return _getErrorData('Weather details are unavailable for your current location.');
+      }
+      final conditionText = conditionValue.toString();
+      final temperature = temperatureValue.round();
+      final humidity = humidityValue.toString();
+      final rainChance = data['forecast']?['forecastday']?[0]?['day']?['daily_chance_of_rain'] ?? 'N/A';
+      final providerLocation = [location['name'], location['region'], location['country']]
+          .where((part) => part is String && part.trim().isNotEmpty)
+          .join(', ');
+
+      return {
+        'location': providerLocation.isEmpty ? 'Location name unavailable' : providerLocation,
+        'temp': '${temperature}\u00B0C',
+        'humidity': '$humidity%',
+        'condition': conditionText.split(' ').first,
+        'description': conditionText,
+        'rain_chance': '$rainChance%',
+        'updated_at': current['last_updated']?.toString(),
+        'time_zone': location['tz_id']?.toString(),
+        'fetched_at': DateTime.now().toIso8601String(),
+        'recommendation': _getRecommendation(temperature, humidity, conditionText),
+        'planted_weather': '${temperature}\u00B0C ${conditionText.split(' ').first}',
+      };
+    } catch (error) {
+      debugPrint('Weather request failed: $error');
+      return _getErrorData('Unable to load weather for your current location.');
     }
-
-    // All attempts failed
-    return _getErrorData('Could not find weather for your farm location.');
   }
 
-  Map<String, dynamic> _getDemoData() {
-    return {
-      'temp': '22°C',
-      'humidity': '69%',
-      'condition': 'Clouds',
-      'rain_chance': '27%',
-      'recommendation': 'Cloudy conditions today. Inspect leaves for prolonged moisture.',
-      'planted_weather': '22°C Clouds',
-    };
-  }
+  Map<String, dynamic> _getErrorData(String message) => {
+        'error': true,
+        'temp': 'N/A',
+        'humidity': 'N/A',
+        'condition': 'Unavailable',
+        'rain_chance': 'N/A',
+        'recommendation': message,
+        'planted_weather': 'N/A',
+      };
 
-  Map<String, dynamic> _getErrorData(String message) {
-    return {
-      'temp': 'N/A',
-      'humidity': 'N/A',
-      'condition': 'Error',
-      'rain_chance': 'N/A',
-      'recommendation': message,
-      'planted_weather': 'N/A',
-    };
-  }
-
-  String _getRecommendation(int temp, int humidity, String condition, String description) {
-    final cond = condition.toLowerCase();
-    final desc = description.toLowerCase();
-
+  String _getRecommendation(int temp, String humidityValue, String description) {
+    final humidity = int.tryParse(humidityValue) ?? 0;
+    final condition = description.toLowerCase();
     if (humidity >= 75) {
       return 'High humidity detected. Monitor lettuce leaves for fungal disease symptoms.';
     }
-    if (cond.contains('rain') || desc.contains('rain')) {
+    if (condition.contains('rain')) {
       return 'Rain is detected. Avoid unnecessary watering and check farm drainage.';
     }
-    if (cond.contains('cloud') || desc.contains('cloud')) {
+    if (condition.contains('cloud')) {
       return 'Cloudy conditions today. Inspect leaves for prolonged moisture.';
     }
     if (temp >= 30) {
