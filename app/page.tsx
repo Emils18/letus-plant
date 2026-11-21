@@ -2053,7 +2053,7 @@ const renderFarmerSellForm = () => {
                           type="button"
                           onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)}
                           className="mt-3 block w-full rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] hover:bg-green-50"
-                        >Message buyer</button>
+                        >Chat with Buyer</button>
                       </div>
                     </div>
                   </div>
@@ -2364,7 +2364,7 @@ const renderHome = () => (
                   {confirmingReceivedOrderId === order.id ? "Confirming…" : "Confirm received"}
                 </button>
               )}
-              <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-5 rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white hover:bg-[#1E2A1F]">Message farmer</button>
+              <button onClick={() => router.push(`/messages?orderId=${encodeURIComponent(order.id)}`)} className="mt-5 rounded-full bg-[#2F6B3B] px-5 py-3 text-sm font-black text-white hover:bg-[#1E2A1F]">Chat with Farmer</button>
             </div>
           ))
         )}
