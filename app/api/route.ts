@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { canUseLegacyCheckout, isMissingCheckoutRpc } from "@/lib/checkout-compatibility";
+import { paymentStatusLabel } from "@/lib/payment-status";
 import { supabase } from "@/lib/supabase";
 
 function json(data: unknown, status = 200) {
@@ -10,14 +13,6 @@ type CheckoutItem = {
   productName?: string;
   price?: number;
   quantity: number;
-};
-
-type ProductRow = {
-  id: number;
-  name: string;
-  price: number | string | null;
-  stock: number | string | null;
-  farmer_id: string | null;
 };
 
 function getBearerToken(request: NextRequest) {
@@ -44,7 +39,7 @@ export async function GET(request: NextRequest) {
 
       if (error) throw error;
 
-      const products = (data || []).map((product) => ({
+      const products = (data || []).filter((product) => product.archived_at == null).map((product) => ({
   id: product.id,
   name: product.name,
   farmer: product.farmer || product.farmer_name || "",
@@ -94,7 +89,7 @@ export async function GET(request: NextRequest) {
         total_amount: Number(order.total_amount || 0),
         status: order.status || "Pending",
         delivery_status: order.delivery_status || "Pending",
-        payment_status: order.payment_status || "Unpaid",
+        payment_status: paymentStatusLabel(order.payment_status, order.payment_method),
         proof_image_url: order.proof_image_url || order.delivery_proof_url || null,
         items: (order.order_items || []).map((item: { product_id?: number; product_name?: string; price?: number | string; quantity?: number | string; subtotal?: number | string }) => ({
           productId: item.product_id,
@@ -153,11 +148,20 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const buyerClient = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          auth: { persistSession: false, autoRefreshToken: false },
+          global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        },
+      );
+
       // Verify the signed-in user from the access token. Do not trust user IDs from the frontend.
       const {
         data: { user: authenticatedUser },
         error: authError,
-      } = await supabase.auth.getUser(accessToken);
+      } = await buyerClient.auth.getUser(accessToken);
 
       if (authError || !authenticatedUser) {
         return json(
@@ -169,7 +173,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const { data: profile, error: profileError } = await supabase
+      const { data: profile, error: profileError } = await buyerClient
         .from("users")
         .select("role")
         .eq("id", authenticatedUser.id)
@@ -239,9 +243,9 @@ export async function POST(request: NextRequest) {
         const quantity = Number(item.quantity);
 
         if (
-          !Number.isInteger(productId) ||
+          !Number.isSafeInteger(productId) ||
           productId <= 0 ||
-          !Number.isInteger(quantity) ||
+          !Number.isSafeInteger(quantity) || quantity > 2147483647 ||
           quantity <= 0
         ) {
           return json(
@@ -253,165 +257,190 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        requestedQuantities.set(
-          productId,
-          (requestedQuantities.get(productId) || 0) + quantity
-        );
+        const combined = (requestedQuantities.get(productId) || 0) + quantity;
+        if (combined > 2147483647) return json({success: false, message: "Order quantity is too large."}, 400);
+        requestedQuantities.set(productId, combined);
       }
 
-      const productIds = Array.from(requestedQuantities.keys());
-
-      // Read the real product owner, price, name, and stock from the database.
-      const { data: productRows, error: productsError } = await supabase
-        .from("products")
-        .select("id, name, price, stock, farmer_id")
-        .in("id", productIds);
-
-      if (productsError) throw productsError;
-
-      const databaseProducts = (productRows || []) as ProductRow[];
-
-      if (databaseProducts.length !== productIds.length) {
-        return json(
-          {
-            success: false,
-            message: "One or more products could not be found.",
-          },
-          404
-        );
-      }
-
-      const farmerIds = new Set(
-        databaseProducts.map((product) => product.farmer_id).filter(Boolean)
-      );
-
-      if (
-        farmerIds.size !== 1 ||
-        databaseProducts.some((product) => !product.farmer_id)
-      ) {
-        return json(
-          {
-            success: false,
-            message: "Please checkout products from one farmer at a time.",
-          },
-          400
-        );
-      }
-
-      const farmerId = Array.from(farmerIds)[0] as string;
-
-      const normalizedItems = databaseProducts.map((product) => {
-        const quantity = requestedQuantities.get(Number(product.id)) || 0;
-        const price = Number(product.price || 0);
-        const stock = Number(product.stock || 0);
-
-        return {
-          product_id: Number(product.id),
-          product_name: product.name,
-          price,
-          quantity,
-          subtotal: price * quantity,
-          current_stock: stock,
-        };
+      const { data: placedOrders, error: orderError } = await buyerClient.rpc("place_marketplace_order", {
+        p_contact: {
+          email,
+          shipping_name: fullName,
+          shipping_phone: phone,
+          shipping_address: address,
+          city,
+          postal_code: postalCode,
+          payment_method: agreedPaymentMethod,
+          delivery_method: deliveryMethod,
+        },
+        p_items: Array.from(requestedQuantities, ([product_id, quantity]) => ({ product_id, quantity })),
+        p_single_farmer: true,
       });
 
-      for (const item of normalizedItems) {
-        if (item.price <= 0 || item.quantity <= 0) {
-          return json(
-            {
-              success: false,
-              message: `Invalid product data for ${item.product_name}.`,
-            },
-            400
-          );
+      let placedOrder = placedOrders?.[0];
+      if (isMissingCheckoutRpc(orderError)) {
+        // Production can run this route before the inventory migration. A
+        // missing RPC is the only error that proves no checkout ran.
+        const { error: schemaError } = await buyerClient.from("products").select("archived_at").limit(0);
+        if (!canUseLegacyCheckout(schemaError)) {
+          return json({ success: false, message: "Checkout is being updated. Please try again shortly." }, 503);
         }
+        const productIds = Array.from(requestedQuantities.keys());
 
-        if (item.current_stock < item.quantity) {
-          return json(
-            {
-              success: false,
-              message: `Not enough stock for ${item.product_name}.`,
-            },
-            400
-          );
-        }
-      }
-
-      const subtotal = normalizedItems.reduce(
-        (sum, item) => sum + item.subtotal,
-        0
-      );
-      const shipping = deliveryMethod === "Delivery" ? 50 : 0;
-      const totalAmount = subtotal + shipping;
-      const paymentStatus = "To be agreed in person";
-
-      const { data: orderData, error: orderError } = await supabase
-        .from("orders")
-        .insert([
-          {
-            user_id: authenticatedUser.id,
-            farmer_id: farmerId,
-            email,
-            status: "Pending",
-            delivery_status: "Pending",
-            shipping_name: fullName,
-            shipping_phone: phone,
-            shipping_address:
-              deliveryMethod === "Pickup" ? "Farm Pickup" : address,
-            city: deliveryMethod === "Pickup" ? "Farm Pickup" : city,
-            postal_code: deliveryMethod === "Pickup" ? "0000" : postalCode,
-            payment_method: agreedPaymentMethod,
-            delivery_method: deliveryMethod,
-            payment_status: paymentStatus,
-            total_amount: totalAmount,
-          },
-        ])
-        .select()
-        .single();
-
-      if (orderError) throw orderError;
-
-      const orderItemsPayload = normalizedItems.map((item) => ({
-        order_id: orderData.id,
-        product_id: item.product_id,
-        product_name: item.product_name,
-        price: item.price,
-        quantity: item.quantity,
-        subtotal: item.subtotal,
-      }));
-
-      const { error: itemsError } = await supabase
-        .from("order_items")
-        .insert(orderItemsPayload);
-
-      if (itemsError) throw itemsError;
-// CREATE NOTIFICATION FOR FARMER
-const { error: notificationError } = await supabase
-  .from("notifications")
-  .insert({
-    user_id: farmerId,
-    order_id: orderData.id,
-    title: "New Order",
-    message: "Someone ordered your product.",
-    type: "new_order",
-    is_read: false,
-  });
-
-if (notificationError) {
-  console.error("CREATE NOTIFICATION FAILED:", notificationError.message);
-  throw notificationError;
-}
-      // Reduce stock only after the order and order items are saved.
-      for (const item of normalizedItems) {
-        const newStock = Math.max(item.current_stock - item.quantity, 0);
-
-        const { error: stockError } = await supabase
+        // Read the real product owner, price, name, and stock from the database.
+        const { data: productRows, error: productsError } = await buyerClient
           .from("products")
-          .update({ stock: newStock })
-          .eq("id", item.product_id);
+          .select("id, name, price, stock, farmer_id")
+          .in("id", productIds);
 
-        if (stockError) throw stockError;
+        if (productsError) throw productsError;
+
+        const databaseProducts = (productRows || []) as { id: number; name: string; price: number; stock: number; farmer_id: string | null }[];
+
+        if (databaseProducts.length !== productIds.length) {
+          return json(
+            {
+              success: false,
+              message: "One or more products could not be found.",
+            },
+            404
+          );
+        }
+
+        const farmerIds = new Set(
+          databaseProducts.map((product) => product.farmer_id).filter(Boolean)
+        );
+
+        if (
+          farmerIds.size !== 1 ||
+          databaseProducts.some((product) => !product.farmer_id)
+        ) {
+          return json(
+            {
+              success: false,
+              message: "Please checkout products from one farmer at a time.",
+            },
+            400
+          );
+        }
+
+        const farmerId = Array.from(farmerIds)[0] as string;
+
+        const normalizedItems = databaseProducts.map((product) => {
+          const quantity = requestedQuantities.get(Number(product.id)) || 0;
+          const price = Number(product.price || 0);
+          const stock = Number(product.stock || 0);
+
+          return {
+            product_id: Number(product.id),
+            product_name: product.name,
+            price,
+            quantity,
+            subtotal: price * quantity,
+            current_stock: stock,
+          };
+        });
+
+        for (const item of normalizedItems) {
+          if (item.price <= 0 || item.quantity <= 0) {
+            return json(
+              {
+                success: false,
+                message: `Invalid product data for ${item.product_name}.`,
+              },
+              400
+            );
+          }
+
+          if (item.current_stock < item.quantity) {
+            return json(
+              {
+                success: false,
+                message: `Not enough stock for ${item.product_name}.`,
+              },
+              400
+            );
+          }
+        }
+
+        const subtotal = normalizedItems.reduce(
+          (sum, item) => sum + item.subtotal,
+          0
+        );
+        const shipping = deliveryMethod === "Delivery" ? 50 : 0;
+        const totalAmount = subtotal + shipping;
+        const paymentStatus = "Unpaid";
+
+        const { data: orderData, error: orderError } = await buyerClient
+          .from("orders")
+          .insert([
+            {
+              user_id: authenticatedUser.id,
+              farmer_id: farmerId,
+              email,
+              status: "Pending",
+              delivery_status: "Pending",
+              shipping_name: fullName,
+              shipping_phone: phone,
+              shipping_address:
+                deliveryMethod === "Pickup" ? "Farm Pickup" : address,
+              city: deliveryMethod === "Pickup" ? "Farm Pickup" : city,
+              postal_code: deliveryMethod === "Pickup" ? "0000" : postalCode,
+              payment_method: agreedPaymentMethod,
+              delivery_method: deliveryMethod,
+              payment_status: paymentStatus,
+              total_amount: totalAmount,
+            },
+          ])
+          .select()
+          .single();
+
+        if (orderError) throw orderError;
+
+        const orderItemsPayload = normalizedItems.map((item) => ({
+          order_id: orderData.id,
+          product_id: item.product_id,
+          product_name: item.product_name,
+          price: item.price,
+          quantity: item.quantity,
+          subtotal: item.subtotal,
+        }));
+
+        const { error: itemsError } = await buyerClient
+          .from("order_items")
+          .insert(orderItemsPayload);
+
+        if (itemsError) throw itemsError;
+        // Reduce stock only after the order and order items are saved.
+        for (const item of normalizedItems) {
+          const newStock = Math.max(item.current_stock - item.quantity, 0);
+
+          const { error: stockError } = await buyerClient
+            .from("products")
+            .update({ stock: newStock })
+            .eq("id", item.product_id);
+
+          if (stockError) throw stockError;
+        }
+
+        placedOrder = orderData;
+      } else if (orderError) {
+        return json({ success: false, message: orderError.message }, orderError.code === "22023" ? 409 : 500);
       }
+      const orderData = placedOrder;
+      if (!orderData) throw new Error("The order was not created.");
+
+      const { error: notificationError } = await buyerClient
+        .from("notifications")
+        .insert({
+          user_id: orderData.farmer_id,
+          order_id: orderData.id,
+          title: "New Order",
+          message: "Someone ordered your product.",
+          type: "new_order",
+          is_read: false,
+        });
+      if (notificationError) console.error("CREATE NOTIFICATION FAILED:", notificationError.message);
 
       return json({
         success: true,
