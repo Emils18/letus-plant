@@ -100,8 +100,47 @@ revoke all on function public.archive_farmer_product(bigint) from public, anon;
 grant execute on function public.restock_farmer_product(bigint, integer) to authenticated;
 grant execute on function public.archive_farmer_product(bigint) to authenticated;
 
--- Apply checkout stock changes in the same statement as the order items.
--- The product row lock prevents checkout, archive, and restock from overwriting one another.
+-- Canonical delivery charges are shared by RPC checkout and older signed-in clients.
+create or replace function public.marketplace_delivery_fee(delivery_method text)
+returns integer
+language sql
+immutable
+set search_path = ''
+as $$
+  select case when lower(btrim(delivery_method)) = 'delivery' then 50 else 0 end;
+$$;
+
+create or replace function public.protect_marketplace_order_charge()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.delivery_method := case lower(btrim(new.delivery_method))
+      when 'delivery' then 'Delivery'
+      when 'pickup' then 'Pickup'
+      else null
+    end;
+    if new.delivery_method is null then
+      raise exception 'Choose Delivery or Pickup.' using errcode = '22023';
+    end if;
+    new.total_amount := public.marketplace_delivery_fee(new.delivery_method);
+    new.payment_status := 'Unpaid';
+  elsif pg_trigger_depth() = 1 then
+    -- The line trigger updates the total. Ordinary lifecycle updates keep the charge.
+    new.total_amount := old.total_amount;
+    new.delivery_method := old.delivery_method;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists greenguard_protect_order_charge on public.orders;
+create trigger greenguard_protect_order_charge
+before insert or update on public.orders
+for each row execute function public.protect_marketplace_order_charge();
+
 create or replace function public.take_stock_for_order_item()
 returns trigger
 language plpgsql
@@ -110,9 +149,12 @@ set search_path = ''
 as $$
 declare
   order_farmer_id uuid;
+  item_price numeric;
+  item_name text;
 begin
   select o.farmer_id into order_farmer_id from public.orders o
-  where o.id = new.order_id and o.user_id = auth.uid() and lower(o.status::text) = 'pending';
+  where o.id = new.order_id and o.user_id = auth.uid() and lower(o.status::text) = 'pending'
+  for update;
 
   if order_farmer_id is null or new.quantity is null or new.quantity < 1 then
     raise exception 'This order cannot reserve stock.' using errcode = '22023';
@@ -125,21 +167,50 @@ begin
   where p.id = new.product_id
     and p.farmer_id = order_farmer_id
     and p.archived_at is null
-    and p.stock >= new.quantity;
+    and p.stock >= new.quantity
+    and p.price > 0
+  returning p.price, p.name into item_price, item_name;
 
   if not found then
     raise exception 'Some products are no longer available in the requested quantity.' using errcode = '22023';
   end if;
+  new.price := item_price;
+  new.price_at_time := item_price;
+  new.product_name := item_name;
+  new.subtotal := item_price * new.quantity;
+  return new;
+end;
+$$;
+
+create or replace function public.refresh_marketplace_order_charge()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  -- The stock trigger locked the parent order before the item insert.
+  update public.orders o
+  set total_amount = (
+    select coalesce(sum(oi.subtotal), 0) from public.order_items oi where oi.order_id = o.id
+  ) + public.marketplace_delivery_fee(o.delivery_method)
+  where o.id = new.order_id;
   return new;
 end;
 $$;
 
 revoke all on function public.take_stock_for_order_item() from public, anon, authenticated;
+revoke all on function public.refresh_marketplace_order_charge() from public, anon, authenticated;
 
 drop trigger if exists greenguard_reserve_order_item_stock on public.order_items;
 create trigger greenguard_reserve_order_item_stock
-after insert on public.order_items
+before insert on public.order_items
 for each row execute function public.take_stock_for_order_item();
+
+drop trigger if exists greenguard_refresh_order_charge on public.order_items;
+create trigger greenguard_refresh_order_charge
+after insert on public.order_items
+for each row execute function public.refresh_marketplace_order_charge();
 
 -- A checkout creates both the headers and their lines in one transaction. It also
 -- keeps the established mobile grouping by farmer and the web one-farmer checkout.
@@ -230,8 +301,8 @@ begin
       case when delivery_method_value = 'Pickup' then 'Farm Pickup' else btrim(p_contact->>'shipping_address') end,
       case when delivery_method_value = 'Pickup' then 'Farm Pickup' else btrim(p_contact->>'city') end,
       case when delivery_method_value = 'Pickup' then '0000' else btrim(p_contact->>'postal_code') end,
-      payment_method_value, delivery_method_value, payment_method_value,
-      sum(line.price * line.quantity) + case when p_single_farmer and delivery_method_value = 'Delivery' then 50 else 0 end,
+      payment_method_value, delivery_method_value, 'Unpaid',
+      sum(line.price * line.quantity) + public.marketplace_delivery_fee(delivery_method_value),
       false
     from jsonb_to_recordset(order_lines) as line(farmer_id uuid, price numeric, quantity integer)
     where line.farmer_id = farmer
@@ -243,6 +314,7 @@ begin
     where line.farmer_id = farmer
     order by line.product_id;
 
+    select * into placed_order from public.orders o where o.id = placed_order.id;
     placed_orders := placed_orders || jsonb_build_array(to_jsonb(placed_order));
   end loop;
   return placed_orders;

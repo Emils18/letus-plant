@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/auth_service.dart';
+import '../models/payment_status.dart';
 import '../services/order_service.dart';
 import '../services/product_service.dart';
 import 'shared/profile_screen.dart';
@@ -340,7 +341,8 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
     return showDialog<_CheckoutInfo>(
       context: context,
       builder: (context) {
-        return _CheckoutDialog(total: _subtotal);
+        final farmerCount = _cart.map((item) => item['farmer_id']).whereType<Object>().toSet().length;
+        return _CheckoutDialog(subtotal: _subtotal, deliveryFee: 50.0 * farmerCount);
       },
     );
   }
@@ -1295,7 +1297,7 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
 
           final orderId = _shortOrderId(order);
           final status = order['status']?.toString() ?? 'Pending';
-          final paymentStatus = order['payment_status']?.toString() ?? 'Unpaid';
+          final paymentStatus = paymentStatusLabel(order['payment_status'], order['payment_method']);
           final deliveryStatus = order['delivery_status']?.toString() ?? status;
           final total = _toDouble(order['total_amount']);
           final confirmedReceived = order['confirmed_received'] == true;
@@ -1531,9 +1533,11 @@ class _BuyerHomeScreenState extends State<BuyerHomeScreen> {
 }
 
 class _CheckoutDialog extends StatefulWidget {
-  const _CheckoutDialog({required this.total});
+  const _CheckoutDialog({required this.subtotal, required this.deliveryFee});
 
-  final double total;
+  final double subtotal;
+  final double deliveryFee;
+  double get total => subtotal + deliveryFee;
 
   @override
   State<_CheckoutDialog> createState() => _CheckoutDialogState();
@@ -1612,6 +1616,9 @@ class _CheckoutDialogState extends State<_CheckoutDialog> {
                 ),
               ),
             ),
+
+            const SizedBox(height: 6),
+            Text('Includes ₱${widget.deliveryFee.toStringAsFixed(2)} delivery (₱50 per farmer).'),
 
             const SizedBox(height: 16),
 

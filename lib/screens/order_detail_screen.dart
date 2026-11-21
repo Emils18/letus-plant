@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/payment_status.dart';
 import '../services/order_service.dart';
 
 class OrderDetailScreen extends StatefulWidget {
@@ -87,7 +88,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     final total =
         double.tryParse(order['total_amount']?.toString() ?? '0') ?? 0;
     final payment = order['payment_method']?.toString() ?? 'To be agreed in person';
-    final paymentStatus = order['payment_status']?.toString() ?? 'Unpaid';
+    final paymentStatus = paymentStatusLabel(order['payment_status'], order['payment_method']);
     final deliveryMethod = order['delivery_method']?.toString() ?? 'Delivery';
 
     final orderItems = List<Map<String, dynamic>>.from(

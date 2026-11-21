@@ -220,12 +220,17 @@ class OrderService {
     try {
       final orderData = await supabase
           .from('orders')
-          .select('farmer_id, order_code')
+          .select('farmer_id, order_code, status')
           .eq('id', orderId)
           .eq('user_id', user.id)
           .single();
 
-      await supabase
+      final status = orderData['status']?.toString() ?? '';
+      if (status.toLowerCase() != 'delivered') {
+        return 'You can confirm receipt after the order is marked Delivered.';
+      }
+
+      final updated = await supabase
           .from('orders')
           .update({
             'status': 'Completed',
@@ -236,7 +241,11 @@ class OrderService {
             'updated_at': DateTime.now().toIso8601String(),
           })
           .eq('id', orderId)
-          .eq('user_id', user.id);
+          .eq('user_id', user.id)
+          .eq('status', status)
+          .select('id')
+          .maybeSingle();
+      if (updated == null) return 'This order changed. Refresh and try again.';
 
       final farmerId = orderData['farmer_id']?.toString();
       final orderCode = orderData['order_code']?.toString() ?? orderId;

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWeatherLocation } from "@/lib/use-weather-location";
 import { useRouter } from "next/navigation";
+import { paymentStatusLabel } from "@/lib/payment-status";
 import { supabase } from "@/lib/supabase";
 import { completeSignOut } from "@/lib/clear-auth";
 import { ScanReportDetails } from "@/app/components/scan-report-details";
@@ -95,6 +96,7 @@ type FarmerOrder = {
   status?: string | null;
   delivery_status?: string | null;
   payment_status?: string | null;
+  payment_method?: string | null;
   total_amount?: number | string | null;
   proof_image_url?: string | null;
   delivery_proof_url?: string | null;
@@ -186,7 +188,7 @@ function mapBuyerOrder(row: Record<string, unknown>): Order {
     farmerId: row.farmer_id ? String(row.farmer_id) : undefined,
     orderCode: row.order_code ? String(row.order_code) : undefined,
     deliveryStatus: String(row.delivery_status || row.status || "Pending"),
-    paymentStatus: String(row.payment_status || "Unpaid"),
+    paymentStatus: paymentStatusLabel(row.payment_status, row.payment_method),
     proofImageUrl: row.proof_image_url
       ? String(row.proof_image_url)
       : row.delivery_proof_url
@@ -2274,7 +2276,7 @@ const renderFarmerSellForm = () => {
                           <div><dt className="font-bold text-[#718075]">Buyer</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_name || "Customer"}</dd></div>
                           <div><dt className="font-bold text-[#718075]">Phone</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_phone || "Not provided"}</dd></div>
                           <div><dt className="font-bold text-[#718075]">Delivery address</dt><dd className="font-semibold text-[#1E2A1F]">{order.shipping_address || "Farm pickup"}</dd></div>
-                          <div><dt className="font-bold text-[#718075]">Payment</dt><dd className="font-semibold text-[#1E2A1F]">{order.payment_status || "Unpaid"}</dd></div>
+                          <div><dt className="font-bold text-[#718075]">Payment</dt><dd className="font-semibold text-[#1E2A1F]">{paymentStatusLabel(order.payment_status, order.payment_method)}</dd></div>
                         </dl>
                         <div className="mt-4 flex flex-wrap gap-2">
                           <StatusPill text={`Order: ${status}`} />

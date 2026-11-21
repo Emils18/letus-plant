@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { paymentStatusLabel } from "@/lib/payment-status";
 import { supabase } from "@/lib/supabase";
 import { completeSignOut } from "@/lib/clear-auth";
 
@@ -24,6 +25,7 @@ type Order = {
   shipping_name: string;
   status: string;
   payment_status: string;
+  payment_method?: string;
   total_amount: number;
   created_at: string;
   proof_image_url?: string | null;
@@ -1425,11 +1427,10 @@ export default function AdminDashboardPage() {
                         <td className="px-8 py-6">
                           <span
                             className={`inline-flex rounded-full border px-4 py-2 text-sm font-bold ${statusStyle(
-                              order.payment_status
+                              paymentStatusLabel(order.payment_status, order.payment_method)
                             )}`}
                           >
-                            {order.payment_status ||
-                              "Unpaid"}
+                            {paymentStatusLabel(order.payment_status, order.payment_method)}
                           </span>
                         </td>
 
@@ -1511,11 +1512,10 @@ export default function AdminDashboardPage() {
                     <div className="mt-4 flex flex-wrap gap-2">
                       <span
                         className={`rounded-full border px-3 py-1.5 text-xs font-bold ${statusStyle(
-                          order.payment_status
+                          paymentStatusLabel(order.payment_status, order.payment_method)
                         )}`}
                       >
-                        {order.payment_status ||
-                          "Unpaid"}
+                        {paymentStatusLabel(order.payment_status, order.payment_method)}
                       </span>
 
                       <span
