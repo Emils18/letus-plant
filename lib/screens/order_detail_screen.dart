@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/order_service.dart';
 import 'order_chat_screen.dart';
@@ -16,12 +17,55 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   final OrderService _orderService = OrderService();
 
   late String currentStatus;
+  String? _peerName;
   bool isUpdating = false;
+
+  bool get _isBuyer => widget.order['user_id']?.toString() ==
+      Supabase.instance.client.auth.currentUser?.id;
 
   @override
   void initState() {
     super.initState();
     currentStatus = widget.order['status']?.toString() ?? 'Pending';
+    _peerName = _isBuyer
+        ? (widget.order['farmer_name'] ?? widget.order['farmer'])?.toString()
+        : widget.order['shipping_name']?.toString();
+    _loadPeerName();
+  }
+
+  Future<void> _loadPeerName() async {
+    final client = Supabase.instance.client;
+    final peerId = (_isBuyer ? widget.order['farmer_id'] : widget.order['user_id'])
+        ?.toString();
+    if (peerId == null || peerId.isEmpty) return;
+    try {
+      final profile = await client
+          .from('users')
+          .select('full_name')
+          .eq('id', peerId)
+          .maybeSingle();
+      final name = profile?['full_name']?.toString().trim() ?? '';
+      if (name.isNotEmpty && mounted) setState(() => _peerName = name);
+    } catch (_) {
+      // Product or saved order names remain the fallback if profile access is restricted.
+    }
+    if (_isBuyer && (_peerName == null || _peerName!.trim().isEmpty || _peerName == 'Farmer')) {
+      try {
+        final product = await client
+            .from('products')
+            .select('farmer_name, farmer')
+            .eq('farmer_id', peerId)
+            .limit(1)
+            .maybeSingle();
+        final name = (product?['farmer_name'] ?? product?['farmer'])
+                ?.toString()
+                .trim() ??
+            '';
+        if (name.isNotEmpty && mounted) setState(() => _peerName = name);
+      } catch (_) {
+        // Keep the saved order name when product names are not readable.
+      }
+    }
   }
 
   Future<void> _updateStatus(String newStatus) async {
@@ -71,10 +115,16 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         ? rawOrderId.substring(0, 8).toUpperCase()
         : rawOrderId.toUpperCase();
 
-    final customer =
+    final buyerName =
         order['shipping_name']?.toString().trim().isNotEmpty == true
         ? order['shipping_name'].toString()
         : 'Guest Buyer';
+    final peerName = _peerName?.trim().isNotEmpty == true
+        ? _peerName!.trim()
+        : _isBuyer
+        ? 'Farmer'
+        : buyerName;
+    final displayName = _isBuyer ? peerName : buyerName;
 
     final address =
         order['shipping_address']?.toString().trim().isNotEmpty == true
@@ -95,7 +145,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       order['order_items'] ?? [],
     );
 
-    final firstLetter = customer.isNotEmpty ? customer[0].toUpperCase() : 'B';
+    final firstLetter = displayName.isNotEmpty ? displayName[0].toUpperCase() : 'B';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF6FBF7),
@@ -119,7 +169,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildCustomerCard(
-              customer: customer,
+              customer: displayName,
+              isBuyer: _isBuyer,
               firstLetter: firstLetter,
               email: email,
               phone: phone,
@@ -138,11 +189,11 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                 onPressed: () => Navigator.push<void>(
                   context,
                   MaterialPageRoute<void>(
-                    builder: (_) => OrderChatScreen(order: order, peerName: customer),
+                    builder: (_) => OrderChatScreen(order: order, peerName: peerName),
                   ),
                 ),
                 icon: const Icon(Icons.chat_bubble_outline_rounded),
-                label: Text('Message $customer'),
+                label: Text(_isBuyer ? 'Chat with Farmer' : 'Chat with Buyer'),
                 style: FilledButton.styleFrom(
                   backgroundColor: const Color(0xFF2F6B3B),
                   foregroundColor: Colors.white,
@@ -176,7 +227,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
             ),
             const SizedBox(height: 12),
 
-            _buildStatusSection(),
+            _isBuyer ? _buildBuyerStatus() : _buildStatusSection(),
 
             const SizedBox(height: 24),
 
@@ -202,6 +253,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
   Widget _buildCustomerCard({
     required String customer,
+    required bool isBuyer,
     required String firstLetter,
     required String email,
     required String phone,
@@ -264,13 +316,13 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           const Divider(height: 32),
           _buildInfoRow(
             icon: Icons.email_rounded,
-            label: 'Email',
+            label: isBuyer ? 'Your email' : 'Buyer email',
             value: email,
           ),
           const SizedBox(height: 14),
           _buildInfoRow(
             icon: Icons.phone_rounded,
-            label: 'Buyer phone number',
+            label: isBuyer ? 'Your phone number' : 'Buyer phone number',
             value: phone,
           ),
           const SizedBox(height: 14),
@@ -282,7 +334,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           const SizedBox(height: 14),
           _buildInfoRow(
             icon: Icons.location_on_rounded,
-            label: 'Delivery location',
+            label: isBuyer ? 'Your delivery location' : 'Delivery location',
             value:
                 '$address ${city.isNotEmpty ? '• $city' : ''} ${postalCode.isNotEmpty ? '• $postalCode' : ''}',
           ),
@@ -470,6 +522,22 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
               style: TextStyle(color: Colors.grey, fontWeight: FontWeight.w600),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildBuyerStatus() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: _cardDecoration(),
+      child: Text(
+        'Current Status: $currentStatus',
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w900,
+          color: Color(0xFF1E2A1F),
+        ),
       ),
     );
   }

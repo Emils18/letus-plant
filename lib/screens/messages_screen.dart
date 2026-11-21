@@ -26,7 +26,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
     final user = _client.auth.currentUser;
     if (user == null) return [];
     final rows = await _client.from('orders').select(
-      'id, order_code, user_id, farmer_id, shipping_name, status, delivery_status, created_at, farmer_name, farmer',
+      'id, order_code, user_id, farmer_id, shipping_name, status, delivery_status, created_at',
     ).or('user_id.eq.${user.id},farmer_id.eq.${user.id}')
       .order('created_at', ascending: false);
     final orders = List<Map<String, dynamic>>.from(rows);
@@ -62,7 +62,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
       final isBuyer = order['user_id'] == user.id;
       final peerId = (isBuyer ? order['farmer_id'] : order['user_id'])?.toString() ?? '';
       final savedName = isBuyer
-          ? (order['farmer_name'] ?? order['farmer'])?.toString().trim() ?? ''
+          ? ''
           : order['shipping_name']?.toString().trim() ?? '';
       order['peer_name'] = names[peerId] ?? (savedName.isNotEmpty ? savedName : isBuyer ? 'Farmer' : 'Buyer');
       try {
@@ -112,7 +112,7 @@ class _MessagesScreenState extends State<MessagesScreen> {
       future: _conversations,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator(color: _green));
-        if (snapshot.hasError) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.wifi_off_rounded, size: 48, color: _green), const SizedBox(height: 12), const Text('Conversations could not load.'), const SizedBox(height: 12), FilledButton(onPressed: _refresh, child: const Text('Try again'))])));
+        if (snapshot.hasError) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.wifi_off_rounded, size: 48, color: _green), const SizedBox(height: 12), const Text('Conversations could not load.', style: TextStyle(fontWeight: FontWeight.w800)), const SizedBox(height: 8), Text(_loadErrorMessage(snapshot.error!), textAlign: TextAlign.center), const SizedBox(height: 12), FilledButton(onPressed: _refresh, child: const Text('Try again'))])));
         final items = snapshot.data ?? [];
         if (items.isEmpty) return const Center(child: Padding(padding: EdgeInsets.all(28), child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.chat_bubble_outline_rounded, size: 56, color: _green), SizedBox(height: 14), Text('No conversations yet', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800)), SizedBox(height: 6), Text('Your order chats will appear here.', textAlign: TextAlign.center)])));
         return RefreshIndicator(color: _green, onRefresh: _refresh, child: ListView.separated(
@@ -138,4 +138,18 @@ class _MessagesScreenState extends State<MessagesScreen> {
       },
     ),
   );
+
+  String _loadErrorMessage(Object error) {
+    final details = error.toString();
+    final normalized = details.toLowerCase();
+    if (normalized.contains('order_messages') || normalized.contains('pgrst205')) {
+      return 'Order chats are unavailable because the messaging table is missing. Apply the existing order_messages migration, then retry.';
+    }
+    if (normalized.contains('permission') || normalized.contains('rls') || normalized.contains('42501')) {
+      return 'Supabase denied access to these orders. Check the existing order participant policies.';
+    }
+    return details.isNotEmpty
+        ? details
+        : 'Check your internet connection, then try again.';
+  }
 }

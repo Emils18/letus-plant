@@ -4,6 +4,7 @@ import '../services/auth_service.dart';
 import '../services/order_service.dart';
 import '../services/product_service.dart';
 import 'messages_screen.dart';
+import 'order_detail_screen.dart';
 import 'shared/profile_screen.dart';
 
 class BuyerHomeScreen extends StatefulWidget {
@@ -1448,6 +1449,28 @@ Widget _buildSearchAndFilters() {
                     ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push<void>(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => OrderDetailScreen(order: order),
+                      ),
+                    ),
+                    icon: const Icon(Icons.visibility_outlined),
+                    label: const Text('View Details'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF2F6B3B),
+                      minimumSize: const Size(double.infinity, 50),
+                      side: const BorderSide(color: Color(0xFFB8D6BC)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
           );
