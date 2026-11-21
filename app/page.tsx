@@ -15,7 +15,7 @@ type Product = {
   category: string;
   price: number;
   stock: number;
- 
+  status?: string;
   image: string;
   freshnessInfo: string;
   createdAt?: string;
@@ -1758,7 +1758,7 @@ const renderFarmerSellForm = () => {
       </div>
 
       <div className="max-h-[620px] overflow-y-auto rounded-[24px] border border-green-100">
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[760px]">
             <thead className="bg-[#F7FBF6] text-xs uppercase tracking-[2px] text-[#5C6B5D]">
               <tr>
@@ -1797,9 +1797,9 @@ const renderFarmerSellForm = () => {
                     <td className="px-6 py-4"><StatusPill text={product.archived_at ? "Unlisted" : Number(product.stock || 0) <= 0 ? "Out of Stock" : "Available"} /></td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-3 py-2 text-xs font-black text-green-800">Edit</button>
-                        <button type="button" disabled={restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-black text-blue-800">Restock</button>
-                        <button type="button" disabled={deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-black text-red-800">Unlist</button>
+                        <button type="button" disabled={Boolean(product.archived_at)} onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-3 py-2 text-xs font-black text-green-800 disabled:opacity-50">Edit</button>
+                        <button type="button" disabled={Boolean(product.archived_at) || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-black text-blue-800 disabled:opacity-50">Restock</button>
+                        <button type="button" disabled={Boolean(product.archived_at) || deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-black text-red-800 disabled:opacity-50">Unlist</button>
                       </div>
                     </td>
                   </tr>
@@ -1807,6 +1807,35 @@ const renderFarmerSellForm = () => {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="space-y-3 bg-[#F7FBF6] p-3 md:hidden">
+          {farmerProducts.length === 0 ? (
+            <p className="rounded-2xl bg-white px-4 py-8 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</p>
+          ) : farmerProducts.map((product) => {
+            const archived = Boolean(product.archived_at);
+            const stock = Number(product.stock || 0);
+            const status = archived ? "Unlisted" : stock <= 0 ? "Out of Stock" : "Available";
+            return (
+              <article key={`mobile-${product.id}`} className="rounded-2xl border border-green-100 bg-white p-3 shadow-sm">
+                <div className="flex min-w-0 gap-3">
+                  {product.image_url || product.image ? (
+                    <div className="h-16 w-16 shrink-0 rounded-xl bg-cover bg-center" style={{ backgroundImage: `url(${product.image_url || product.image})` }} />
+                  ) : <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-green-50 text-xs text-[#5C6B5D]">No image</div>}
+                  <div className="min-w-0 flex-1">
+                    <h4 className="break-words font-black text-[#1E2A1F]">{product.name || "Unnamed Product"}</h4>
+                    <p className="mt-1 text-sm font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</p>
+                    <p className="mt-1 text-xs font-semibold text-[#5C6B5D]">Stock: {stock}</p>
+                    <p className={`mt-1 text-xs font-black ${archived || stock <= 0 ? "text-red-700" : "text-green-800"}`}>{status}</p>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <button type="button" disabled={archived} onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-2 py-2 text-xs font-black text-green-800 disabled:opacity-50">Edit</button>
+                  <button type="button" disabled={archived || restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-2 py-2 text-xs font-black text-blue-800 disabled:opacity-50">Restock</button>
+                  <button type="button" disabled={archived || deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-2 py-2 text-xs font-black text-red-800 disabled:opacity-50">Unlist</button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </div>
     </div>

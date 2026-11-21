@@ -119,6 +119,7 @@ class ProductService {
             image,
             location,
             status,
+            archived_at,
             created_at,
             updated_at
           ''')
@@ -132,7 +133,12 @@ class ProductService {
 
         final active = product['archived_at'] == null &&
             product['status']?.toString().toLowerCase() != 'unlisted';
-        return farmerId != null && farmerId.isNotEmpty && stock > 0 && active;
+        product['status'] = !active
+            ? 'Unlisted'
+            : stock > 0
+                ? 'Available'
+                : 'Out of Stock';
+        return farmerId != null && farmerId.isNotEmpty && active;
       }).toList();
     } on PostgrestException catch (e) {
       debugPrint('ProductService database error: ${e.message}');

@@ -84,7 +84,7 @@ class _SellCropScreenState extends State<SellCropScreen> {
   }
 
   Future<void> _unlist(Map<String,dynamic> product) async {
-    final yes=await showDialog<bool>(context:context,builder:(context)=>AlertDialog(title:const Text('Unlist product?'),content:const Text('This removes the listing from sale. Existing order history stays محفوظ.'),actions:[TextButton(onPressed:()=>Navigator.pop(context,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(context,true),child:const Text('Unlist'))]));
+    final yes=await showDialog<bool>(context:context,builder:(context)=>AlertDialog(title:const Text('Unlist product?'),content:const Text('This removes the listing from sale. Existing orders and order history will be preserved.'),actions:[TextButton(onPressed:()=>Navigator.pop(context,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(context,true),child:const Text('Unlist'))]));
     if(yes!=true)return; final ok=await _service.archiveFarmerProduct(int.parse('${product['id']}'));
     if(ok){_showMessage('Product unlisted.');await _loadProducts();}else _showMessage('Could not unlist product.',isError:true);
   }

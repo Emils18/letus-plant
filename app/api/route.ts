@@ -18,6 +18,8 @@ type ProductRow = {
   price: number | string | null;
   stock: number | string | null;
   farmer_id: string | null;
+  archived_at: string | null;
+  status?: string | null;
 };
 
 function getBearerToken(request: NextRequest) {
@@ -40,6 +42,7 @@ export async function GET(request: NextRequest) {
       const { data, error } = await supabase
         .from("products")
         .select("*")
+        .is("archived_at", null)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
@@ -53,6 +56,7 @@ export async function GET(request: NextRequest) {
   category: product.category || "",
   price: Number(product.price ?? 0),
   stock: Number(product.stock ?? 0),
+  status: Number(product.stock ?? 0) > 0 ? "Available" : "Out of Stock",
   image: product.image || product.image_url || "",
   freshnessInfo:
     product.freshnessInfo ||
@@ -264,7 +268,7 @@ export async function POST(request: NextRequest) {
       // Read the real product owner, price, name, and stock from the database.
       const { data: productRows, error: productsError } = await supabase
         .from("products")
-        .select("id, name, price, stock, farmer_id")
+        .select("id, name, price, stock, farmer_id, archived_at, status")
         .in("id", productIds);
 
       if (productsError) throw productsError;
@@ -278,6 +282,13 @@ export async function POST(request: NextRequest) {
             message: "One or more products could not be found.",
           },
           404
+        );
+      }
+
+      if (databaseProducts.some((product) => product.archived_at || product.status?.toLowerCase() === "unlisted")) {
+        return json(
+          { success: false, message: "One or more products are no longer available for purchase." },
+          409
         );
       }
 
@@ -407,8 +418,9 @@ if (notificationError) {
 
         const { error: stockError } = await supabase
           .from("products")
-          .update({ stock: newStock })
-          .eq("id", item.product_id);
+          .update({ stock: newStock, status: newStock > 0 ? "Available" : "Out of Stock" })
+          .eq("id", item.product_id)
+          .is("archived_at", null);
 
         if (stockError) throw stockError;
       }

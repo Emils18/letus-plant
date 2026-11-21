@@ -193,7 +193,7 @@ class OrderService {
 
       final response = await supabase
           .from('products')
-          .select('id, name, price, stock, farmer_id')
+          .select('id, name, price, stock, farmer_id, archived_at, status')
           .inFilter('id', productIds);
 
       final List<Map<String, dynamic>> databaseProducts =
@@ -228,11 +228,18 @@ class OrderService {
             .firstWhere((product) => _toInt(product['id']) == productId);
 
         final int currentStock = _toInt(databaseProduct['stock']);
-
-        final double currentPrice = _toDouble(databaseProduct['price']);
-
         final String productName =
             databaseProduct['name']?.toString() ?? 'Lettuce Product';
+
+        if (databaseProduct['archived_at'] != null ||
+            databaseProduct['status']?.toString().toLowerCase() == 'unlisted') {
+          return CheckoutResult(
+            success: false,
+            error: '$productName is no longer available for purchase.',
+          );
+        }
+
+        final double currentPrice = _toDouble(databaseProduct['price']);
 
         final String farmerId =
             databaseProduct['farmer_id']?.toString().trim() ?? '';
