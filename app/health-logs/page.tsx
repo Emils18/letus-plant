@@ -1,1270 +1,304 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { supabase } from "@/lib/supabase";
 
-type HealthLog = {
+import { scanClass, scanConfidencePercent, scanPathogen, type ScanRecord } from "@/lib/scan-guidance";
+
+import { ScanReportDetails } from "@/app/components/scan-report-details";
+
+type HealthLog = ScanRecord & {
   id: string;
+
   user_id?: string | null;
-  image_url?: string | null;
-  disease_name?: string | null;
-  result?: string | null;
-  confidence_score?: number | string | null;
-  confidence?: number | string | null;
-  temperature?: number | string | null;
-  temp?: number | string | null;
-  weather_condition?: string | null;
-  weather?: string | null;
-  location?: string | null;
-  device_id?: string | null;
+
+  scan_session_id?: string | null;
+
   captured_at?: string | null;
+
   created_at?: string | null;
+
 };
 
-type UserProfile = {
+type ScanSession = {
   id: string;
-  role: string;
-  full_name?: string | null;
+
+  started_at?: string | null;
+
+  completed_at?: string | null;
+
+  status?: string | null
 };
 
-type FarmerProduct = {
-  id: number | string;
-  stock?: number | string | null;
-  location?: string | null;
+type View = "home" | "overall" | "sessions";
+
+const diseaseNames = ["Downy Mildew", "Powdery Mildew", "Septoria Blight"] as const;
+
+const card = "rounded-3xl border border-emerald-900/10 bg-white p-5 shadow-sm sm:p-7";
+
+const textDate = (value?: string | null) => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString() : "Date not recorded";
+
+const disease = (log: HealthLog) => (log.disease_name || log.result || "Unknown result").replaceAll("_", " ").trim();
+
+const isHealthy = (log: HealthLog) => scanClass(disease(log)) === "healthy";
+
+const confidenceValues = (records: HealthLog[]) => records.map((log) => scanConfidencePercent(log.confidence_score ?? log.confidence)).filter((value): value is number => value !== null);
+
+const averageConfidence = (records: HealthLog[]) => {
+  const values = confidenceValues(records);
+
+  return values.length ? `${(values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1)}%` : "Not available";
+
 };
 
-type FarmerOrder = {
-  id: string;
-  status?: string | null;
-};
+function ScanCard({ log, index }: {
+  log: HealthLog;
 
-type WeatherData = {
-  location: string;
-  temperature: number;
-  condition: string;
-  description: string;
-  humidity: number;
-  windSpeed: number;
-  updatedAt: string;
-};
-
-type FarmerNotice = {
-  id: string;
-  title: string;
-  message: string;
-  tone: "warning" | "danger" | "info" | "success";
-};
-
-function GreenGuardIcon({
-  className = "h-10 w-10",
-}: {
-  className?: string;
+  index: number
 }) {
-  return (
-    <svg
-      viewBox="0 0 100 100"
-      className={className}
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M50 6C61 16 73 20 87 22V47C87 70 72 86 50 94C28 86 13 70 13 47V22C27 20 39 16 50 6Z"
-        fill="white"
-        stroke="#5DBB3F"
-        strokeWidth="6"
-        strokeLinejoin="round"
-      />
+  const healthy = isHealthy(log);
 
-      <path
-        d="M50 22C59 31 67 43 64 57C61 68 55 74 50 80C45 74 39 68 36 57C33 43 41 31 50 22Z"
-        fill="#67C839"
-      />
+  const resultClass = scanClass(disease(log));
 
-      <path
-        d="M36 39C27 39 20 47 20 56C20 67 31 74 47 81C42 70 38 58 36 39Z"
-        fill="#1FA33F"
-      />
+  const known = ["healthy", "downy mildew", "powdery mildew", "septoria blight"].includes(resultClass);
 
-      <path
-        d="M64 39C73 39 80 47 80 56C80 67 69 74 53 81C58 70 62 58 64 39Z"
-        fill="#169A3A"
-      />
-
-      <path
-        d="M50 34V79"
-        stroke="white"
-        strokeWidth="5"
-        strokeLinecap="round"
-      />
-
-      <path
-        d="M35 46C40 59 46 70 50 79"
-        stroke="white"
-        strokeWidth="5"
-        strokeLinecap="round"
-      />
-
-      <path
-        d="M65 46C60 59 54 70 50 79"
-        stroke="white"
-        strokeWidth="5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function readText(
-  log: HealthLog,
-  keys: Array<keyof HealthLog>,
-  fallback: string
-) {
-  for (const key of keys) {
-    const value = log[key];
-
-    if (
-      value !== null &&
-      value !== undefined &&
-      String(value).trim() !== ""
-    ) {
-      return String(value);
-    }
-  }
-
-  return fallback;
-}
-
-function getDiseaseName(log: HealthLog) {
-  return readText(
-    log,
-    ["disease_name", "result"],
-    "Unknown Result"
-  );
-}
-
-function getConfidence(log: HealthLog) {
-  const raw =
-    log.confidence_score ??
-    log.confidence;
-
-  if (raw === null || raw === undefined) {
-    return "N/A";
-  }
-
-  const value = Number(raw);
-
-  if (Number.isNaN(value)) {
-    return String(raw);
-  }
-
-  if (value <= 1) {
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  return `${value.toFixed(1)}%`;
-}
-
-function getTemperature(log: HealthLog) {
-  const raw =
-    log.temperature ??
-    log.temp;
-
-  if (raw === null || raw === undefined) {
-    return "N/A";
-  }
-
-  const value = Number(raw);
-
-  if (Number.isNaN(value)) {
-    return String(raw);
-  }
-
-  return `${value.toFixed(1)}°C`;
-}
-
-function getDate(log: HealthLog) {
-  const raw =
-    log.captured_at ||
-    log.created_at;
-
-  if (!raw) {
-    return "No date";
-  }
-
-  const date = new Date(raw);
-
-  if (Number.isNaN(date.getTime())) {
-    return raw;
-  }
-
-  return date.toLocaleString();
-}
-
-function formatWeatherTime(
-  value?: string | null
-) {
-  if (!value) {
-    return "Not updated yet";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
-
-function isHealthy(name: string) {
-  const value = name.toLowerCase();
-
-  return (
-    value.includes("healthy") ||
-    value.includes("none") ||
-    value.includes("no disease")
-  );
-}
-
-function isUsefulLocation(
-  value?: string | null
-) {
-  const location =
-    String(value || "").trim();
-
-  const normalized =
-    location.toLowerCase();
-
-  if (!location) {
-    return false;
-  }
-
-  return ![
-    "n/a",
-    "unknown",
-    "local farm",
-    "farm pickup",
-    "no location",
-  ].includes(normalized);
-}
-
-function noticeToneClass(
-  tone: FarmerNotice["tone"]
-) {
-  if (tone === "danger") {
-    return "border-red-400/25 bg-red-400/10 text-red-200";
-  }
-
-  if (tone === "warning") {
-    return "border-amber-400/25 bg-amber-400/10 text-amber-200";
-  }
-
-  if (tone === "success") {
-    return "border-[#5DBB63]/25 bg-[#5DBB63]/10 text-[#9BE49F]";
-  }
-
-  return "border-blue-400/25 bg-blue-400/10 text-blue-200";
-}
-
-export default function HealthLogsPage() {
-  const [loading, setLoading] =
-    useState(true);
-
-  const [
-    weatherLoading,
-    setWeatherLoading,
-  ] = useState(false);
-
-  const [logs, setLogs] =
-    useState<HealthLog[]>([]);
-
-  const [profile, setProfile] =
-    useState<UserProfile | null>(null);
-
-  const [
-    farmerProducts,
-    setFarmerProducts,
-  ] = useState<FarmerProduct[]>([]);
-
-  const [
-    farmerOrders,
-    setFarmerOrders,
-  ] = useState<FarmerOrder[]>([]);
-
-  const [weather, setWeather] =
-    useState<WeatherData | null>(null);
-
-  const [
-    weatherError,
-    setWeatherError,
-  ] = useState("");
-
-  const [search, setSearch] =
-    useState("");
-
-  const isFarmer =
-    String(profile?.role || "").toLowerCase() ===
-    "farmer";
-
-  const weatherLocation = useMemo(() => {
-    const logLocation =
-      logs.find((log) =>
-        isUsefulLocation(log.location)
-      )?.location;
-
-    const productLocation =
-      farmerProducts.find((product) =>
-        isUsefulLocation(product.location)
-      )?.location;
-
-    return String(
-      logLocation ||
-        productLocation ||
-        "Lapu-Lapu City, Cebu, PH"
-    ).trim();
-  }, [farmerProducts, logs]);
-
-  const loadWeather = useCallback(
-    async (
-      location: string,
-      showError = true
-    ) => {
-      setWeatherLoading(true);
-
-      try {
-        const response = await fetch(
-          `/api/weather?location=${encodeURIComponent(
-            location
-          )}`,
-          {
-            cache: "no-store",
-          }
-        );
-
-        const result =
-          await response.json();
-
-        if (
-          !response.ok ||
-          !result.success
-        ) {
-          throw new Error(
-            result.message ||
-              "Unable to load live weather."
-          );
-        }
-
-        setWeather(
-          result.data as WeatherData
-        );
-
-        setWeatherError("");
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Unable to load live weather.";
-
-        setWeatherError(message);
-
-        if (showError) {
-          alert(message);
-        }
-      } finally {
-        setWeatherLoading(false);
-      }
-    },
-    []
-  );
-
-  const loadLogs =
-    useCallback(async () => {
-      setLoading(true);
-
-      try {
-        const {
-          data: { user },
-        } =
-          await supabase.auth.getUser();
-
-        if (!user) {
-          throw new Error(
-            "Please login first."
-          );
-        }
-
-        const {
-          data: userProfile,
-          error: profileError,
-        } = await supabase
-          .from("users")
-          .select(
-            "id, role, full_name"
-          )
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (profileError) {
-          throw new Error(
-            profileError.message
-          );
-        }
-
-        const currentProfile =
-          userProfile as UserProfile | null;
-
-        const currentRole =
-          String(
-            currentProfile?.role || ""
-          ).toLowerCase();
-
-        setProfile(currentProfile);
-
-        if (currentRole === "farmer") {
-          const [
-            logsResult,
-            productsResult,
-            ordersResult,
-          ] = await Promise.all([
-            supabase
-              .from(
-                "diagnostic_logs"
-              )
-              .select("*")
-              .eq(
-                "user_id",
-                user.id
-              )
-              .order("created_at", {
-                ascending: false,
-              }),
-
-            supabase
-              .from("products")
-              .select(
-                "id, stock, location"
-              )
-              .eq(
-                "farmer_id",
-                user.id
-              )
-              .order("created_at", {
-                ascending: false,
-              }),
-
-            supabase
-              .from("orders")
-              .select("id, status")
-              .eq(
-                "farmer_id",
-                user.id
-              )
-              .order("created_at", {
-                ascending: false,
-              }),
-          ]);
-
-          if (logsResult.error) {
-            throw new Error(
-              logsResult.error.message
-            );
-          }
-
-          if (productsResult.error) {
-            throw new Error(
-              productsResult.error.message
-            );
-          }
-
-          if (ordersResult.error) {
-            throw new Error(
-              ordersResult.error.message
-            );
-          }
-
-          setLogs(
-            (logsResult.data as HealthLog[]) ||
-              []
-          );
-
-          setFarmerProducts(
-            (productsResult.data as FarmerProduct[]) ||
-              []
-          );
-
-          setFarmerOrders(
-            (ordersResult.data as FarmerOrder[]) ||
-              []
-          );
-        } else {
-          const {
-            data,
-            error,
-          } = await supabase
-            .from("diagnostic_logs")
-            .select("*")
-            .order("created_at", {
-              ascending: false,
-            });
-
-          if (error) {
-            throw new Error(
-              error.message
-            );
-          }
-
-          setLogs(
-            (data as HealthLog[]) || []
-          );
-
-          setFarmerProducts([]);
-
-          setFarmerOrders([]);
-
-          setWeather(null);
-
-          setWeatherError("");
-        }
-      } catch (error) {
-        alert(
-          error instanceof Error
-            ? error.message
-            : "Failed to load health logs."
-        );
-      } finally {
-        setLoading(false);
-      }
-    }, []);
-
-  useEffect(() => {
-    loadLogs();
-  }, [loadLogs]);
-
-  useEffect(() => {
-    if (!isFarmer) {
-      return;
-    }
-
-    loadWeather(weatherLocation);
-
-    const intervalId =
-      window.setInterval(() => {
-        loadWeather(
-          weatherLocation,
-          false
-        );
-      }, 10 * 60 * 1000);
-
-    return () =>
-      window.clearInterval(intervalId);
-  }, [
-    isFarmer,
-    loadWeather,
-    weatherLocation,
-  ]);
-
-  const filteredLogs = useMemo(() => {
-    const query =
-      search.toLowerCase();
-
-    return logs.filter((log) => {
-      return (
-        getDiseaseName(log)
-          .toLowerCase()
-          .includes(query) ||
-
-        readText(
-          log,
-          [
-            "weather_condition",
-            "weather",
-          ],
-          ""
-        )
-          .toLowerCase()
-          .includes(query) ||
-
-        readText(
-          log,
-          ["location"],
-          ""
-        )
-          .toLowerCase()
-          .includes(query)
-      );
-    });
-  }, [logs, search]);
-
-  const healthyCount =
-    logs.filter((log) =>
-      isHealthy(
-        getDiseaseName(log)
-      )
-    ).length;
-
-  const riskCount =
-    logs.length - healthyCount;
-
-  const recentLogs =
-    logs.slice(0, 3);
-
-  const latestLog =
-    logs[0];
-
-  const pendingOrderCount =
-    farmerOrders.filter(
-      (order) =>
-        String(
-          order.status || ""
-        ).toLowerCase() ===
-        "pending"
-    ).length;
-
-  const lowStockCount =
-    farmerProducts.filter(
-      (product) =>
-        Number(product.stock || 0) <=
-        5
-    ).length;
-
-  const farmerNotices =
-    useMemo<FarmerNotice[]>(() => {
-      const notices:
-        FarmerNotice[] = [];
-
-      if (weather) {
-        const weatherText =
-          `${weather.condition} ${weather.description}`.toLowerCase();
-
-        if (weather.humidity >= 75) {
-          notices.push({
-            id: "humidity",
-            title:
-              "Weather Advisory",
-            message:
-              "High humidity detected. Monitor lettuce leaves for fungal disease symptoms.",
-            tone: "warning",
-          });
-        }
-
-        if (
-          weatherText.includes("rain")
-        ) {
-          notices.push({
-            id: "rain",
-            title: "Rain Advisory",
-            message:
-              "Rain is detected. Avoid unnecessary watering and check farm drainage.",
-            tone: "info",
-          });
-        }
-
-        if (
-          weatherText.includes("cloud")
-        ) {
-          notices.push({
-            id: "cloudy",
-            title:
-              "Leaf Moisture Advisory",
-            message:
-              "Cloudy conditions today. Inspect leaves for prolonged moisture.",
-            tone: "info",
-          });
-        }
-
-        if (
-          weather.temperature >= 30
-        ) {
-          notices.push({
-            id: "heat",
-            title: "Heat Advisory",
-            message:
-              "High temperature detected. Water during cooler hours and monitor heat stress.",
-            tone: "warning",
-          });
-        }
-      }
-
-      if (latestLog) {
-        const disease =
-          getDiseaseName(latestLog);
-
-        const isKnownResult =
-          !disease
-            .toLowerCase()
-            .includes("unknown");
-
-        if (
-          isKnownResult &&
-          !isHealthy(disease)
-        ) {
-          notices.push({
-            id: "disease",
-            title:
-              "Disease Detection",
-            message: `Disease alert: ${disease} was detected. Inspect nearby plants.`,
-            tone: "danger",
-          });
-        }
-      }
-
-      if (
-        pendingOrderCount > 0
-      ) {
-        notices.push({
-          id: "orders",
-          title: "Buyer Orders",
-          message: `You have ${pendingOrderCount} pending buyer order${
-            pendingOrderCount === 1
-              ? ""
-              : "s"
-          }.`,
-          tone: "info",
-        });
-      }
-
-      if (lowStockCount > 0) {
-        notices.push({
-          id: "stock",
-          title: "Low Stock",
-          message: `${lowStockCount} product${
-            lowStockCount === 1
-              ? " has"
-              : "s have"
-          } low stock. Review your listings.`,
-          tone: "warning",
-        });
-      }
-
-      if (
-        notices.length === 0
-      ) {
-        notices.push({
-          id: "clear",
-          title: "Farm Status",
-          message:
-            "No urgent weather, disease, order, or stock notices right now.",
-          tone: "success",
-        });
-      }
-
-      return notices;
-    }, [
-      latestLog,
-      lowStockCount,
-      pendingOrderCount,
-      weather,
-    ]);
-
-  async function handleRefreshAll() {
-    await loadLogs();
-
-    if (isFarmer) {
-      await loadWeather(
-        weatherLocation
-      );
-    }
-  }
-
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-[#07100B] text-white">
-        <div className="text-center">
-          <div className="mx-auto mb-5 h-14 w-14 animate-spin rounded-full border-4 border-[#5DBB63]/20 border-t-[#5DBB63]" />
-
-          <p className="text-sm font-black uppercase tracking-[4px] text-[#5DBB63]">
-            Loading Health Logs
-          </p>
-        </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className="min-h-screen bg-[#07100B] pb-24 text-white">
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -left-[18%] top-[-18%] h-[720px] w-[720px] rounded-full bg-[#5DBB63]/15 blur-[140px]" />
-
-        <div className="absolute -right-[18%] bottom-[-22%] h-[820px] w-[820px] rounded-full bg-[#2F6B3B]/20 blur-[170px]" />
-      </div>
-
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#07100B]/75 px-6 py-5 shadow-2xl shadow-black/20 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-[1200px] items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-[0_0_35px_rgba(93,187,99,0.35)]">
-              <GreenGuardIcon className="h-10 w-10" />
-            </div>
-
-            <div>
-              <h1 className="text-2xl font-black tracking-tighter">
-                Health Logs
-              </h1>
-
-              <p className="text-[10px] font-bold uppercase tracking-[3px] text-[#5DBB63]">
-                GreenGuard AI
-              </p>
-            </div>
-          </div>
-
-          <button
-            onClick={
-              handleRefreshAll
-            }
-            disabled={
-              loading ||
-              weatherLoading
-            }
-            className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-5 py-2.5 text-sm font-black text-[#5DBB63] transition hover:bg-[#5DBB63] hover:text-[#07100B] disabled:opacity-60"
-          >
-            {loading ||
-            weatherLoading
-              ? "Refreshing..."
-              : "Refresh"}
-          </button>
-        </div>
-      </header>
-
-      <div className="relative z-10 mx-auto w-full max-w-[1200px] px-6 pt-10">
-        <section className="mb-10 rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 via-[#0D1711]/95 to-[#07100B]/95 p-10 shadow-2xl shadow-black/30">
-          <div className="mb-5 inline-flex rounded-full border border-[#5DBB63]/20 bg-[#5DBB63]/10 px-4 py-2 text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">
-            Scan History / Health Logs
-          </div>
-
-          <h2 className="text-5xl font-black tracking-tighter">
-            Crop Health Monitoring
-          </h2>
-
-          <p className="mt-4 max-w-3xl text-lg text-white/55">
-            Review lettuce scan records,
-            disease results,
-            confidence scores, live
-            weather, and monitoring
-            history from the GreenGuard AI system.
-          </p>
-
-          <p className="mt-3 text-sm text-white/35">
-            Current role:{" "}
-            {profile?.role ||
-              "Unknown"}
-          </p>
-        </section>
-
-        <nav aria-label="Health report navigation" className="mb-8 grid gap-4 sm:grid-cols-2">
-  <a href="#overall-health-report" className="rounded-3xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 p-6 transition-colors hover:bg-[#5DBB63]/20">
-    <h3 className="text-xl font-black text-white">Overall Health Report</h3>
-    <p className="mt-2 text-sm text-white/70">View combined health statistics from saved scans.</p>
-  </a>
-  <a href="#diagnostic-records" className="rounded-3xl border border-white/20 bg-white/[0.06] p-6 transition-colors hover:bg-white/[0.12]">
-    <h3 className="text-xl font-black text-white">Diagnostic Records</h3>
-    <p className="mt-2 text-sm text-white/70">Browse individual scan results and their details.</p>
-  </a>
-</nav>
-<section id="overall-health-report" className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-3">
-          <div className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-6">
-            <p className="text-4xl font-black text-white">
-              {logs.length}
-            </p>
-
-            <p className="mt-1 text-xs font-bold uppercase tracking-[2px] text-white/40">
-              Total Logs
-            </p>
-          </div>
-
-          <div className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-6">
-            <p className="text-4xl font-black text-[#5DBB63]">
-              {healthyCount}
-            </p>
-
-            <p className="mt-1 text-xs font-bold uppercase tracking-[2px] text-white/40">
-              Healthy Results
-            </p>
-          </div>
-
-          <div className="rounded-[1.7rem] border border-white/10 bg-white/[0.035] p-6">
-            <p className="text-4xl font-black text-orange-300">
-              {riskCount}
-            </p>
-
-            <p className="mt-1 text-xs font-bold uppercase tracking-[2px] text-white/40">
-              Risk Results
-            </p>
-          </div>
-        </section>
-
-        <section className="mb-8 rounded-[2rem] border border-white/10 bg-white/[0.035] p-7 shadow-2xl shadow-black/20 backdrop-blur-xl">
-          <div className="mb-5">
-            <h3 className="text-2xl font-black tracking-tight">
-              Recent Scan Records
-            </h3>
-
-            <p className="mt-1 text-sm text-white/45">
-              The 3 most recent diagnostic records.
-            </p>
-          </div>
-
-          {recentLogs.length ===
-          0 ? (
-            <div className="flex min-h-[180px] items-center justify-center rounded-3xl border border-dashed border-white/10 bg-black/10 text-sm text-white/40">
-              No recent scan records
-              found.
-            </div>
-          ) : (
-            <div className="grid gap-4 lg:grid-cols-3">
-              {recentLogs.map(
-                (log) => {
-                  const disease =
-                    getDiseaseName(log);
-
-                  const healthy =
-                    isHealthy(disease);
-
-                  return (
-                    <div
-                      key={log.id}
-                      className="rounded-[1.5rem] border border-white/10 bg-black/10 p-5"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-lg font-black">
-                            {disease}
-                          </p>
-
-                          <p className="mt-1 text-xs text-white/40">
-                            {getDate(
-                              log
-                            )}
-                          </p>
-                        </div>
-
-                        <span
-                          className={`rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[1.5px] ${
-                            healthy
-                              ? "border-[#5DBB63]/30 bg-[#5DBB63]/10 text-[#5DBB63]"
-                              : "border-orange-400/30 bg-orange-400/10 text-orange-300"
-                          }`}
-                        >
-                          {healthy
-                            ? "Healthy"
-                            : "Risk"}
-                        </span>
-                      </div>
-
-                      <div className="mt-4 grid gap-2 text-sm text-white/55">
-                        <p>
-                          Confidence:{" "}
-                          <span className="font-black text-[#5DBB63]">
-                            {getConfidence(
-                              log
-                            )}
-                          </span>
-                        </p>
-
-                        {getTemperature(log) !== "N/A" && (
-                          <p>
-                            Temperature:{" "}
-                            {getTemperature(log)}
-                          </p>
-                        )}
-
-                        {isUsefulLocation(log.location) && (
-                          <p>
-                            Location:{" "}
-                            {log.location}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
-              )}
-            </div>
-          )}
-        </section>
-
-        {isFarmer && (
-          <section className="mb-8 grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="rounded-[2rem] border border-[#5DBB63]/20 bg-gradient-to-br from-[#132019]/95 to-[#0A140E]/95 p-7 shadow-2xl shadow-black/20">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">
-                    Live Weather
-                  </p>
-
-                  <h3 className="mt-2 text-2xl font-black">
-                    {weather?.location ||
-                      weatherLocation}
-                  </h3>
-                </div>
-
-                <button
-                  onClick={() =>
-                    loadWeather(
-                      weatherLocation
-                    )
-                  }
-                  disabled={
-                    weatherLoading
-                  }
-                  className="rounded-2xl border border-[#5DBB63]/30 bg-[#5DBB63]/10 px-4 py-2 text-xs font-black text-[#5DBB63] transition hover:bg-[#5DBB63] hover:text-[#07100B] disabled:opacity-60"
-                >
-                  {weatherLoading
-                    ? "Refreshing..."
-                    : "Refresh"}
-                </button>
-              </div>
-
-              {weather ? (
-                <div className="mt-6 grid grid-cols-2 gap-3">
-                  <WeatherMetric
-                    label="Temperature"
-                    value={`${weather.temperature.toFixed(
-                      1
-                    )}°C`}
-                  />
-
-                  <WeatherMetric
-                    label="Condition"
-                    value={
-                      weather.condition
-                    }
-                  />
-
-                  <WeatherMetric
-                    label="Description"
-                    value={
-                      weather.description
-                    }
-                    capitalize
-                  />
-
-                  <WeatherMetric
-                    label="Humidity"
-                    value={`${weather.humidity}%`}
-                  />
-
-                  <WeatherMetric
-                    label="Wind Speed"
-                    value={`${weather.windSpeed.toFixed(
-                      1
-                    )} m/s`}
-                  />
-
-                  <WeatherMetric
-                    label="Updated"
-                    value={formatWeatherTime(
-                      weather.updatedAt
-                    )}
-                  />
-                </div>
-              ) : (
-                <div className="mt-6 rounded-2xl border border-white/10 bg-black/15 p-5 text-sm text-white/50">
-                  {weatherLoading
-                    ? "Loading live weather..."
-                    : weatherError ||
-                      "Live weather is not available yet."}
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-[2rem] border border-white/10 bg-white/[0.035] p-7 shadow-2xl shadow-black/20 backdrop-blur-xl">
-              <p className="text-xs font-black uppercase tracking-[3px] text-[#5DBB63]">
-                Farmer Advisory &
-                Notifications
-              </p>
-
-              <h3 className="mt-2 text-2xl font-black">
-                Live farm notices
-              </h3>
-
-              <div className="mt-5 grid gap-3">
-                {farmerNotices.map(
-                  (notice) => (
-                    <div
-                      key={
-                        notice.id
-                      }
-                      className={`rounded-2xl border p-4 ${noticeToneClass(
-                        notice.tone
-                      )}`}
-                    >
-                      <p className="text-xs font-black uppercase tracking-[2px]">
-                        {
-                          notice.title
-                        }
-                      </p>
-
-                      <p className="mt-1 text-sm font-bold leading-6">
-                        {
-                          notice.message
-                        }
-                      </p>
-                    </div>
-                  )
-                )}
-              </div>
-            </div>
-          </section>
-        )}
-
-        <section id="diagnostic-records" className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.035] shadow-2xl shadow-black/20 backdrop-blur-xl">
-          <div className="border-b border-white/10 px-8 py-7">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <h3 className="text-2xl font-black tracking-tight">
-                  Diagnostic Records
-                </h3>
-
-                <p className="mt-1 text-sm text-white/45">
-                  All scan records from the GreenGuard AI system.
-                  Buyer view is read-only.
-                </p>
-              </div>
-
-              <input
-                type="text"
-                placeholder="Search health logs..."
-                value={search}
-                onChange={(event) =>
-                  setSearch(
-                    event.target.value
-                  )
-                }
-                className="w-full rounded-2xl border border-white/10 bg-black/20 px-5 py-3 text-sm text-white outline-none transition-all placeholder:text-white/30 focus:border-[#5DBB63]/50 focus:ring-4 focus:ring-[#5DBB63]/10 lg:w-[360px]"
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 p-6">
-            {filteredLogs.length ===
-            0 ? (
-              <div className="flex min-h-[220px] items-center justify-center rounded-3xl border border-dashed border-white/10 bg-black/10 text-sm text-white/40">
-                No health logs found.
-              </div>
-            ) : (
-              filteredLogs.map(
-                (log) => {
-                  const disease =
-                    getDiseaseName(log);
-
-                  const healthy =
-                    isHealthy(disease);
-
-                  return (
-                    <div
-                      key={log.id}
-                      className="rounded-[1.5rem] border border-white/10 bg-black/10 p-5 transition hover:border-[#5DBB63]/30 hover:bg-white/[0.04]"
-                    >
-                      <div className="flex flex-col gap-5 md:flex-row">
-                        {log.image_url ? (
-                          <img
-                            src={
-                              log.image_url
-                            }
-                            alt="Health log image"
-                            className="h-40 w-full rounded-2xl object-cover md:w-56"
-                          />
-                        ) : (
-                          <div className="flex h-40 w-full items-center justify-center rounded-2xl bg-black/20 text-white/30 md:w-56">
-                            No Image
-                          </div>
-                        )}
-
-                        <div className="flex-1">
-                          <div className="mb-3 flex flex-wrap items-center gap-3">
-                            <h4 className="text-xl font-black">
-                              {
-                                disease
-                              }
-                            </h4>
-
-                            <span
-                              className={`rounded-full border px-3 py-1 text-[11px] font-black uppercase tracking-[2px] ${
-                                healthy
-                                  ? "border-[#5DBB63]/30 bg-[#5DBB63]/10 text-[#5DBB63]"
-                                  : "border-orange-400/30 bg-orange-400/10 text-orange-300"
-                              }`}
-                            >
-                              {healthy
-                                ? "Healthy"
-                                : "Risk"}
-                            </span>
-                          </div>
-
-                          <div className="grid gap-3 text-sm text-white/60 md:grid-cols-2">
-                            <p>
-                              Confidence:{" "}
-                              <span className="font-black text-[#5DBB63]">
-                                {getConfidence(
-                                  log
-                                )}
-                              </span>
-                            </p>
-
-                            {getTemperature(log) !== "N/A" && (
-                              <p>
-                                Temperature:{" "}
-                                {getTemperature(log)}
-                              </p>
-                            )}
-
-                            {isUsefulLocation(log.location) && (
-                              <p>
-                                Location:{" "}
-                                {log.location}
-                              </p>
-                            )}
-
-                            <p className="md:col-span-2">
-                              Date:{" "}
-                              {getDate(
-                                log
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
-              )
-            )}
-          </div>
-        </section>
-      </div>
-    </main>
-  );
-}
-
-function WeatherMetric({
-  label,
-  value,
-  capitalize = false,
-}: {
-  label: string;
-  value: string;
-  capitalize?: boolean;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-black/15 p-4">
-      <p className="text-[10px] font-black uppercase tracking-[2px] text-white/35">
-        {label}
-      </p>
-
-      <p
-        className={`mt-1 text-sm font-black text-white ${
-          capitalize
-            ? "capitalize"
-            : ""
-        }`}
-      >
-        {value}
-      </p>
+  return <article className="overflow-hidden rounded-2xl border border-emerald-900/10 bg-white">    {log.image_url ? <img src={log.image_url} alt={`Saved lettuce scan ${index + 1}`} loading="lazy" className="h-52 w-full bg-emerald-50 object-cover sm:h-64" /> : <div className="flex h-40 items-center justify-center bg-emerald-50 text-base font-semibold text-emerald-900/60">Scan image not available</div>}    <div className="p-4 sm:p-5">      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <p className="text-xs font-bold uppercase tracking-wide text-emerald-800/60">Lettuce {index + 1}</p>
+      <h4 className="mt-1 text-xl font-extrabold text-slate-900">{disease(log)}</h4>
+      <p className="mt-1 text-sm text-slate-600">{textDate(log.captured_at || log.created_at)}</p>
     </div>
-  );
+    <span className={`rounded-full px-3 py-1.5 text-sm font-bold ${healthy ? "bg-emerald-100 text-emerald-900" : "bg-amber-100 text-amber-900"}`}>{healthy ? "Healthy result" : known ? "Disease detected" : "Uncertain result"}</span>
+  </div>      <p className="mt-3 text-sm font-semibold text-slate-700">AI confidence: {scanConfidencePercent(log.confidence_score ?? log.confidence) === null ? "Not available" : `${scanConfidencePercent(log.confidence_score ?? log.confidence)!.toFixed(1)}%`}</p>      <p className="mt-1 text-sm text-slate-600">Pathogen: {scanPathogen(log)}</p>      <ScanReportDetails log={log} light showPhoto={false} />    </div>  </article>;
+
 }
+export default function HealthLogsPage() {
+  const [logs, setLogs] = useState<HealthLog[]>([]);
+
+  const [sessions, setSessions] = useState<ScanSession[]>([]);
+
+  const [loading, setLoading] = useState(true);
+
+  const [error, setError] = useState("");
+
+  const [view, setView] = useState<View>("home");
+
+  const [showAll, setShowAll] = useState(false);
+
+  const [openSession, setOpenSession] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+
+    setError("");
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if(!user) throw new Error("Please log in to view your saved health reports.");
+
+      const [logsResult, sessionsResult] = await Promise.all([supabase.from("diagnostic_logs").select("*").eq("user_id", user.id).order("created_at", { ascending: false }), supabase.from("scan_sessions").select("id, started_at, completed_at, status").eq("user_id", user.id).order("started_at", { ascending: false }),]);
+
+      if(logsResult.error) throw new Error(logsResult.error.message);
+
+      if(sessionsResult.error) throw new Error(sessionsResult.error.message);
+
+      const unique = new Map<string, HealthLog>();
+
+      for(const item of(logsResult.data || []) as HealthLog[]) unique.set(String(item.id), item);
+
+      setLogs([...unique.values()].sort((a, b) => Date.parse(b.captured_at || b.created_at || "") - Date.parse(a.captured_at || a.created_at || "")));
+
+      setSessions((sessionsResult.data || []) as ScanSession[]);
+
+    } catch(err) {
+      setError(err instanceof Error ? err.message : "Could not load saved reports.");
+
+    } finally {
+      setLoading(false);
+
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+
+  }, [load]);
+
+  const healthyCount = useMemo(() => logs.filter(isHealthy).length, [logs]);
+
+  const atRiskCount = logs.length - healthyCount;
+
+  const standalone = useMemo(() => logs.filter((log) => !log.scan_session_id), [logs]);
+
+  const diseaseCount = (name: string, list = logs) => list.filter((log) => scanClass(disease(log)) === scanClass(name)).length;
+
+  const sessionsWithScans = sessions.map((session) => ({ session, scans: logs.filter((log) => String(log.scan_session_id || "") === session.id).sort((a, b) => Date.parse(a.captured_at || a.created_at || "") - Date.parse(b.captured_at || b.created_at || "")) })).filter((item) => item.scans.length > 0);
+
+  const knownSessionIds = new Set(sessions.map((session) => session.id));
+
+  const orphanSessionReports = [...new Set(logs.map((log) => log.scan_session_id).filter((id): id is string => Boolean(id) && !knownSessionIds.has(id!)))].map((id) => ({ session: { id, started_at: null }, scans: logs.filter((log) => log.scan_session_id === id).sort((a, b) => Date.parse(a.captured_at || a.created_at || "") - Date.parse(b.captured_at || b.created_at || "")) }));
+
+  const allSessionReports = [...sessionsWithScans, ...orphanSessionReports];
+
+  const progress = (value: number) => logs.length ? value / logs.length * 100 : 0;
+
+  const overallSummary = logs.length === 0 ? "No saved lettuce scans yet." : atRiskCount === 0 ? "All saved scans were classified as healthy. Inspect every lettuce before selling." : `${atRiskCount} of ${logs.length} saved scans need closer inspection. Separate affected produce and review its individual report.`;
+
+  const recommendation = atRiskCount ? "Set aside lettuce with disease or uncertain results, inspect nearby plants, and follow the care steps in each report." : "Continue routine crop checks and inspect produce before harvest and sale.";
+
+  return <main className="min-h-screen bg-[#F4F8F3] text-slate-900">    <header className="border-b border-emerald-950/10 bg-white">
+    <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-5 sm:px-7">
+      <div>
+        <p className="text-sm font-extrabold uppercase tracking-widest text-emerald-800">GreenGuard AI</p>
+        <h1 className="mt-1 text-2xl font-black sm:text-3xl">Health Logs</h1>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={() => setView("home")} className="min-h-11 rounded-xl border px-4 font-bold">Reports</button>
+        <button onClick={() => void load()} disabled={loading} className="min-h-11 rounded-xl bg-emerald-800 px-4 font-bold text-white disabled:opacity-60">{loading ? "Loading…" : "Refresh"}</button>
+      </div>
+    </div>
+  </header>    <div className="mx-auto max-w-6xl px-4 py-7 sm:px-7 sm:py-10">      {error && <div role="alert" className="mb-5 rounded-2xl border border-red-200 bg-red-50 p-4 font-semibold text-red-900">{error} <button className="ml-2 underline" onClick={() => void load()}>Try again</button>
+  </div>}      {loading ? <div className="py-20 text-center text-lg font-bold text-emerald-900">Loading saved scan reports…</div> : <>        {view === "home" && <>
+    <div className="mb-7">
+      <h2 className="text-2xl font-black sm:text-3xl">Your lettuce health reports</h2>
+      <p className="mt-2 max-w-2xl text-base text-slate-600">Choose an overview of all saved scans or open one specific scanning session.</p>
+    </div>
+    <div className="grid gap-5 md:grid-cols-2">          <button onClick={() => {
+      setView("overall");
+
+      setShowAll(false);
+
+    }} className="group rounded-3xl border border-emerald-800/20 bg-gradient-to-br from-emerald-900 to-emerald-700 p-7 text-left text-white shadow-lg transition hover:-translate-y-0.5 focus-visible:outline-4 focus-visible:outline-emerald-400">
+      <span className="text-sm font-bold uppercase tracking-widest text-emerald-100">All saved scans</span>
+      <h3 className="mt-3 text-2xl font-black">Overall Health Report</h3>
+      <p className="mt-2 text-emerald-50">Crop summary, percentages, disease breakdown, and average AI confidence.</p>
+      <div className="mt-6 flex items-end justify-between">
+        <b className="text-4xl">{logs.length}</b>
+        <span className="font-bold">lettuce scanned →</span>
+      </div>
+    </button>          <button onClick={() => setView("sessions")} className="group rounded-3xl border border-emerald-800/15 bg-white p-7 text-left shadow-sm transition hover:-translate-y-0.5 focus-visible:outline-4 focus-visible:outline-emerald-400">
+        <span className="text-sm font-bold uppercase tracking-widest text-emerald-800">Independent reports</span>
+        <h3 className="mt-3 text-2xl font-black">Session Reports</h3>
+        <p className="mt-2 text-slate-600">Open a session to see only the lettuces saved in that scan.</p>
+        <div className="mt-6 flex items-end justify-between">
+          <b className="text-4xl text-emerald-800">{allSessionReports.length + standalone.length}</b>
+          <span className="font-bold text-emerald-900">sessions and individual scans →</span>
+        </div>
+      </button>        </div>
+    <p className="mt-6 text-sm text-slate-500">Reports use saved scan results. AI image classification is not a food-safety guarantee.</p>
+  </>}        {view === "overall" && <>
+    <button onClick={() => setView("home")} className="mb-5 min-h-11 rounded-xl border border-emerald-900/15 bg-white px-4 font-bold text-emerald-900">← All reports</button>
+    <section className={card}>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-bold uppercase tracking-widest text-emerald-800">All saved scan records</p>
+          <h2 className="mt-1 text-3xl font-black">Overall Health Report</h2>
+        </div>
+        <span className="rounded-full bg-emerald-100 px-4 py-2 font-extrabold text-emerald-900">{logs.length} scanned</span>
+      </div>          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric label="Healthy lettuce" value={`${healthyCount}`} note={`${progress(healthyCount).toFixed(1)}% of scans`} />
+        <Metric label="Unhealthy / at risk" value={`${atRiskCount}`} note={`${progress(atRiskCount).toFixed(1)}% of scans`} tone="amber" />
+        <Metric label="Average AI confidence" value={averageConfidence(logs)} note="Valid saved confidence values" />
+        <Metric label="Total scanned" value={`${logs.length}`} note="Unique saved scan records" />
+      </div>          <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <div className="rounded-2xl bg-emerald-50 p-5">
+          <h3 className="text-lg font-extrabold">Crop health summary</h3>
+          <p className="mt-2 leading-7 text-slate-700">{overallSummary}</p>
+          <h4 className="mt-5 font-extrabold">Practical next steps</h4>
+          <p className="mt-2 leading-7 text-slate-700">{recommendation}</p>
+        </div>
+        <div className="rounded-2xl border border-slate-200 p-5">
+          <h3 className="text-lg font-extrabold">Detected disease breakdown</h3>{diseaseNames.map((name) => {
+            const count = diseaseCount(name);
+
+            return <div key={name} className="mt-4">
+              <div className="flex justify-between gap-3 text-sm font-bold">
+                <span>{name}</span>
+                <span>{count}</span>
+              </div>
+              <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-amber-500" style={{ width: `${logs.length ? count / logs.length * 100 : 0}%` }} />
+              </div>
+            </div>
+          })}<div className="mt-5 flex justify-between text-sm font-bold">
+            <span>Healthy</span>
+            <span>{healthyCount}</span>
+          </div>
+          <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-emerald-600" style={{ width: `${progress(healthyCount)}%` }} />
+          </div>
+        </div>
+      </div>          <button onClick={() => setShowAll((value) => !value)} className="mt-6 min-h-12 w-full rounded-xl bg-emerald-800 px-5 font-extrabold text-white">{showAll ? "Hide scanned lettuces" : "View All Scanned Lettuces"}</button>          {showAll && <div className="mt-5 grid gap-4 md:grid-cols-2">{logs.map((log, index) => <ScanCard key={log.id} log={log} index={index} />)}{logs.length === 0 && <Empty text="No saved lettuce scans yet." />}</div>}        </section>
+  </>}        {view === "sessions" && <>
+    <button onClick={() => setView("home")} className="mb-5 min-h-11 rounded-xl border border-emerald-900/15 bg-white px-4 font-bold text-emerald-900">← All reports</button>
+    <div className="mb-5">
+      <h2 className="text-3xl font-black">Session Reports</h2>
+      <p className="mt-2 text-slate-600">Every report stays with its saved session ID. Individual scans without a session appear on their own.</p>
+    </div>          {allSessionReports.map(({ session, scans }) => {
+      const healthy = scans.filter(isHealthy).length;
+
+      const risk = scans.length - healthy;
+
+      const opened = openSession === session.id;
+
+      return <section key={session.id} className={`${card} mb-4`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xl font-extrabold">Scan session</h3>
+            <p className="mt-1 text-sm text-slate-600">{session.started_at ? `Started ${textDate(session.started_at)}` : "Session date not recorded"}</p>
+          </div>
+          <span className="rounded-full bg-emerald-100 px-3 py-2 font-bold text-emerald-900">{scans.length} lettuce scanned</span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
+          <SmallMetric label="Healthy" value={healthy} />
+          <SmallMetric label="At risk" value={risk} />
+          <SmallMetric label="Downy" value={diseaseCount("Downy Mildew", scans)} />
+          <SmallMetric label="Powdery" value={diseaseCount("Powdery Mildew", scans)} />
+          <SmallMetric label="Septoria" value={diseaseCount("Septoria Blight", scans)} />
+        </div>
+        <p className="mt-3 text-sm font-bold text-slate-700">Average confidence: {averageConfidence(scans)}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{risk ? `${risk} lettuce need closer inspection. Check each scan report for disease-specific care.` : "Every scan in this session was classified as healthy. Inspect before selling."}</p>
+        <button onClick={() => setOpenSession(opened ? null : session.id)} className="mt-4 min-h-12 w-full rounded-xl bg-emerald-800 px-5 font-extrabold text-white">{opened ? "Hide scanned lettuces" : "View Scanned Lettuces"}</button>{opened && <div className="mt-4 grid gap-4 md:grid-cols-2">{scans.map((log, index) => <ScanCard key={log.id} log={log} index={index} />)}</div>}</section>
+    })}          {standalone.length > 0 && <section className={`${card} mt-7`}>
+      <h3 className="text-2xl font-black">Individual Scan Reports</h3>
+      <p className="mt-1 text-slate-600">These saved scans do not have a session ID, so each is shown independently.</p>
+      <div className="mt-4 grid gap-4 md:grid-cols-2">{standalone.map((log, index) => <ScanCard key={log.id} log={log} index={index} />)}</div>
+    </section>}          {!allSessionReports.length && !standalone.length && <Empty text="No saved session or individual scan reports yet." />}        </>}      </>}    </div>  </main>;
+
+}
+function Metric({ label, value, note, tone }: {
+  label: string;
+
+  value: string;
+
+  note: string;
+
+  tone?: "amber"
+}) {
+  return <div className={`rounded-2xl p-4 ${tone === "amber" ? "bg-amber-50" : "bg-emerald-50"}`}>
+    <p className="text-sm font-bold text-slate-600">{label}</p>
+    <p className={`mt-2 text-3xl font-black ${tone === "amber" ? "text-amber-800" : "text-emerald-900"}`}>{value}</p>
+    <p className="mt-1 text-xs text-slate-500">{note}</p>
+  </div>;
+
+}
+function SmallMetric({ label, value }: {
+  label: string;
+
+  value: number
+}) {
+  return <div className="rounded-xl bg-slate-50 p-3">
+    <span className="text-slate-600">{label}</span>
+    <b className="mt-1 block text-xl">{value}</b>
+  </div>;
+
+}
+function Empty({ text }: { text: string }) {
+  return <div className="rounded-2xl border border-dashed border-emerald-900/20 bg-white p-8 text-center text-slate-600">{text}</div>;
+
+}
+
+
+

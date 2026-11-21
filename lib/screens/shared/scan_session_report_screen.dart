@@ -12,8 +12,8 @@ class ScanSessionReportScreen extends StatelessWidget {
   });
 
   final List<Map<String, dynamic>> scans;
-  final DateTime startedAt;
-  final DateTime completedAt;
+  final DateTime? startedAt;
+  final DateTime? completedAt;
 
   // false = report immediately after scanning
   // true  = old report opened from Scan History
@@ -61,21 +61,20 @@ class ScanSessionReportScreen extends StatelessWidget {
       return 0.0;
     }
 
-    final double value =
-        raw is num
-            ? raw.toDouble()
-            : double.tryParse(
-                  raw.toString(),
-                ) ??
-                0.0;
-
-    // Normalize to 0.0 - 1.0
-    return value > 1.0
-        ? value / 100.0
-        : value;
+    final String text = raw.toString().trim();
+    final bool isPercent = text.endsWith('%');
+    final double value = raw is num ? raw.toDouble() : double.tryParse(text.replaceAll('%', '')) ?? 0.0;
+    if (!value.isFinite || value < 0 || value > 100) return 0.0;
+    return isPercent || value > 1.0 ? value / 100.0 : value;
   }
 
   // ============================================================
+  bool _hasConfidence(Map<String, dynamic> scan) {
+    final dynamic raw = scan['confidence'] ?? scan['confidence_score'] ?? scan['score'];
+    if (raw == null || raw.toString().trim().isEmpty) return false;
+    final value = double.tryParse(raw.toString().replaceAll('%', '').trim());
+    return value != null && value.isFinite && value >= 0 && value <= 100;
+  }
   // DISEASE MATCH
   // ============================================================
 
@@ -114,31 +113,12 @@ class ScanSessionReportScreen extends StatelessWidget {
   // AVERAGE CONFIDENCE
   // ============================================================
 
-  double _averageConfidence(
+  double? _averageConfidence(
     String disease,
   ) {
-    final List<Map<String, dynamic>>
-        matching =
-        scans.where(
-      (scan) {
-        return _matches(
-          scan,
-          disease,
-        );
-      },
-    ).toList();
-
-    if (matching.isEmpty) {
-      return 0.0;
-    }
-
-    double total = 0.0;
-
-    for (final scan in matching) {
-      total += _confidence(scan);
-    }
-
-    return total / matching.length;
+    final valid = scans.where((scan) => _matches(scan, disease) && _hasConfidence(scan)).toList();
+    if (valid.isEmpty) return null;
+    return valid.map(_confidence).reduce((a, b) => a + b) / valid.length;
   }
 
   double _percent(int count) {
@@ -197,6 +177,10 @@ class ScanSessionReportScreen extends StatelessWidget {
   }
 
   // ============================================================
+  String _pathogenForScan(Map<String, dynamic> scan, String disease) {
+    final saved = scan['pathogen_name']?.toString().trim();
+    return saved != null && saved.isNotEmpty ? saved : _pathogen(disease);
+  }
   // SIMPLE DESCRIPTION
   // ============================================================
 
@@ -268,6 +252,14 @@ class ScanSessionReportScreen extends StatelessWidget {
   }
 
   // ============================================================
+  List<String> _recommendations(String disease) {
+    final value = _normalize(disease);
+    if (_isHealthy(disease)) return ['Continue checking new leaves and their undersides.', 'Keep tools and growing areas clean.'];
+    if (value == 'downy mildew') return ['Remove badly affected leaves and clear diseased debris.', 'Improve spacing and water near roots so leaves can dry.', 'Check nearby plants and ask a local agriculture technician if symptoms spread.'];
+    if (value == 'powdery mildew') return ['Remove badly affected leaves and clear crop debris.', 'Improve airflow and inspect both sides of nearby leaves.', 'Ask a local agriculture technician about approved lettuce treatments if it spreads.'];
+    if (value.contains('septoria')) return ['Remove spotted leaves and clear diseased debris.', 'Water near roots to reduce splashing and avoid handling wet plants.', 'Inspect nearby lettuce and seek local crop advice if spots continue.'];
+    return ['Set this lettuce aside for inspection.', 'Compare the result with the plant in good light.', 'Ask a local agriculture technician if symptoms remain unclear.'];
+  }
   // COLOR
   // ============================================================
 
@@ -314,7 +306,7 @@ class ScanSessionReportScreen extends StatelessWidget {
     }
 
     return DateTime.tryParse(
-      raw.toString(),
+      raw.toString().replaceAll('%', ''),
     );
   }
 
@@ -504,10 +496,7 @@ class ScanSessionReportScreen extends StatelessWidget {
       'Septoria Blight',
     );
 
-    final int notHealthy =
-        downy +
-        powdery +
-        septoria;
+    final int notHealthy = total - healthy;
 
     return Scaffold(
       backgroundColor:
@@ -615,7 +604,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                 ),
 
                 Text(
-                  'Started: ${_formatDateTime(startedAt)}',
+                  startedAt == null ? 'Session start: Not recorded' : 'Started: ${_formatDateTime(startedAt!)}',
                   style:
                       TextStyle(
                     color:
@@ -633,7 +622,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                 ),
 
                 Text(
-                  'Completed: ${_formatDateTime(completedAt)}',
+                  completedAt == null ? 'Session completion: Not recorded' : 'Completed: ${_formatDateTime(completedAt!)}',
                   style:
                       TextStyle(
                     color:
@@ -704,7 +693,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                 child:
                     _statusSummaryCard(
                   title:
-                      'Healthy / Sellable Estimate',
+                      'Visually Healthy',
                   count:
                       healthy,
                   percent:
@@ -728,7 +717,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                 child:
                     _statusSummaryCard(
                   title:
-                      'Not Healthy / Not Sellable',
+                      'Hold for Inspection',
                   count:
                       notHealthy,
                   percent:
@@ -956,9 +945,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                 Expanded(
                   child:
                       Text(
-                    'Sellable Estimate is based only on the supported '
-                    'GreenGuard disease classes: Healthy, Downy Mildew, '
-                    'Powdery Mildew, and Septoria Blight.',
+                    'These results describe image screening only. AI classification cannot confirm food safety.',
                     style:
                         TextStyle(
                       fontSize: 13,
@@ -1271,8 +1258,7 @@ class ScanSessionReportScreen extends StatelessWidget {
       disease,
     );
 
-    final double average =
-        _averageConfidence(
+    final double? average = _averageConfidence(
       disease,
     );
 
@@ -1348,7 +1334,7 @@ class ScanSessionReportScreen extends StatelessWidget {
 
               if (count > 0)
                 Text(
-                  'Avg ${(average * 100).toStringAsFixed(1)}%',
+                  average == null ? 'Avg not available' : 'Avg ${(average * 100).toStringAsFixed(1)}%',
                   style:
                       const TextStyle(
                     fontSize: 11,
@@ -1489,7 +1475,7 @@ class ScanSessionReportScreen extends StatelessWidget {
                     ),
 
                     Text(
-                      'Confidence: ${(confidence * 100).toStringAsFixed(1)}%',
+                      'Confidence: ' + (_hasConfidence(scan) ? (confidence * 100).toStringAsFixed(1) + '%' : 'Not available'),
                       style:
                           const TextStyle(
                         fontSize: 14,
@@ -1546,8 +1532,8 @@ class ScanSessionReportScreen extends StatelessWidget {
                       child:
                           Text(
                         healthy
-                            ? 'HEALTHY / SELLABLE ESTIMATE'
-                            : 'NOT HEALTHY / NOT SELLABLE',
+                            ? 'VISUALLY HEALTHY — INSPECT BEFORE SELLING'
+                            : 'HOLD FOR INSPECTION',
                         style:
                             TextStyle(
                           fontSize: 10,
@@ -1576,7 +1562,7 @@ class ScanSessionReportScreen extends StatelessWidget {
           Text(
             healthy
                 ? 'Pathogen: None detected'
-                : 'Pathogen: ${_pathogen(disease)}',
+                : 'Pathogen: ${_pathogenForScan(scan, disease)}',
             style:
                 const TextStyle(
               fontSize: 15,
@@ -1695,11 +1681,27 @@ class ScanSessionReportScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-              ],
-            ),
-          ),
+          ],
+          const SizedBox(height: 14),
+          const Align(alignment: Alignment.centerLeft, child: Text('How to manage it', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: Color(0xFF1E2A1F)))),
+          const SizedBox(height: 6),
+          ..._recommendations(disease).map((step) => Padding(padding: const EdgeInsets.only(bottom: 5), child: Text('• $step', style: const TextStyle(fontSize: 14, height: 1.45, color: Color(0xFF526254))))),
+          const SizedBox(height: 10),
+          Container(width: double.infinity, padding: const EdgeInsets.all(13), decoration: BoxDecoration(color: const Color(0xFFEAF4EB), borderRadius: BorderRadius.circular(14)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('Selling guidance', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15)), const SizedBox(height: 5), Text(healthy ? 'Visually Healthy — Inspect Before Selling' : 'Hold for Inspection', style: const TextStyle(fontWeight: FontWeight.w800)), const SizedBox(height: 4), Text(healthy ? 'Inspect the whole lettuce and follow normal handling practices before selling.' : 'Keep it separate and do not sell visibly diseased or spoiled produce.', style: const TextStyle(height: 1.4)), const SizedBox(height: 4), const Text('An AI image result cannot guarantee food safety.', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600))])),
         ],
       ),
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+

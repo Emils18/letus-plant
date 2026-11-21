@@ -27,6 +27,8 @@ class _HealthLogsScreenState
       Supabase.instance.client;
 
   bool _loading = true;
+  String _view = 'home';
+  bool _showAll = false;
 
   List<Map<String, dynamic>>
       _logs = [];
@@ -535,6 +537,36 @@ int _sessionDiseaseCount(
                   18,
                 ),
                 children: [
+                  if (_view != 'home')
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () => setState(() { _view = 'home'; _showAll = false; }),
+                        icon: const Icon(Icons.arrow_back_rounded),
+                        label: const Text('All reports'),
+                      ),
+                    ),
+                  if (_view == 'home') ...[
+                    _reportChoice(
+                      'Overall Health Report',
+                      'Health summary, disease breakdown, and confidence for all saved scans.',
+                      '${_logs.length} lettuce scanned',
+                      Icons.eco_rounded,
+                      () => setState(() => _view = 'overall'),
+                      primary: true,
+                    ),
+                    _reportChoice(
+                      'Session Reports',
+                      'Open a specific session or an individual scan saved without a session.',
+                      '${_sessionGroups.length + _legacyLogs.length} reports',
+                      Icons.calendar_month_rounded,
+                      () => setState(() => _view = 'sessions'),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(top: 8, bottom: 16),
+                      child: Text('AI image results are guidance and cannot guarantee food safety.', style: TextStyle(fontSize: 13, color: Color(0xFF68736A))),
+                    ),
+                  ],
                   if (widget.productName !=
                       null) ...[
                     Container(
@@ -573,7 +605,7 @@ int _sessionDiseaseCount(
                     ),
                   ],
 
-                  Row(
+                  if (_view == 'overall') Row(
                     children: [
                       Expanded(
                         child:
@@ -591,7 +623,7 @@ int _sessionDiseaseCount(
                       Expanded(
                         child:
                             _summaryCard(
-                          'Healthy',
+                          'Healthy - ${_percent(_healthyCount).toStringAsFixed(1)}%',
                           _healthyCount
                               .toString(),
                           Icons
@@ -604,7 +636,7 @@ int _sessionDiseaseCount(
                       Expanded(
                         child:
                             _summaryCard(
-                          'Risk',
+                          'At risk - ${_percent(_riskCount).toStringAsFixed(1)}%',
                           _riskCount
                               .toString(),
                           Icons
@@ -618,7 +650,28 @@ int _sessionDiseaseCount(
                     height: 24,
                   ),
 
-                  if (_logs.isEmpty)
+                  if (_view == 'overall') ...[
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      margin: const EdgeInsets.only(bottom: 14),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('Disease Breakdown', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
+                        const SizedBox(height: 6),
+                        Text('Average AI confidence: ${_averageConfidence(_logs)}', style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFF2F6B3B))),
+                        const SizedBox(height: 12),
+                        for (final item in <(String, String)>[('Downy Mildew','Downy Mildew'), ('Powdery Mildew','Powdery Mildew'), ('Septoria Blight','Septoria Blight')])
+                          _diseaseSummary(item.$1, _sessionDiseaseCount(_logs, item.$2)),
+                        Text(_logs.isEmpty ? 'No saved lettuce scans yet.' : _riskCount == 0 ? 'All saved scans were classified as healthy. Inspect each lettuce before selling.' : '$_riskCount of ${_logs.length} scans need closer inspection. Review the individual report for each affected lettuce.', style: const TextStyle(fontSize: 15, height: 1.5)),
+                        const SizedBox(height: 12),
+                        const Text('Continue routine crop checks. Use the saved disease guidance to manage affected plants. AI image classification is not a food-safety certificate.', style: TextStyle(fontSize: 14, height: 1.5, color: Color(0xFF68736A))),
+                        const SizedBox(height: 12),
+                        SizedBox(width: double.infinity, height: 52, child: ElevatedButton(onPressed: () => setState(() => _showAll = !_showAll), child: Text(_showAll ? 'Hide Scanned Lettuces' : 'View All Scanned Lettuces'))),
+                      ]),
+                    ),
+                    if (_showAll) ..._logs.map(_buildLogCard),
+                  ],
+                  if (_view == 'sessions' && _logs.isEmpty)
                     Container(
                       padding:
                           const EdgeInsets.all(
@@ -679,9 +732,8 @@ int _sessionDiseaseCount(
                           ),
                         ],
                       ),
-                    )
-                  else
-                  if (!widget.readOnlyBuyer &&
+                    ),
+                  if (_view == 'sessions' &&
     _sessionGroups.isNotEmpty) ...[
   const Text(
     'Previous Scan Sessions',
@@ -715,15 +767,29 @@ int _sessionDiseaseCount(
   ],
 ],
 
-..._legacyLogs.map(
+if (_view == 'sessions') ..._legacyLogs.map(
   _buildLogCard,
 ),
+                  if (_view == 'sessions' && _sessionGroups.isEmpty && _legacyLogs.isEmpty)
+                    const Padding(padding: EdgeInsets.all(20), child: Text('No saved session or individual scan reports yet.', textAlign: TextAlign.center)),
                 ],
               ),
       ),
     );
   }
 
+  String _averageConfidence(List<Map<String, dynamic>> logs) {
+    final values = logs.map((log) {
+      final raw = log['confidence_score'] ?? log['confidence'] ?? log['score'];
+      if (raw == null) return null;
+      final text = raw.toString().trim();
+      final value = double.tryParse(text.replaceAll('%', ''));
+      if (value == null || !value.isFinite || value < 0 || value > 100) return null;
+      return value <= 1 && !text.endsWith('%') ? value * 100 : value;
+    }).whereType<double>().toList();
+    if (values.isEmpty) return 'Not available';
+    return '${(values.reduce((a, b) => a + b) / values.length).toStringAsFixed(1)}%';
+  }
   Widget _summaryCard(
     String label,
     String value,
@@ -796,6 +862,34 @@ int _sessionDiseaseCount(
     );
   }
 
+  Widget _reportChoice(String title, String subtitle, String count, IconData icon, VoidCallback onTap, {bool primary = false}) {
+    final Color foreground = primary ? Colors.white : const Color(0xFF1E2A1F);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 14),
+      color: primary ? const Color(0xFF2F6B3B) : Colors.white,
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24), side: BorderSide(color: const Color(0xFF5DBB63).withValues(alpha: .25))),
+      child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(24), child: Padding(padding: const EdgeInsets.all(22), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, size: 34, color: foreground),
+        const SizedBox(height: 12),
+        Text(title, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: foreground)),
+        const SizedBox(height: 6),
+        Text(subtitle, style: TextStyle(fontSize: 15, height: 1.45, color: primary ? Colors.white.withValues(alpha: .9) : const Color(0xFF68736A))),
+        const SizedBox(height: 12),
+        Text('$count   →', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: foreground)),
+      ]))),
+    );
+  }
+
+  Widget _diseaseSummary(String name, int count) {
+    final double progress = _logs.isEmpty ? 0 : count / _logs.length;
+    return Padding(padding: const EdgeInsets.symmetric(vertical: 7), child: Column(children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(name, style: const TextStyle(fontWeight: FontWeight.w700)), Text('$count', style: const TextStyle(fontWeight: FontWeight.w900))]),
+      const SizedBox(height: 6),
+      ClipRRect(borderRadius: BorderRadius.circular(8), child: LinearProgressIndicator(value: progress, minHeight: 8, backgroundColor: const Color(0xFFEAF4EB), color: const Color(0xFF5DBB63))),
+    ]));
+  }
+
 
 
 
@@ -831,15 +925,10 @@ Future<void> _openSessionReport(
     ),
   );
 
-  final DateTime startedAt =
-      readDate(
-    reportLogs.first,
-  );
-
-  final DateTime completedAt =
-      readDate(
-    reportLogs.last,
-  );
+  final metadataList = _sessions.where((session) => session['id'].toString() == sessionId).toList();
+  final metadata = metadataList.isEmpty ? null : metadataList.first;
+  final DateTime? startedAt = DateTime.tryParse((metadata?['started_at'] ?? '').toString());
+  final DateTime? completedAt = DateTime.tryParse((metadata?['completed_at'] ?? '').toString());
 
   await Navigator.push(
     context,
@@ -876,10 +965,10 @@ Widget _buildSessionCard(
   final int septoria =
       _sessionDiseaseCount(logs, 'Septoria Blight');
 
-  final String date =
-      logs.isNotEmpty
-          ? _getDate(logs.first)
-          : 'No date';
+  final sessionMetaList = _sessions.where((session) => session['id'].toString() == sessionId).toList();
+  final sessionMeta = sessionMetaList.isEmpty ? null : sessionMetaList.first;
+  final sessionStart = DateTime.tryParse((sessionMeta?['started_at'] ?? '').toString());
+  final String date = sessionStart == null ? 'Session date not recorded' : _getDate({'captured_at': sessionStart.toIso8601String()});
 
   return Container(
     margin: const EdgeInsets.only(bottom: 18),
@@ -965,6 +1054,7 @@ Widget _buildSessionCard(
           'Septoria',
           septoria.toString(),
         ),
+        _infoRow('Average AI confidence', _averageConfidence(logs)),
 
         const SizedBox(height: 12),
 
@@ -1317,3 +1407,13 @@ Widget _buildSessionCard(
     );
   }
 }
+
+
+
+
+
+
+
+
+
+
