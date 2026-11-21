@@ -128,8 +128,10 @@ type WeatherData = {
   description: string;
   humidity: number;
   windSpeed: number;
-  rainChance: number;
-  updatedAt: string;
+  rainChance: number | null;
+  updatedAt: string | null;
+  timeZone: string | null;
+  fetchedAt: string;
 };
 
 type FarmerNotice = {
@@ -222,9 +224,7 @@ function isUsefulLocation(value?: string | null) {
 
 function formatWeatherTime(value?: string | null) {
   if (!value) return "Not updated yet";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return value;
 }
 
 function statusTone(status?: string | null) {
@@ -331,18 +331,11 @@ const [sellForm, setSellForm] = useState({
 
   const isFarmer = account?.role === "farmer";
 
-  // ==================== IMPROVED FARMER WEATHER LOCATION ====================
-  const farmerWeatherLocation = useMemo(() => {
-    // Priority 1: Health Logs
+  // Saved location is only attached to scans when available; weather always uses device GPS.
+  const farmerScanLocation = useMemo(() => {
     const logLocation = healthLogs.find((log) => isUsefulLocation(log.location))?.location;
-
-    // Priority 2: Farmer Products
     const productLocation = farmerProducts.find((product) => isUsefulLocation(product.location))?.location;
-
-    // Final fallback
-    const finalLocation = logLocation || productLocation || "Lapu-Lapu City, Cebu, PH";
-
-    return finalLocation.trim();
+    return (logLocation || productLocation || "").trim();
   }, [healthLogs, farmerProducts]);
 
   // ==================== EFFECTS ====================
@@ -491,15 +484,15 @@ const [sellForm, setSellForm] = useState({
     }
 
     // Load immediately
-    loadFarmerWeather(farmerWeatherLocation);
+    void loadFarmerWeather(false);
 
     // Auto refresh every 5 minutes
     const intervalId = window.setInterval(() => {
-      loadFarmerWeather(farmerWeatherLocation, false);
+      void loadFarmerWeather(false);
     }, 5 * 60 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [account?.id, farmerWeatherLocation, isFarmer]);
+  }, [account?.id, isFarmer]);
 
   // ==================== FUNCTIONS ====================
   async function loadProducts() {
@@ -572,16 +565,30 @@ const [sellForm, setSellForm] = useState({
     }
   }
 
- async function loadFarmerWeather(location = farmerWeatherLocation, showError = true) {
+ async function loadFarmerWeather(showError = true) {
   if (!isFarmer) return;
   setWeatherLoading(true);
   setWeatherError("");
+  setWeather(null);
 
   try {
-    const response = await fetch(`/api/weather?location=${encodeURIComponent(location || "Lapu-Lapu City, Cebu, PH")}`, { 
-      cache: "no-store" 
+    if (!navigator.geolocation) {
+      throw new Error("Location unavailable. This browser cannot access device location.");
+    }
+    const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 15000,
+      });
+    }).catch(() => {
+      throw new Error("Location unavailable. Allow location access and try again.");
     });
-    
+    const params = new URLSearchParams({
+      latitude: String(position.coords.latitude),
+      longitude: String(position.coords.longitude),
+    });
+    const response = await fetch(`/api/weather?${params.toString()}`, { cache: "no-store" });
     const result = await response.json();
 
     if (!response.ok || !result.success) {
@@ -593,7 +600,7 @@ const [sellForm, setSellForm] = useState({
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unable to load live weather.";
     setWeatherError(errorMessage);
-    if (showError) showNotification(errorMessage);
+    if (showError && !errorMessage.toLowerCase().includes("location unavailable")) showNotification(errorMessage);
   } finally {
     setWeatherLoading(false);
   }
@@ -757,7 +764,7 @@ const [sellForm, setSellForm] = useState({
       if (!session?.access_token) throw new Error("Your session expired. Please sign in again.");
       const form = new FormData();
       form.set("image", scanImage);
-      form.set("location", farmerWeatherLocation);
+      form.set("location", farmerScanLocation);
       const response = await fetch("/api/scan", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -1402,7 +1409,7 @@ await Promise.all([
               <button
                 onClick={() => {
                   loadFarmerToolsData();
-                  loadFarmerWeather(farmerWeatherLocation);
+                  void loadFarmerWeather();
                 }}
                 disabled={farmerLoading || weatherLoading}
                 className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60"
@@ -1884,9 +1891,9 @@ const renderFarmerSellForm = () => {
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-[3px] text-[#2F6B3B]">Live Weather & Weather Advisory</p>
-            <h3 className="mt-2 text-2xl font-black text-[#1E2A1F]">{weather?.location || farmerWeatherLocation}</h3>
+            <h3 className="mt-2 text-2xl font-black text-[#1E2A1F]">{weather?.location || "Current device location"}</h3>
           </div>
-          <button onClick={() => loadFarmerWeather(farmerWeatherLocation)} disabled={weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
+          <button onClick={() => void loadFarmerWeather()} disabled={weatherLoading} className="rounded-full border border-green-200 bg-white px-5 py-2.5 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50 disabled:opacity-60">
             {weatherLoading ? "Refreshing..." : "Refresh"}
           </button>
         </div>
@@ -1898,9 +1905,10 @@ const renderFarmerSellForm = () => {
               <WeatherMetric label="Condition" value={weather.condition} />
               <WeatherMetric label="Humidity" value={`${weather.humidity}%`} />
               <WeatherMetric label="Wind Speed" value={`${weather.windSpeed.toFixed(1)} m/s`} />
-              <WeatherMetric label="Rain Chance" value={`${weather.rainChance}%`} />
+              <WeatherMetric label="Rain Chance" value={weather.rainChance === null ? "Not available" : `${weather.rainChance}%`} />
               <WeatherMetric label="Description" value={weather.description} />
-              <WeatherMetric label="Updated" value={formatWeatherTime(weather.updatedAt)} />
+              <WeatherMetric label={`Weather time (${weather.timeZone || "provider local time"})`} value={formatWeatherTime(weather.updatedAt)} />
+              <WeatherMetric label="Checked on this device" value={new Date(weather.fetchedAt).toLocaleString()} />
             </div>
 
             <div className="mt-6 border-t border-green-100 pt-6">
@@ -1916,7 +1924,10 @@ const renderFarmerSellForm = () => {
             </div>
           </>
         ) : (
-          <div className="mt-6 rounded-2xl bg-[#F7FBF6] p-5 text-sm font-bold text-[#5C6B5D]">{weatherLoading ? "Loading live weather..." : weatherError || "Live weather is not available yet."}</div>
+          <div className="mt-6 rounded-2xl bg-[#F7FBF6] p-5 text-sm font-bold text-[#5C6B5D]">
+            <p>{weatherLoading ? "Finding your location and loading live weather..." : weatherError || "Location unavailable. Allow location access to view local weather."}</p>
+            {!weatherLoading && <button onClick={() => void loadFarmerWeather()} className="mt-4 min-h-11 rounded-full bg-[#2F6B3B] px-5 py-2 text-sm font-black text-white">Retry location</button>}
+          </div>
         )}
       </div>
     </div>
