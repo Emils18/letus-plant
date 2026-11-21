@@ -27,6 +27,8 @@ class _SellCropScreenState extends State<SellCropScreen> {
   bool _isLoading = false;
   XFile? _selectedImage;
   Uint8List? _imageBytes;   // For web + mobile preview
+  List<Map<String, dynamic>> _myProducts = [];
+  bool _loadingProducts = true;
 
   @override
   void dispose() {
@@ -36,6 +38,55 @@ class _SellCropScreenState extends State<SellCropScreen> {
     _locationController.dispose();
     _descController.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProducts();
+  }
+
+  Future<void> _loadProducts() async {
+    final rows = await _service.getFarmerProducts();
+    if (!mounted) return;
+    setState(() { _myProducts = rows; _loadingProducts = false; });
+  }
+
+  Future<void> _editProduct(Map<String, dynamic> product) async {
+    _nameController.text = '${product['name'] ?? ''}';
+    _priceController.text = '${product['price'] ?? ''}';
+    _stockController.text = '${product['stock'] ?? 0}';
+    _locationController.text = '${product['location'] ?? ''}';
+    _descController.text = '${product['description'] ?? ''}';
+    setState(() { _category = '${product['category'] ?? 'Fresh Lettuce'}'; _imageBytes = null; _selectedImage = null; });
+    final result = await showModalBottomSheet<bool>(context: context, isScrollControlled: true,
+      builder: (context) => SafeArea(child: Padding(padding: EdgeInsets.only(left: 20,right: 20,top: 20,bottom: MediaQuery.of(context).viewInsets.bottom + 20),
+        child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: _nameController, decoration: const InputDecoration(labelText: 'Product name')),
+          TextField(controller: _descController, maxLines: 3, decoration: const InputDecoration(labelText: 'Description')),
+          TextField(controller: _priceController, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Price')),
+          DropdownButtonFormField<String>(value: _category, decoration: const InputDecoration(labelText: 'Category'), items: const ['Fresh Lettuce','Seeds','Bundles'].map((v)=>DropdownMenuItem(value:v,child:Text(v))).toList(), onChanged:(v){if(v!=null)setState(()=>_category=v);}),
+          TextField(controller: _stockController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock quantity')),
+          TextButton.icon(onPressed: _pickImage, icon: const Icon(Icons.image), label: const Text('Replace photo')),
+          if (_imageBytes != null) Image.memory(_imageBytes!,height:100),
+          FilledButton(onPressed: () async { final stock=int.tryParse(_stockController.text); final price=double.tryParse(_priceController.text); if(_nameController.text.trim().isEmpty||_descController.text.trim().isEmpty||stock==null||stock<0||price==null||price<=0){_showMessage('Enter valid product details.',isError:true);return;} final ok=await _service.updateFarmerProduct(productId: int.parse('${product['id']}'),fields:{'name':_nameController.text.trim(),'description':_descController.text.trim(),'freshness_info':_descController.text.trim(),'price':price,'category':_category,'stock':stock},imageFile:_selectedImage); if(context.mounted) Navigator.pop(context,ok); }, child: const Text('Save changes')),
+        ])))));
+    if (result == true) { _showMessage('Product updated.'); await _loadProducts(); }
+    else if (result == false) _showMessage('Could not update product.',isError:true);
+  }
+
+  Future<void> _restock(Map<String,dynamic> product) async {
+    final controller=TextEditingController();
+    final amount=await showDialog<int>(context:context,builder:(context)=>AlertDialog(title:const Text('Restock product'),content:TextField(controller:controller,keyboardType:TextInputType.number,decoration:const InputDecoration(labelText:'Units to add')),actions:[TextButton(onPressed:()=>Navigator.pop(context),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(context,int.tryParse(controller.text)),child:const Text('Add stock'))]));
+    controller.dispose(); if(amount==null)return;
+    final ok=await _service.restockFarmerProduct(int.parse('${product['id']}'),amount);
+    if(ok){_showMessage('Stock updated.');await _loadProducts();}else _showMessage('Could not restock product.',isError:true);
+  }
+
+  Future<void> _unlist(Map<String,dynamic> product) async {
+    final yes=await showDialog<bool>(context:context,builder:(context)=>AlertDialog(title:const Text('Unlist product?'),content:const Text('This removes the listing from sale. Existing order history stays محفوظ.'),actions:[TextButton(onPressed:()=>Navigator.pop(context,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(context,true),child:const Text('Unlist'))]));
+    if(yes!=true)return; final ok=await _service.archiveFarmerProduct(int.parse('${product['id']}'));
+    if(ok){_showMessage('Product unlisted.');await _loadProducts();}else _showMessage('Could not unlist product.',isError:true);
   }
 
   Future<void> _pickImage() async {
@@ -118,6 +169,8 @@ class _SellCropScreenState extends State<SellCropScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _buildManageListings(),
+            const SizedBox(height: 28),
             // Header
             Container(
               width: double.infinity,
@@ -246,6 +299,29 @@ class _SellCropScreenState extends State<SellCropScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildManageListings() {
+    return Card(color: Colors.white, child: Padding(padding: const EdgeInsets.all(16), child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [const Expanded(child: Text('Manage Listings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900))),
+          IconButton(onPressed: _loadProducts, icon: const Icon(Icons.refresh))]),
+        if (_loadingProducts) const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()))
+        else if (_myProducts.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No products listed yet.'))
+        else SizedBox(height: 310, child: ListView.separated(itemCount: _myProducts.length,
+          separatorBuilder: (_, __) => const Divider(height: 12),
+          itemBuilder: (context, index) {
+            final p = _myProducts[index];
+            final stock = int.tryParse('${p['stock'] ?? 0}') ?? 0;
+            final archived = p['archived_at'] != null;
+            final image = '${p['image_url'] ?? p['image'] ?? ''}';
+            return Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: const Color(0xFFF6FBF7), borderRadius: BorderRadius.circular(14)),
+              child: Column(children: [Row(children: [ClipRRect(borderRadius: BorderRadius.circular(10), child: image.isEmpty ? Container(width:64,height:64,color:Colors.green.shade100,child:const Icon(Icons.eco)) : Image.network(image,width:64,height:64,fit:BoxFit.cover,errorBuilder:(_,__,___)=>Container(width:64,height:64,color:Colors.green.shade100,child:const Icon(Icons.broken_image)))),
+                const SizedBox(width:12), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,children:[Text('${p['name'] ?? 'Product'}',style:const TextStyle(fontWeight:FontWeight.w800)),Text('${p['category'] ?? ''} • ₱${p['price'] ?? 0}',style:const TextStyle(fontSize:13)),Text('Stock: $stock • ${archived ? 'Unlisted' : stock == 0 ? 'Out of Stock' : 'Available'}',style:TextStyle(color:archived||stock==0?Colors.red:Colors.green,fontWeight:FontWeight.w700))]))]),
+                Wrap(spacing:8,children:[TextButton.icon(onPressed:archived?null:()=>_editProduct(p),icon:const Icon(Icons.edit),label:const Text('Edit')),TextButton.icon(onPressed:archived?null:()=>_restock(p),icon:const Icon(Icons.add_box),label:const Text('Restock')),TextButton.icon(onPressed:archived?null:()=>_unlist(p),icon:const Icon(Icons.archive),label:const Text('Unlist'))])
+              ]));
+          }))
+      ])));
   }
 
   Widget _buildDropdown() {

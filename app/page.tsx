@@ -72,6 +72,7 @@ type FarmerProduct = {
   stock?: number | string | null;
   farmer_id?: string | null;
   status?: string | null;
+  archived_at?: string | null;
   image?: string | null;
   image_url?: string | null;
   description?: string | null;
@@ -300,6 +301,9 @@ const [savingProduct, setSavingProduct] =
   useState(false);
   const [restockingProductId, setRestockingProductId] =
   useState<string | null>(null);
+const [editingProductId, setEditingProductId] = useState<string | null>(null);
+const [editingProductStock, setEditingProductStock] = useState<number | null>(null);
+const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
 const [scanImage, setScanImage] = useState<File | null>(null);
 const [scanPreview, setScanPreview] = useState("");
 const [scanLoading, setScanLoading] = useState(false);
@@ -1093,23 +1097,12 @@ async function handleRestockProduct(product: FarmerProduct) {
   setRestockingProductId(String(product.id));
 
   try {
-    const { data, error } = await supabase
-      .from("products")
-      .update({
-        stock: newStock,
-        status: "Available",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", product.id)
-      .eq("farmer_id", account.id)
-      .select("id, stock, status")
-      .maybeSingle();
+    const { data, error } = await supabase.rpc("restock_farmer_product", {
+      p_product_id: product.id, p_quantity: additionalStock,
+    });
 
     if (error) throw new Error(error.message);
 
-    if (!data) {
-      throw new Error("Product not found or you do not own this listing.");
-    }
 
     await Promise.all([
       loadFarmerToolsData(account.id),
@@ -1117,7 +1110,7 @@ async function handleRestockProduct(product: FarmerProduct) {
     ]);
 
     showNotification(
-      `${product.name} restocked successfully! New stock: ${data.stock}`
+      `${product.name} restocked successfully! New stock: ${data}`
     );
   } catch (error) {
     showNotification(
@@ -1126,6 +1119,30 @@ async function handleRestockProduct(product: FarmerProduct) {
   } finally {
     setRestockingProductId(null);
   }
+}
+
+function startProductEdit(product: FarmerProduct) {
+  setEditingProductId(String(product.id));
+  setEditingProductStock(Number(product.stock ?? 0));
+  setSellForm({ name: product.name || "", category: product.category || "Fresh Lettuce",
+    price: String(product.price ?? ""), stock: String(product.stock ?? 0),
+    description: product.description || product.freshness_info || "",
+    imageUrl: product.image_url || product.image || "", location: product.location || "" });
+  setSelectedProductImage(null);
+  setFarmerTab("sell");
+}
+
+async function archiveProduct(product: FarmerProduct) {
+  if (!account || !window.confirm(`Unlist “${product.name || "this product"}”? Existing orders will be preserved.`)) return;
+  setDeletingProductId(String(product.id));
+  try {
+    const { data, error } = await supabase.rpc("archive_farmer_product", { p_product_id: product.id });
+    if (error) throw error;
+    await Promise.all([loadFarmerToolsData(account.id), loadProducts()]);
+    showNotification(data?.has_order_history ? "Product unlisted. Order history was preserved." : "Product unlisted.");
+  } catch (error) {
+    showNotification(error instanceof Error ? error.message : "Could not unlist product.");
+  } finally { setDeletingProductId(null); }
 }
 
 
@@ -1160,17 +1177,17 @@ async function handleRestockProduct(product: FarmerProduct) {
     return;
   }
 
-  if (!price || price <= 0) {
+  if (!Number.isFinite(price) || price <= 0) {
     showNotification("Valid price is required.");
     return;
   }
 
-  if (!stock || stock <= 0) {
-    showNotification("Valid stock is required.");
+  if (!Number.isSafeInteger(stock) || stock < 0 || (!editingProductId && stock === 0)) {
+    showNotification("Stock must be a whole number; new listings require stock above zero.");
     return;
   }
 
-  if (!selectedProductImage) {
+  if (!editingProductId && !selectedProductImage) {
     showNotification("Please select a product image.");
     return;
   }
@@ -1178,35 +1195,14 @@ async function handleRestockProduct(product: FarmerProduct) {
   setSavingProduct(true);
 
   try {
-    const fileExtension =
-      selectedProductImage.name
-        .split(".")
-        .pop() || "jpg";
-
-    const fileName =
-      `${account.id}/${Date.now()}.${fileExtension}`;
-
-    const { error: uploadError } =
-      await supabase.storage
-        .from("products")
-        .upload(
-          fileName,
-          selectedProductImage,
-          {
-            cacheControl: "3600",
-            upsert: false,
-          }
-        );
-
-    if (uploadError) {
-      throw new Error(uploadError.message);
+    let publicUrl = sellForm.imageUrl || "";
+    if (selectedProductImage) {
+      const fileExtension = selectedProductImage.name.split(".").pop() || "jpg";
+      const fileName = `${account.id}/${Date.now()}.${fileExtension}`;
+      const { error: uploadError } = await supabase.storage.from("products").upload(fileName, selectedProductImage, { cacheControl: "3600", upsert: false });
+      if (uploadError) throw new Error(uploadError.message);
+      publicUrl = supabase.storage.from("products").getPublicUrl(fileName).data.publicUrl;
     }
-
-    const {
-      data: { publicUrl },
-    } = supabase.storage
-      .from("products")
-      .getPublicUrl(fileName);
 
     const payload = {
       name,
@@ -1219,19 +1215,24 @@ async function handleRestockProduct(product: FarmerProduct) {
       
       description,
       freshness_info: description,
-      image: publicUrl,
-      image_url: publicUrl,
+      image: publicUrl || null,
+      image_url: publicUrl || null,
       location: sellForm.location.trim() || null,
-      status: "Available",
+      status: stock > 0 ? "Available" : "Out of Stock",
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase
-      .from("products")
-      .insert([payload]);
-
-    if (error) {
-      throw new Error(error.message);
+    if (editingProductId) {
+      const { stock: newStock, ...details } = payload;
+      const { data, error } = await supabase.from("products").update({ ...details, stock: newStock,
+        status: newStock > 0 ? "Available" : "Out of Stock" })
+        .eq("id", editingProductId).eq("farmer_id", account.id).is("archived_at", null)
+        .select("id").maybeSingle();
+      if (error) throw new Error(error.message);
+      if (!data) throw new Error("Listing not found or no longer available to edit.");
+    } else {
+      const { error } = await supabase.from("products").insert([payload]);
+      if (error) throw new Error(error.message);
     }
 
     setSellForm({
@@ -1245,6 +1246,8 @@ async function handleRestockProduct(product: FarmerProduct) {
     });
 
     setSelectedProductImage(null);
+    setEditingProductId(null);
+    setEditingProductStock(null);
 
     await Promise.all([
       loadProducts(),
@@ -1253,9 +1256,7 @@ async function handleRestockProduct(product: FarmerProduct) {
 
     setFarmerTab("listings");
 
-    showNotification(
-      "Product published successfully."
-    );
+    showNotification(editingProductId ? "Product updated successfully." : "Product published successfully.");
   } catch (error) {
     showNotification(
       error instanceof Error
@@ -1508,11 +1509,11 @@ const renderFarmerSellForm = () => {
         className="rounded-[28px] border border-green-100 bg-[#F7FBF6] p-6"
       >
         <h3 className="text-2xl font-black text-[#1E2A1F]">
-          Sell Product
+          {editingProductId ? "Edit Product" : "Sell Product"}
         </h3>
 
         <p className="mt-2 text-sm text-[#5C6B5D]">
-          Publish a product to the marketplace.
+          {editingProductId ? "Update this marketplace listing." : "Publish a product to the marketplace."}
         </p>
 
         <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -1552,6 +1553,7 @@ const renderFarmerSellForm = () => {
               <option>Fresh Lettuce</option>
               <option>Seeds</option>
               <option>Bundles</option>
+              {!['Fresh Lettuce', 'Seeds', 'Bundles'].includes(sellForm.category) && <option>{sellForm.category}</option>}
             </select>
           </div>
 
@@ -1580,7 +1582,8 @@ const renderFarmerSellForm = () => {
 
             <input
               type="number"
-              min="1"
+              min="0.01"
+              step="0.01"
               value={sellForm.price}
               onChange={(e) =>
                 setSellForm({
@@ -1600,7 +1603,8 @@ const renderFarmerSellForm = () => {
 
             <input
               type="number"
-              min="1"
+              min={editingProductId ? 0 : 1}
+              step="1"
               value={sellForm.stock}
               onChange={(e) =>
                 setSellForm({
@@ -1621,7 +1625,7 @@ const renderFarmerSellForm = () => {
             <label className="flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-green-200 bg-white px-6 py-8 text-center transition hover:border-[#2F6B3B] hover:bg-green-50">
               <div>
                 <p className="text-base font-black text-[#1E2A1F]">
-                  Choose Product Picture
+                  {editingProductId ? "Replace Product Picture" : "Choose Product Picture"}
                 </p>
 
                 <p className="mt-1 text-xs text-[#5C6B5D]">
@@ -1664,6 +1668,7 @@ const renderFarmerSellForm = () => {
           </div>
         </div>
 
+        {editingProductId && sellForm.imageUrl && <button type="button" onClick={() => setSellForm({ ...sellForm, imageUrl: "" })} className="mt-2 text-sm font-bold text-red-700">Remove current photo</button>}
         <button
           type="submit"
           disabled={savingProduct}
@@ -1671,7 +1676,7 @@ const renderFarmerSellForm = () => {
         >
           {savingProduct
             ? "Uploading & Publishing..."
-            : "Publish Product"}
+            : editingProductId ? "Save Product Changes" : "Publish Product"}
         </button>
       </form>
 
@@ -1752,7 +1757,7 @@ const renderFarmerSellForm = () => {
         <button onClick={() => setFarmerTab("sell")} className="rounded-full bg-[#2F6B3B] px-5 py-2.5 text-sm font-black text-white">Add Product</button>
       </div>
 
-      <div className="overflow-hidden rounded-[24px] border border-green-100">
+      <div className="max-h-[620px] overflow-y-auto rounded-[24px] border border-green-100">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px]">
             <thead className="bg-[#F7FBF6] text-xs uppercase tracking-[2px] text-[#5C6B5D]">
@@ -1762,14 +1767,15 @@ const renderFarmerSellForm = () => {
                 <th className="px-6 py-4 text-left">Price</th>
                 <th className="px-6 py-4 text-left">Stock</th>
                 <th className="px-6 py-4 text-left">Status</th>
+                <th className="px-6 py-4 text-left">Manage</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-green-100 bg-white">
               {farmerProducts.length === 0 ? (
-                <tr><td colSpan={5} className="px-6 py-14 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</td></tr>
+                <tr><td colSpan={6} className="px-6 py-14 text-center text-sm font-bold text-[#5C6B5D]">No products listed yet.</td></tr>
               ) : (
                 farmerProducts.map((product) => (
-                  <tr key={product.id}>
+                  <tr key={product.id} className="transition-colors hover:bg-green-50/60">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         {product.image_url || product.image ? (
@@ -1788,7 +1794,14 @@ const renderFarmerSellForm = () => {
                     <td className="px-6 py-4 text-sm font-bold text-[#5C6B5D]">{product.category || "N/A"}</td>
                     <td className="px-6 py-4 text-sm font-black text-[#2F6B3B]">₱{formatMoney(product.price)}</td>
                     <td className="px-6 py-4 text-sm font-bold text-[#1E2A1F]">{product.stock || 0}</td>
-                    <td className="px-6 py-4"><StatusPill text={product.status || "Available"} /></td>
+                    <td className="px-6 py-4"><StatusPill text={product.archived_at ? "Unlisted" : Number(product.stock || 0) <= 0 ? "Out of Stock" : "Available"} /></td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => startProductEdit(product)} className="rounded-lg bg-green-50 px-3 py-2 text-xs font-black text-green-800">Edit</button>
+                        <button type="button" disabled={restockingProductId === String(product.id)} onClick={() => handleRestockProduct(product)} className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-black text-blue-800">Restock</button>
+                        <button type="button" disabled={deletingProductId === String(product.id)} onClick={() => archiveProduct(product)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-black text-red-800">Unlist</button>
+                      </div>
+                    </td>
                   </tr>
                 ))
               )}

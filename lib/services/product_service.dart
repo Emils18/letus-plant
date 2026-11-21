@@ -122,7 +122,6 @@ class ProductService {
             created_at,
             updated_at
           ''')
-          .or('status.is.null,status.eq.Available')
           .order('created_at', ascending: false);
 
       final products = List<Map<String, dynamic>>.from(response);
@@ -131,7 +130,9 @@ class ProductService {
         final farmerId = product['farmer_id']?.toString().trim();
         final stock = _toInt(product['stock']);
 
-        return farmerId != null && farmerId.isNotEmpty && stock > 0;
+        final active = product['archived_at'] == null &&
+            product['status']?.toString().toLowerCase() != 'unlisted';
+        return farmerId != null && farmerId.isNotEmpty && stock > 0 && active;
       }).toList();
     } on PostgrestException catch (e) {
       debugPrint('ProductService database error: ${e.message}');
@@ -166,6 +167,7 @@ class ProductService {
             image,
             location,
             status,
+            archived_at,
             created_at,
             updated_at
           ''')
@@ -179,6 +181,63 @@ class ProductService {
     } catch (e) {
       debugPrint('ProductService error: $e');
       return [];
+    }
+  }
+
+  Future<bool> updateFarmerProduct({
+    required int productId,
+    required Map<String, dynamic> fields,
+    XFile? imageFile,
+    bool removeImage = false,
+  }) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) return false;
+    try {
+      final payload = Map<String, dynamic>.from(fields);
+      if (imageFile != null) {
+        final ext = imageFile.name.split('.').last;
+        final path = '${user.id}/${DateTime.now().millisecondsSinceEpoch}.$ext';
+        await _supabase.storage.from('products').uploadBinary(path, await imageFile.readAsBytes());
+        final url = _supabase.storage.from('products').getPublicUrl(path);
+        payload['image'] = url;
+        payload['image_url'] = url;
+      } else if (removeImage) {
+        payload['image'] = null;
+        payload['image_url'] = null;
+      }
+      payload['status'] = _toInt(payload['stock']) > 0 ? 'Available' : 'Out of Stock';
+      payload['updated_at'] = DateTime.now().toIso8601String();
+      final result = await _supabase.from('products').update(payload)
+          .eq('id', productId).eq('farmer_id', user.id).isFilter('archived_at', null)
+          .select('id').maybeSingle();
+      return result != null;
+    } catch (e) {
+      debugPrint('ProductService update failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> restockFarmerProduct(int productId, int amount) async {
+    if (amount <= 0) return false;
+    try {
+      await _supabase.rpc('restock_farmer_product', params: {
+        'p_product_id': productId,
+        'p_quantity': amount,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('ProductService restock failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> archiveFarmerProduct(int productId) async {
+    try {
+      await _supabase.rpc('archive_farmer_product', params: {'p_product_id': productId});
+      return true;
+    } catch (e) {
+      debugPrint('ProductService archive failed: $e');
+      return false;
     }
   }
 
