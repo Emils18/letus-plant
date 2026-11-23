@@ -290,6 +290,17 @@ const [savingFarmerOrderId, setSavingFarmerOrderId] =
   useState<string>("");
 const [selectedDeliveryProof, setSelectedDeliveryProof] =
   useState<File | null>(null);
+const [deliveryProofPreviewUrl, setDeliveryProofPreviewUrl] = useState("");
+
+useEffect(() => {
+  if (!selectedDeliveryProof) {
+    setDeliveryProofPreviewUrl("");
+    return;
+  }
+  const previewUrl = URL.createObjectURL(selectedDeliveryProof);
+  setDeliveryProofPreviewUrl(previewUrl);
+  return () => URL.revokeObjectURL(previewUrl);
+}, [selectedDeliveryProof]);
 
 const [healthLogs, setHealthLogs] =
   useState<HealthLog[]>([]);
@@ -526,7 +537,7 @@ const [sellForm, setSellForm] = useState({
 
   async function confirmBuyerOrderReceived(order: Order) {
     if (!account || account.role !== "buyer" || confirmingReceivedOrderId) return;
-    if (!order.status.toLowerCase().includes("delivered")) {
+    if (!order.status.toLowerCase().includes("delivered") && !(order.deliveryStatus || "").toLowerCase().includes("delivered")) {
       showNotification("You can confirm receipt after the order is marked Delivered.");
       return;
     }
@@ -685,6 +696,11 @@ const [sellForm, setSellForm] = useState({
 
   async function submitFarmerDeliveryProof(order: FarmerOrder) {
     if (!account || account.role !== "farmer" || !selectedDeliveryProof || savingFarmerOrderId) return;
+    if (order.proof_image_url || order.delivery_proof_url) {
+      showNotification("Delivery proof is already saved for this order.");
+      setSelectedDeliveryProof(null);
+      return;
+    }
     if ((order.status || "").toLowerCase() !== "shipped") {
       showNotification("Mark this order as Shipped before submitting delivery proof.");
       return;
@@ -723,6 +739,8 @@ const [sellForm, setSellForm] = useState({
         .eq("id", order.id)
         .eq("farmer_id", account.id)
         .eq("status", order.status || "Shipped")
+        .is("proof_image_url", null)
+        .is("delivery_proof_url", null)
         .select("id, user_id, order_code")
         .maybeSingle();
       if (error) throw error;
@@ -2023,9 +2041,16 @@ const renderFarmerSellForm = () => {
 
   const renderFarmerOrders = () => (
     <div>
-      <div className="mb-5">
-        <h3 className="text-2xl font-black text-[#1E2A1F]">My Buyer Orders</h3>
-        <p className="mt-1 text-sm text-[#5C6B5D]">Orders where your farmer account is assigned as seller.</p>
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-2xl font-black text-[#1E2A1F]">My Buyer Orders</h3>
+          <p className="mt-1 text-sm text-[#5C6B5D]">Orders where your farmer account is assigned as seller.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCurrentView("shop")}
+          className="min-h-12 rounded-full border border-green-200 bg-white px-5 py-3 text-sm font-black text-[#2F6B3B] transition hover:bg-green-50"
+        >Back to Store</button>
       </div>
 
       <div className="mb-5 grid gap-4 md:grid-cols-3">
@@ -2118,7 +2143,7 @@ const renderFarmerSellForm = () => {
                             {isSaving ? "Updating…" : action.label}
                           </button>
                         )}
-                        {status.toLowerCase() === "shipped" && (
+                        {status.toLowerCase() === "shipped" && !proofUrl && (
                           <div className="mt-4 space-y-3">
                             <label className="block text-sm font-bold text-[#1E2A1F]" htmlFor={`delivery-proof-${order.id}`}>Delivery photo</label>
                             <input
@@ -2130,6 +2155,9 @@ const renderFarmerSellForm = () => {
                               onChange={(event) => setSelectedDeliveryProof(event.target.files?.[0] || null)}
                               className="block w-full rounded-xl border border-green-200 bg-[#F7FBF6] p-2 text-sm file:mr-3 file:rounded-full file:border-0 file:bg-green-100 file:px-4 file:py-2 file:font-bold file:text-[#2F6B3B]"
                             />
+                            {deliveryProofPreviewUrl && selectedDeliveryProof && (
+                              <img src={deliveryProofPreviewUrl} alt="Delivery proof preview" className="max-h-64 w-full rounded-xl border border-green-100 bg-white object-contain" />
+                            )}
                             {selectedDeliveryProof && (
                               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-green-50 p-3">
                                 <span className="min-w-0 truncate text-sm font-semibold text-[#375C3B]">Ready: {selectedDeliveryProof.name}</span>
@@ -2453,7 +2481,7 @@ const renderHome = () => (
               {order.proofImageUrl && (
                 <a href={order.proofImageUrl} target="_blank" rel="noreferrer" className="mt-5 inline-flex rounded-full border border-green-200 bg-green-50 px-5 py-2.5 text-sm font-black text-[#2F6B3B] hover:bg-green-100">View delivery proof photo</a>
               )}
-              {order.status.toLowerCase() === "delivered" && !order.confirmedReceived && (
+              {(order.status.toLowerCase().includes("delivered") || (order.deliveryStatus || "").toLowerCase().includes("delivered")) && !order.confirmedReceived && (
                 <button
                   type="button"
                   disabled={confirmingReceivedOrderId === order.id || Boolean(confirmingReceivedOrderId)}
