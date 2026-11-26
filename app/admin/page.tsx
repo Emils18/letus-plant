@@ -103,23 +103,23 @@ function formatDate(value?: string | null) {
 }
 
 function formatDateTime(value?: string | null) {
-  if (!value) return "No date";
+  if (!value) return "Not recorded";
 
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
-    return value;
+    return "Not recorded";
   }
 
-  return date.toLocaleString();
+  return new Intl.DateTimeFormat("en-PH", {
+    dateStyle: "short",
+    timeStyle: "medium",
+    timeZone: "Asia/Manila",
+  }).format(date);
 }
 
 function getDiagnosticResult(log: DiagnosticLog) {
-  return (
-    log.disease_name ||
-    log.result ||
-    "Unknown Result"
-  );
+  return log.disease_name?.trim() || log.result?.trim() || "Unknown";
 }
 
 function getConfidence(log: DiagnosticLog) {
@@ -128,8 +128,10 @@ function getConfidence(log: DiagnosticLog) {
     log.confidence;
 
   if (raw === null || raw === undefined) {
-    return "N/A";
+    return "Not recorded";
   }
+
+  if (typeof raw === "string" && !raw.trim()) return "Not recorded";
 
   const value = Number(raw);
 
@@ -150,8 +152,10 @@ function getTemperature(log: DiagnosticLog) {
     log.temp;
 
   if (raw === null || raw === undefined) {
-    return "N/A";
+    return "Not recorded";
   }
+
+  if (typeof raw === "string" && !raw.trim()) return "Not recorded";
 
   const value = Number(raw);
 
@@ -159,7 +163,11 @@ function getTemperature(log: DiagnosticLog) {
     return String(raw);
   }
 
-  return `${value.toFixed(1)}°C`;
+  return `${value.toFixed(1)} °C`;
+}
+
+function recordedValue(value?: string | null) {
+  return value?.trim() || "Not recorded";
 }
 
 function statusStyle(status?: string | null) {
@@ -432,20 +440,23 @@ export default function AdminDashboardPage() {
   };
 
   const loadDiagnosticLogs = async () => {
-    const { data, error } = await supabase
-      .from("diagnostic_logs")
-      .select("*")
-      .order("created_at", {
-        ascending: false,
-      });
+    const pageSize = 500;
+    const logs: DiagnosticLog[] = [];
 
-    if (error) {
-      throw new Error(error.message);
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from("diagnostic_logs")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + pageSize - 1);
+
+      if (error) throw new Error(error.message);
+
+      const page = (data || []) as DiagnosticLog[];
+      logs.push(...page);
+      if (page.length < pageSize) return logs;
     }
-
-    return (
-      (data as DiagnosticLog[]) || []
-    );
   };
 
   const fetchAdminData =
@@ -715,6 +726,11 @@ export default function AdminDashboardPage() {
       diagnosticLogs,
       showAllDiagnostics,
     ]);
+
+  const diagnosticUsersById = useMemo(
+    () => new Map(users.map((user) => [user.id, user])),
+    [users]
+  );
 
   const handleToggleDiagnostics = () => {
     if (showAllDiagnostics) {
@@ -1227,8 +1243,7 @@ export default function AdminDashboardPage() {
                             </p>
 
                             <p className="mt-1 break-words font-bold text-white">
-                              {log.location ||
-                                "N/A"}
+                              {recordedValue(log.location)}
                             </p>
                           </div>
 
@@ -1238,9 +1253,7 @@ export default function AdminDashboardPage() {
                             </p>
 
                             <p className="mt-1 break-words font-bold text-white">
-                              {log.weather_condition ||
-                                log.weather ||
-                                "N/A"}
+                              {recordedValue(log.weather_condition?.trim() || log.weather)}
                             </p>
                           </div>
 
@@ -1251,7 +1264,7 @@ export default function AdminDashboardPage() {
 
                             <p className="mt-1 text-sm font-bold text-white">
                               {formatDateTime(
-                                log.captured_at ||
+                                log.captured_at ??
                                   log.created_at
                               )}
                             </p>
@@ -1260,12 +1273,14 @@ export default function AdminDashboardPage() {
 
                         <div className="mt-4 rounded-xl border border-white/5 bg-white/[0.03] px-4 py-3">
                           <p className="text-[10px] uppercase tracking-wider text-white/30">
-                            User ID
+                            User
                           </p>
 
-                          <p className="mt-1 break-all font-mono text-xs text-white/55">
-                            {log.user_id ||
-                              "N/A"}
+                          <p className="mt-1 break-words text-sm font-bold text-white/75">
+                            {recordedValue(
+                              diagnosticUsersById.get(log.user_id || "")?.full_name ||
+                                diagnosticUsersById.get(log.user_id || "")?.email
+                            )}
                           </p>
                         </div>
                       </div>

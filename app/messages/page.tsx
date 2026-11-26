@@ -79,6 +79,16 @@ function messageTime(value: string) {
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
 }
 
+function chronologicalMessages(messages: Message[]) {
+  return [...messages].sort((a, b) => {
+    const aTime = Date.parse(a.created_at);
+    const bTime = Date.parse(b.created_at);
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
+    if (Number.isFinite(aTime) !== Number.isFinite(bTime)) return Number.isFinite(aTime) ? -1 : 1;
+    return a.id.localeCompare(b.id);
+  });
+}
+
 function previewTime(value?: string) {
   if (!value) return "";
   const date = new Date(value);
@@ -239,7 +249,9 @@ export default function MessagesPage() {
       const request = ++requestNumber;
       const primary = await supabase.from("order_messages")
         .select("id, order_id, sender_id, message, created_at, read_at")
-        .eq("order_id", visibleOrder).order("created_at", { ascending: true });
+        .eq("order_id", visibleOrder)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true });
       if (!active || request !== requestNumber) return;
 
       let data: Message[] | null = primary.data;
@@ -249,7 +261,9 @@ export default function MessagesPage() {
         receiptsAvailable = false;
         const fallback = await supabase.from("order_messages")
           .select("id, order_id, sender_id, message, created_at")
-          .eq("order_id", visibleOrder).order("created_at", { ascending: true });
+          .eq("order_id", visibleOrder)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true });
         if (!active || request !== requestNumber) return;
         data = fallback.data;
         loadError = fallback.error;
@@ -273,7 +287,7 @@ export default function MessagesPage() {
         return;
       }
 
-      const messages = data || [];
+      const messages = chronologicalMessages(data || []);
       setConversation({ orderId: visibleOrder, messages, receiptsAvailable, loadError: "" });
       const latest = messages.at(-1);
       if (latest) setPreviews((previous) => ({ ...previous, [visibleOrder]: latest }));
@@ -540,12 +554,36 @@ export default function MessagesPage() {
                   <div className="min-w-0">
                     <h2 id="chat-heading" className="truncate text-base font-black sm:text-lg" title={otherName}>{otherName}</h2>
                     <p className="text-sm text-gray-600" title={current?.order_code}>
-                      {current ? `Order #${shortOrderReference(current)} ┬╖ ${orderStatusLabel(current)}`: "Select an order conversation"}
+                      {current ? `Order #${shortOrderReference(current)}` : "Select an order conversation"}
                     </p>
                   </div>
                 </div>
-                {current && <span className={`hidden shrink-0 rounded-full px-3 py-1.5 text-xs font-black sm:inline-flex ${isClosed ? "bg-amber-100 text-amber-900" : "bg-green-100 text-green-800"}`}>{isClosed ? "Chat closed" : "Chat open"}</span>}
               </header>
+
+              {current && (
+                <div className="shrink-0 border-b border-green-100 bg-[#F7FAF7] px-3 py-3 sm:px-5 sm:py-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-green-100 bg-white p-4 shadow-sm sm:px-5 sm:py-4">
+                    <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+                      <span aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#EAF5EB] text-[#2F6B3B] sm:h-12 sm:w-12">
+                        <svg viewBox="0 0 24 24" fill="none" className="h-6 w-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z" />
+                          <circle cx="7.5" cy="18" r="1.5" /><circle cx="18" cy="18" r="1.5" />
+                          <path d="M5 10h5M5 13h4" />
+                        </svg>
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-black tracking-[0.12em] text-[#527257]">ORDER STATUS</p>
+                        <p className="mt-1 truncate text-lg font-black text-[#1E2A1F] sm:text-xl">{orderStatusLabel(current)}</p>
+                        <p className="mt-0.5 truncate text-sm text-gray-600">Order #{shortOrderReference(current)}</p>
+                      </div>
+                    </div>
+                    <span className={`inline-flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 text-xs font-black tracking-wide ${isClosed ? "bg-amber-50 text-amber-900" : "bg-green-100 text-green-800"}`}>
+                      <span aria-hidden="true" className={`h-2 w-2 rounded-full ${isClosed ? "bg-amber-500" : "bg-green-600"}`} />
+                      {isClosed ? "CHAT CLOSED" : "CHAT OPEN"}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {current && isClosed && (
                 <p className="shrink-0 border-b border-amber-100 bg-amber-50 px-4 py-2 text-sm leading-snug text-amber-950 sm:px-5">

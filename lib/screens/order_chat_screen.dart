@@ -24,6 +24,8 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
   final _client = Supabase.instance.client;
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  bool _hasLoadedMessages = false;
+  bool _scrollToBottomOnNextLoad = true;
   List<Map<String, dynamic>> _messages = [];
   RealtimeChannel? _channel;
   RealtimeChannel? _orderChannel;
@@ -202,21 +204,47 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
     return value.contains('read_at') || value.contains('42703');
   }
 
+  List<Map<String, dynamic>> _chronologicalMessages(dynamic data) {
+    final messages = List<Map<String, dynamic>>.from(data);
+    messages.sort((a, b) {
+      final aTime = DateTime.tryParse(a['created_at']?.toString() ?? '');
+      final bTime = DateTime.tryParse(b['created_at']?.toString() ?? '');
+      if (aTime != null && bTime != null) {
+        final byTime = aTime.compareTo(bTime);
+        if (byTime != 0) return byTime;
+      } else if (aTime != null) {
+        return -1;
+      } else if (bTime != null) {
+        return 1;
+      }
+      return (a['id'] ?? '').toString().compareTo((b['id'] ?? '').toString());
+    });
+    return messages;
+  }
+
   Future<void> _loadMessages() async {
+    final shouldScrollToLatest =
+        _scrollToBottomOnNextLoad ||
+        !_hasLoadedMessages ||
+        !_scroll.hasClients ||
+        _scroll.position.maxScrollExtent - _scroll.position.pixels < 80;
+    _scrollToBottomOnNextLoad = false;
     try {
       final data = await _client
           .from('order_messages')
           .select('id, order_id, sender_id, message, created_at, read_at')
           .eq('order_id', _orderId)
-          .order('created_at');
+          .order('created_at')
+          .order('id');
       if (!mounted) return;
       setState(() {
-        _messages = List<Map<String, dynamic>>.from(data);
+        _messages = _chronologicalMessages(data);
         _loading = false;
         _seenReceiptsAvailable = true;
         _error = null;
       });
-      _scrollToLatest();
+      _hasLoadedMessages = true;
+      if (shouldScrollToLatest) _scrollToLatest();
       final userId = _client.auth.currentUser?.id;
       if (userId != null) unawaited(_markIncomingMessagesSeen(userId));
     } catch (error) {
@@ -226,16 +254,18 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
               .from('order_messages')
               .select('id, order_id, sender_id, message, created_at')
               .eq('order_id', _orderId)
-              .order('created_at');
+              .order('created_at')
+              .order('id');
           if (!mounted) return;
           setState(() {
-            _messages = List<Map<String, dynamic>>.from(data);
+            _messages = _chronologicalMessages(data);
             _loading = false;
             _seenReceiptsAvailable = false;
             _error =
                 'Apply the chat read receipts SQL update in Supabase to enable Seen.';
           });
-          _scrollToLatest();
+          _hasLoadedMessages = true;
+          if (shouldScrollToLatest) _scrollToLatest();
           return;
         } catch (fallbackError) {
           if (!mounted) return;
@@ -298,6 +328,7 @@ class _OrderChatScreenState extends State<OrderChatScreen> {
         'message': body,
       });
       _input.clear();
+      _scrollToBottomOnNextLoad = true;
       await _loadMessages();
     } catch (_) {
       if (mounted) {
