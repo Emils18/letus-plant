@@ -346,13 +346,6 @@ const [sellForm, setSellForm] = useState({
 
   const isFarmer = account?.role === "farmer";
 
-  // Saved location is only attached to scans when available; weather always uses device GPS.
-  const farmerScanLocation = useMemo(() => {
-    const logLocation = healthLogs.find((log) => isUsefulLocation(log.location))?.location;
-    const productLocation = farmerProducts.find((product) => isUsefulLocation(product.location))?.location;
-    return (logLocation || productLocation || "").trim();
-  }, [healthLogs, farmerProducts]);
-
   // ==================== EFFECTS ====================
   useEffect(() => {
     loadProducts();
@@ -786,7 +779,35 @@ const [sellForm, setSellForm] = useState({
       if (!session?.access_token) throw new Error("Your session expired. Please sign in again.");
       const form = new FormData();
       form.set("image", scanImage);
-      form.set("location", farmerScanLocation);
+      // Capture scan-time GPS and weather. Never reuse location from an older scan or listing.
+      try {
+        if (!navigator.geolocation) throw new Error("Device location is unavailable.");
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: 15000,
+          });
+        });
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        form.set("location", `GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+
+        const params = new URLSearchParams({ latitude: String(latitude), longitude: String(longitude) });
+        const weatherResponse = await fetch(`/api/weather?${params.toString()}`, { cache: "no-store" });
+        const weatherResult = await weatherResponse.json();
+        if (weatherResponse.ok && weatherResult.success && weatherResult.data) {
+          const scanWeather = weatherResult.data as WeatherData;
+          if (isUsefulLocation(scanWeather.location) && scanWeather.location !== "Location name unavailable") {
+            form.set("location", scanWeather.location.trim());
+          }
+          if (scanWeather.condition?.trim()) form.set("weather_condition", scanWeather.condition.trim());
+          if (Number.isFinite(scanWeather.temperature)) form.set("temperature", String(scanWeather.temperature));
+        }
+      } catch (metadataError) {
+        // Continue saving the scan if location permission or weather is unavailable.
+        console.info("Scan-time location/weather was not recorded:", metadataError);
+      }
       const response = await fetch("/api/scan", {
         method: "POST",
         headers: { Authorization: `Bearer ${session.access_token}` },
